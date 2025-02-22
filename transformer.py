@@ -1,3 +1,4 @@
+
 #Neural network 2.0 - George W - 22-02-2025
 import numpy as np
 import pickle
@@ -152,7 +153,6 @@ def train_model(model, data_loader, num_epochs, lr=0.001):
             batch_count += 1
             
             # Convert input indices to one-hot for meaningful cumulative sum
-            # This works because inputs are typically token indices
             batch_size, seq_len = inputs.shape
             vocab_size = model.output_heads[0].weight.shape[0] if hasattr(model, 'output_heads') else model.fc.weight.shape[0]
             
@@ -181,20 +181,27 @@ def train_model(model, data_loader, num_epochs, lr=0.001):
             # Initialize total loss
             loss = 0
             
-
             # Single-target case (backward compatibility)
             # Ensure batch sizes match
             assert outputs_list.shape[0] == targets.shape[0], "Batch sizes do not match."
-            # Calculate loss
+            
+            # Calculate loss with variance
+            # Convert targets to float for variance calculation
+            targets_float = inputs_one_hot.float()
+            
+            # Calculate standard cross-entropy loss
             loss = criterion(outputs_list, targets)
+            
+            # Add variance term
+            # Using unbiased=False to match numpy's default behavior
             
             # Apply cumulative input regularization for single target case
             if epoch > 0 and cumulative_inputs is not None:
-                topk_values, topk_indices = torch.topk(cumulative_inputs, 100)
+                topk_values, topk_indices = torch.topk(cumulative_inputs, min(100, len(cumulative_inputs)))
                 for i, (idx, count) in enumerate(zip(topk_indices.tolist(), topk_values.tolist())):
-                    norm_dist = cumulative_inputs / cumulative_inputs.sum()
-                    entropy = -torch.sum(norm_dist * torch.exp(norm_dist + 1e-10))
-                    loss += count*entropy
+                    norm_dist = cumulative_inputs / (cumulative_inputs.sum() + 1e-10)
+                    entropy = -torch.sum(norm_dist * torch.log(norm_dist + 1e-10))
+                    loss +=  count * targets_float.var(unbiased=False)
             
             # Backpropagate the loss
             loss.backward()
@@ -209,7 +216,6 @@ def train_model(model, data_loader, num_epochs, lr=0.001):
         print(f"Epoch {epoch+1}, Loss: {epoch_loss:.4f}")
     
     return model
-
 # Save and Load Functions
 def save_model_and_vocab(model, word_to_index):
     torch.save(model.state_dict(), 'knowledge_augmented_lstm.mdl')
