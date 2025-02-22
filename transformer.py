@@ -181,47 +181,20 @@ def train_model(model, data_loader, num_epochs, lr=0.001):
             # Initialize total loss
             loss = 0
             
-            if isinstance(outputs_list, list):
-                # Multi-target case: Calculate loss for each target position
-                for i, output in enumerate(outputs_list):
-                    # Get target for this position
-                    target_i = targets[:, i]
-                    
-                    # Ensure batch sizes match
-                    assert output.shape[0] == target_i.shape[0], f"Batch sizes do not match for position {i}."
-                    
-                    # Add loss for this position
-                    position_loss = criterion(output, target_i)
-                    loss += position_loss
-                    
-                    # Optional: Apply cumulative input information as a regularization term
-                    if epoch > 0:  # Skip first epoch to gather statistics
-                        # Get normalized cumulative distribution
-                        cum_dist = cumulative_inputs / cumulative_inputs.sum()
-                        
-                        # Apply regularization based on cumulative distribution
-                        # This encourages the model to consider token frequency
-                        token_probs = torch.softmax(output, dim=1)
-                        reg_strength = 0.01 * (1 - (epoch / num_epochs))  # Decay over time
-                        reg_loss = reg_strength * torch.mean(
-                            torch.sum(token_probs * torch.log(token_probs / (cum_dist + 1e-10) + 1e-10), dim=1)
-                        )
-                        loss += reg_loss
-            else:
-                # Single-target case (backward compatibility)
-                # Ensure batch sizes match
-                assert outputs_list.shape[0] == targets.shape[0], "Batch sizes do not match."
-                
-                # Calculate loss
-                loss = criterion(outputs_list, targets)
-                
-                # Apply cumulative input regularization for single target case
-                if epoch > 0 and cumulative_inputs is not None:
-                    topk_values, topk_indices = torch.topk(cumulative_inputs, 100)
-                    for i, (idx, count) in enumerate(zip(topk_indices.tolist(), topk_values.tolist())):
-                        norm_dist = cumulative_inputs / cumulative_inputs.sum()
-                        entropy = -torch.sum(norm_dist * torch.exp(norm_dist + 1e-10))
-                        loss += count*entropy
+
+            # Single-target case (backward compatibility)
+            # Ensure batch sizes match
+            assert outputs_list.shape[0] == targets.shape[0], "Batch sizes do not match."
+            # Calculate loss
+            loss = criterion(outputs_list, targets)
+            
+            # Apply cumulative input regularization for single target case
+            if epoch > 0 and cumulative_inputs is not None:
+                topk_values, topk_indices = torch.topk(cumulative_inputs, 100)
+                for i, (idx, count) in enumerate(zip(topk_indices.tolist(), topk_values.tolist())):
+                    norm_dist = cumulative_inputs / cumulative_inputs.sum()
+                    entropy = -torch.sum(norm_dist * torch.exp(norm_dist + 1e-10))
+                    loss += count*entropy
             
             # Backpropagate the loss
             loss.backward()
