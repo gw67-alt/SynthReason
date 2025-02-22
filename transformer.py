@@ -13,7 +13,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Constants
-KB_MEMORY_UNCOMPRESSED = -1 # Use -1 for unlimited
+KB_MEMORY_UNCOMPRESSED = 100000 # Use -1 for unlimited
 n = 4  # Use quadgrams for training
 num_epochs = 10
 generate_length = 1000
@@ -318,7 +318,7 @@ def main():
         word_to_index, vocab_size = build_vocabulary(text)
         sequences = create_sequences(word_to_index, preprocess_text(text), sequence_length=4)
         dataset = TextDataset(sequences)
-        data_loader = DataLoader(dataset, batch_size=256, shuffle=True)
+        data_loader = DataLoader(dataset, batch_size=2560, shuffle=True)
 
         model = KnowledgeAugmentedLSTM(vocab_size)
         train_model(model, data_loader, num_epochs=num_epochs)
