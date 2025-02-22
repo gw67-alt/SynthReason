@@ -220,14 +220,7 @@ def train_model(model, data_loader, num_epochs, lr=0.001):
                 
                 # Apply cumulative input regularization for single target case
                 if epoch > 0 and cumulative_inputs is not None:
-                    cum_dist = cumulative_inputs / cumulative_inputs.sum()
-                    token_probs = torch.softmax(outputs_list, dim=1)
-                    reg_strength = 0.01 * (1 - (epoch / num_epochs))
-                    reg_loss = reg_strength * torch.mean(
-                        torch.sum(token_probs * torch.log(token_probs / (cum_dist + 1e-10) + 1e-10), dim=1)
-                    )
                     topk_values, topk_indices = torch.topk(cumulative_inputs, 10)
-
                     for i, (idx, count) in enumerate(zip(topk_indices.tolist(), topk_values.tolist())):
                         norm_dist = cumulative_inputs / cumulative_inputs.sum()
                         entropy = -torch.sum(norm_dist * torch.exp(norm_dist + 1e-10))
@@ -244,29 +237,6 @@ def train_model(model, data_loader, num_epochs, lr=0.001):
         
         # Print epoch summary
         print(f"Epoch {epoch+1}, Loss: {epoch_loss:.4f}")
-        
-        # Print cumulative input statistics periodically
-        if epoch % 2 == 0 and cumulative_inputs is not None:
-            # Find top-10 most frequent tokens
-            topk_values, topk_indices = torch.topk(cumulative_inputs, 10)
-            print("Top-10 most frequent tokens in training data:")
-            
-            # Create reverse vocabulary mapping if available
-            reverse_vocab = None
-            if hasattr(model, '_word_to_index'):
-                reverse_vocab = {idx: word for word, idx in model._word_to_index.items()}
-            
-            for i, (idx, count) in enumerate(zip(topk_indices.tolist(), topk_values.tolist())):
-                token_name = reverse_vocab[idx] if reverse_vocab and idx in reverse_vocab else f"Token {idx}"
-                print(f"  {i+1}. {token_name}: {count:.0f} occurrences")
-            
-            # Print distribution entropy
-            norm_dist = cumulative_inputs / cumulative_inputs.sum()
-            entropy = -torch.sum(norm_dist * torch.log2(norm_dist + 1e-10))
-            print(f"Token distribution entropy: {entropy.item():.2f} bits")
-    
-    # Store cumulative input statistics in the model for potential later use
-    model._cumulative_token_counts = cumulative_inputs
     
     return model
 
@@ -348,7 +318,7 @@ def main():
 
     while True:
         user_input = input("User: ")
-        print("AI:", generate_text(model, word_to_index, generate_text(model, word_to_index, user_input, sequence_length=4, generate_length=generate_length, temperature=temperature), sequence_length=4, generate_length=generate_length, temperature=temperature))
+        print("AI:", generate_text(model, word_to_index, user_input, sequence_length=4, generate_length=generate_length, temperature=temperature))
 
 if __name__ == "__main__":
     main()
