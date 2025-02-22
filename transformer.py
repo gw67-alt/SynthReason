@@ -13,7 +13,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Constants
-KB_MEMORY_UNCOMPRESSED = 100000 # Use -1 for unlimited
+KB_MEMORY_UNCOMPRESSED = 100000
 n = 4  # Use quadgrams for training
 num_epochs = 10
 generate_length = 1000
@@ -68,6 +68,9 @@ class KANEmbedding(nn.Module):
         self.knowledge_embedding = nn.Embedding(vocab_size, knowledge_dim)
 
     def forward(self, x):
+        # Make sure embeddings are on the same device as input
+        self.word_embedding = self.word_embedding.to(x.device)
+        self.knowledge_embedding = self.knowledge_embedding.to(x.device)
         return torch.cat((self.word_embedding(x), self.knowledge_embedding(x)), dim=-1)
 
 class CustomLossFunction(torch.autograd.Function):
@@ -132,6 +135,7 @@ class KnowledgeAugmentedLSTM(nn.Module):
         self.lstm = nn.LSTM(embedding_dim + knowledge_dim, rnn_units, batch_first=True)
         self.fc = nn.Linear(rnn_units, vocab_size)
         self.dropout = nn.Dropout(dropout_rate)
+        self.vocab_size = vocab_size
 
     def forward(self, x):
         x = self.embedding(x)
@@ -139,9 +143,15 @@ class KnowledgeAugmentedLSTM(nn.Module):
         return self.fc(self.dropout(lstm_out[:, -1, :]))
         
 def train_model(model, data_loader, num_epochs, lr=0.001):
+    # Make sure the model is on the correct device
     model = model.to(device)  # Move model to GPU if available
+    
+    # Explicitly move all model parameters to device
+    for param in model.parameters():
+        param.data = param.data.to(device)
+    
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss().to(device)
     model.train()
     
     # Keep track of cumulative sum of inputs for analysis
@@ -162,9 +172,9 @@ def train_model(model, data_loader, num_epochs, lr=0.001):
             # Convert input indices to one-hot for meaningful cumulative sum
             # This works because inputs are typically token indices
             batch_size, seq_len = inputs.shape
-            vocab_size = model.output_heads[0].weight.shape[0] if hasattr(model, 'output_heads') else model.fc.weight.shape[0]
+            vocab_size = model.vocab_size
             
-            # Create one-hot representation
+            # Create one-hot representation on the same device as inputs
             inputs_one_hot = torch.zeros(batch_size, seq_len, vocab_size, device=inputs.device)
             for b in range(batch_size):
                 for s in range(seq_len):
