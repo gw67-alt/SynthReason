@@ -1,3 +1,4 @@
+#Neural network 2.0 - George W - 22-02-2025
 import numpy as np
 import pickle
 import re
@@ -8,18 +9,13 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-# Check for CUDA availability
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
 # Constants
-KB_MEMORY_UNCOMPRESSED = 100000
+KB_MEMORY_UNCOMPRESSED = 10000
 n = 4  # Use quadgrams for training
 num_epochs = 10
 generate_length = 1000
 temperature = 0.3
 feedforward_enhancer = KB_MEMORY_UNCOMPRESSED
-
 # Preprocessing and Vocabulary
 def preprocess_text(text):
     """Clean and tokenize text."""
@@ -35,6 +31,8 @@ def build_vocabulary(text_data):
         last_word = tokens[-1]
         word_counts[last_word] += feedforward_enhancer
        
+
+
     vocab = sorted(word_counts, key=word_counts.get, reverse=True)
     word_to_index = {word: i for i, word in enumerate(vocab)}
     return word_to_index, len(vocab)
@@ -68,12 +66,11 @@ class KANEmbedding(nn.Module):
         self.knowledge_embedding = nn.Embedding(vocab_size, knowledge_dim)
 
     def forward(self, x):
-        # Make sure embeddings are on the same device as input
-        self.word_embedding = self.word_embedding.to(x.device)
-        self.knowledge_embedding = self.knowledge_embedding.to(x.device)
         return torch.cat((self.word_embedding(x), self.knowledge_embedding(x)), dim=-1)
+import torch
+from torch.autograd import Function
 
-class CustomLossFunction(torch.autograd.Function):
+class CustomLossFunction(Function):
     @staticmethod
     def forward(ctx, outputs, targets):
         """
@@ -81,8 +78,8 @@ class CustomLossFunction(torch.autograd.Function):
         Save variables for backward computation using `ctx.save_for_backward`.
         """
         ctx.save_for_backward(outputs, targets)
-        # Example: Custom loss calculation
-        loss = (outputs.min() * targets.min()) / (outputs.min() * targets.mean()) + (-outputs.mean() * targets) * (-outputs / outputs.min() * targets.max()) / (outputs.min() * -outputs.std() / (1 + targets.std()))
+        # Example: Custom loss calculation (e.g., mean squared error)
+        loss = (outputs.min() * targets.min() / -grad_output) / (outputs.min() * targets.mean()) + (-outputs.mean() * targets)*(-outputs / outputs.min() * targets.max()) / (outputs.min() * -outputs.std() / (1 + targets.std()))
         return loss
 
     @staticmethod
@@ -135,7 +132,6 @@ class KnowledgeAugmentedLSTM(nn.Module):
         self.lstm = nn.LSTM(embedding_dim + knowledge_dim, rnn_units, batch_first=True)
         self.fc = nn.Linear(rnn_units, vocab_size)
         self.dropout = nn.Dropout(dropout_rate)
-        self.vocab_size = vocab_size
 
     def forward(self, x):
         x = self.embedding(x)
@@ -143,15 +139,8 @@ class KnowledgeAugmentedLSTM(nn.Module):
         return self.fc(self.dropout(lstm_out[:, -1, :]))
         
 def train_model(model, data_loader, num_epochs, lr=0.001):
-    # Make sure the model is on the correct device
-    model = model.to(device)  # Move model to GPU if available
-    
-    # Explicitly move all model parameters to device
-    for param in model.parameters():
-        param.data = param.data.to(device)
-    
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    criterion = nn.CrossEntropyLoss().to(device)
+    criterion = nn.CrossEntropyLoss()
     model.train()
     
     # Keep track of cumulative sum of inputs for analysis
@@ -162,19 +151,15 @@ def train_model(model, data_loader, num_epochs, lr=0.001):
         epoch_loss = 0
         
         for inputs, targets in tqdm(data_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
-            # Move data to GPU if available
-            inputs = inputs.to(device)
-            targets = targets.to(device)
-            
             # Process and track cumulative sum of inputs
             batch_count += 1
             
             # Convert input indices to one-hot for meaningful cumulative sum
             # This works because inputs are typically token indices
             batch_size, seq_len = inputs.shape
-            vocab_size = model.vocab_size
+            vocab_size = model.output_heads[0].weight.shape[0] if hasattr(model, 'output_heads') else model.fc.weight.shape[0]
             
-            # Create one-hot representation on the same device as inputs
+            # Create one-hot representation
             inputs_one_hot = torch.zeros(batch_size, seq_len, vocab_size, device=inputs.device)
             for b in range(batch_size):
                 for s in range(seq_len):
@@ -257,9 +242,7 @@ def train_model(model, data_loader, num_epochs, lr=0.001):
 
 # Save and Load Functions
 def save_model_and_vocab(model, word_to_index):
-    # Save model to CPU to ensure compatibility
-    model_cpu = model.to('cpu')
-    torch.save(model_cpu.state_dict(), 'knowledge_augmented_lstm.mdl')
+    torch.save(model.state_dict(), 'knowledge_augmented_lstm.mdl')
     with open('vocab.pkl', 'wb') as f:
         pickle.dump(word_to_index, f)
     print("Model and vocabulary saved.")
@@ -269,14 +252,11 @@ def load_model_and_vocab(vocab_path='vocab.pkl', model_path='knowledge_augmented
         word_to_index = pickle.load(f)
     vocab_size = len(word_to_index)
     model = KnowledgeAugmentedLSTM(vocab_size)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model = model.to(device)  # Move model to GPU if available
+    model.load_state_dict(torch.load(model_path, weights_only= True))
     model.eval()
     print("Model and vocabulary loaded.")
     return model, word_to_index
-
 def generate_text(model, word_to_index, input_text, sequence_length, generate_length, temperature):
-    model.eval()  # Set model to evaluation mode
     input_sequence = preprocess_text(input_text)
     indices = [word_to_index.get(word, -1) for word in input_sequence if word in word_to_index]
 
@@ -284,7 +264,7 @@ def generate_text(model, word_to_index, input_text, sequence_length, generate_le
         return "Input text contains no recognizable words."
 
     generated_text = []
-    input_tensor = torch.tensor(indices[-sequence_length:], dtype=torch.long).unsqueeze(0).to(device)
+    input_tensor = torch.tensor(indices[-sequence_length:], dtype=torch.long).unsqueeze(0)
     reverse_vocab = {i: word for word, i in word_to_index.items()}
 
     for _ in range(generate_length):
@@ -296,25 +276,22 @@ def generate_text(model, word_to_index, input_text, sequence_length, generate_le
             # Boost probabilities for specific tokens
             boost_indices = [word_to_index[word] for word in generated_text if word in word_to_index]
             penalties = torch.ones_like(probabilities)
-            if boost_indices:  # Only apply if there are indices to boost
-                penalties[boost_indices] = 1.5  # Boost specific tokens
+            penalties[boost_indices] = 1.5  # Boost specific tokens
             structured_probs = probabilities * penalties
 
             # Normalize probabilities after adding structure
             structured_probs = structured_probs / structured_probs.sum()
 
             next_word_idx = torch.multinomial(structured_probs, 1).item()
-            next_word = reverse_vocab.get(next_word_idx, "<UNK>")
-            generated_text.append(next_word)
+            generated_text.append(next_word_idx)
 
             # Update input tensor for next step
-            next_word_tensor = torch.tensor([[next_word_idx]], dtype=torch.long).to(device)
             input_tensor = torch.cat(
-                (input_tensor[:, 1:], next_word_tensor),
+                (input_tensor[:, 1:], torch.tensor([[next_word_idx]], dtype=torch.long)),
                 dim=1
             )
 
-    return ' '.join(generated_text)
+    return ' '.join([reverse_vocab.get(idx, "<UNK>") for idx in generated_text])
 
 
 # Main Function
