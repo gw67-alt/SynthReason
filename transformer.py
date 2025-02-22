@@ -30,8 +30,6 @@ def build_vocabulary(text_data):
     if tokens:  # Ensure the tokens list is not empty
         last_word = tokens[-1]
         word_counts[last_word] += feedforward_enhancer
-       
-
 
     vocab = sorted(word_counts, key=word_counts.get, reverse=True)
     word_to_index = {word: i for i, word in enumerate(vocab)}
@@ -44,7 +42,6 @@ def create_sequences(word_to_index, text, sequence_length):
     
     # Create sequences of the specified length
     return [(encoded[i-sequence_length:i], encoded[i]) for i in range(sequence_length, len(encoded))]
-
 
 # Dataset Class
 class TextDataset(Dataset):
@@ -220,7 +217,7 @@ def train_model(model, data_loader, num_epochs, lr=0.001):
                 
                 # Apply cumulative input regularization for single target case
                 if epoch > 0 and cumulative_inputs is not None:
-                    topk_values, topk_indices = torch.topk(cumulative_inputs, 10)
+                    topk_values, topk_indices = torch.topk(cumulative_inputs, 100)
                     for i, (idx, count) in enumerate(zip(topk_indices.tolist(), topk_values.tolist())):
                         norm_dist = cumulative_inputs / cumulative_inputs.sum()
                         entropy = -torch.sum(norm_dist * torch.exp(norm_dist + 1e-10))
