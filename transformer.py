@@ -1,4 +1,4 @@
-#Spiking neural network (SNN) 7.7 - George W - 24,12,2024
+#Neural network 2.0 - George W - 22-02-2025
 import numpy as np
 import pickle
 import re
