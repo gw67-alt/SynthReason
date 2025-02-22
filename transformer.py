@@ -322,7 +322,7 @@ def main():
     choice = input("Do you want to (1) train or (2) load a model: ")
 
     if choice == '1':
-        with open("xaa", encoding="utf-8") as f:
+        with open("test.txt", encoding="utf-8") as f:
             text = f.read().lower()
 
         word_to_index, vocab_size = build_vocabulary(text)
