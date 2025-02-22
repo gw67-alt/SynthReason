@@ -13,7 +13,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Constants
-KB_MEMORY_UNCOMPRESSED = 100000
+KB_MEMORY_UNCOMPRESSED = 100000 # Use -1 for unlimited
 n = 4  # Use quadgrams for training
 num_epochs = 10
 generate_length = 1000
