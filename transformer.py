@@ -11,7 +11,7 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
 # Constants
-KB_MEMORY_UNCOMPRESSED = 10000
+KB_MEMORY_UNCOMPRESSED = 10000 # use -1 for unlimited
 n = 4  # Use quadgrams for training
 num_epochs = 10
 generate_length = 1000
@@ -21,7 +21,7 @@ feedforward_enhancer = KB_MEMORY_UNCOMPRESSED
 def preprocess_text(text):
     """Clean and tokenize text."""
     cleaned_text = re.sub(r'[^a-zA-Z\s]', '', text)
-    tokens = text.split()[:KB_MEMORY_UNCOMPRESSED]
+    tokens = cleaned_text.split()[:KB_MEMORY_UNCOMPRESSED]
     return [word for word in tokens if len(word) > 1 or word in {"i", "a"}]
 
 def build_vocabulary(text_data):
@@ -108,11 +108,12 @@ class CustomLossFunction(Function):
         # Adding linspace to v_grad
         linspace_term = torch.linspace(0, targets.max(), steps=1, device=outputs.device).mean()
         v_grad = grad(outputs_min) * targets_mean + outputs_min * -grad(targets_mean) + linspace_term
-
+        norm_dist = linspace_term / (linspace_term.sum() + 1e-10)
+        entropy = -torch.sum(norm_dist * torch.log(norm_dist + 1e-10))
         # Applying the Quotient Rule
         numerator = u_grad * v - u * v_grad
         denominator = v ** 2
-        quotient_rule_term = numerator / denominator
+        quotient_rule_term = numerator / entropy
 
         # Final expression for grad_outputs
         grad_outputs = quotient_rule_term + (
