@@ -11,7 +11,7 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
 # Constants
-KB_MEMORY_UNCOMPRESSED = 10000 # use -1 for unlimited
+KB_MEMORY_UNCOMPRESSED = 100000 # use -1 for unlimited
 n = 4  # Use quadgrams for training
 num_epochs = 10
 generate_length = 1000
@@ -270,20 +270,205 @@ def generate_text(model, word_to_index, input_text, sequence_length, generate_le
 
     return ' '.join([reverse_vocab.get(idx, "<UNK>") for idx in generated_text])
 
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from collections import Counter
+from tqdm import tqdm
 
+class VocabSelectionNetwork(nn.Module):
+    def __init__(self, input_size=768, hidden_size=256):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(hidden_size // 2, 1),
+            nn.Sigmoid()
+        )
+        
+    def forward(self, x):
+        return self.network(x)
+
+class VocabSelector:
+    def __init__(self, min_freq=2, max_vocab_size=10000):
+        self.min_freq = min_freq
+        self.max_vocab_size = max_vocab_size
+        self.vocab_nn = VocabSelectionNetwork()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.vocab_nn.to(self.device)
+        
+    def get_word_features(self, word, word_count, total_words, word_contexts):
+        """Extract features for a word."""
+        # Word length features
+        length = len(word)
+        norm_length = length / 20  # Normalize length
+        
+        # Frequency features
+        freq = word_count / total_words
+        log_freq = np.log1p(word_count)
+        norm_log_freq = log_freq / np.log1p(total_words)
+        
+        # Context features
+        context_diversity = len(word_contexts.get(word, set())) / total_words
+        
+        # Character-level features
+        vowels = sum(1 for c in word if c in 'aeiou')
+        consonants = length - vowels
+        vowel_ratio = vowels / length if length > 0 else 0
+        
+        # Position features
+        positions = word_contexts.get(word, set())
+        avg_position = np.mean(list(positions)) if positions else 0
+        norm_position = avg_position / total_words if total_words > 0 else 0
+        
+        # Combine all features
+        features = torch.tensor([
+            norm_length,
+            freq,
+            norm_log_freq,
+            context_diversity,
+            vowel_ratio,
+            norm_position,
+            consonants / length 
+        ], dtype=torch.float32)
+        
+        # Pad to match input size
+        padded = torch.zeros(768, dtype=torch.float32)
+        padded[:features.shape[0]] = features
+        return padded
+
+    def build_training_data(self, text):
+        """Build training data for vocabulary selection."""
+        words = preprocess_text(text)
+        word_counts = Counter(words)
+        total_words = len(words)
+        
+        # Build context information
+        word_contexts = {}
+        for i, word in enumerate(words):
+            if word not in word_contexts:
+                word_contexts[word] = set()
+            word_contexts[word].add(i)
+        
+        # Create training examples
+        X = []
+        y = []
+        
+        # Sort words by frequency for balanced sampling
+        sorted_words = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)
+        
+        # Select positive and negative examples
+        top_words = set(word for word, count in sorted_words[:self.max_vocab_size])
+        
+        for word, count in sorted_words:
+            if count >= self.min_freq:
+                features = self.get_word_features(word, count, total_words, word_contexts)
+                X.append(features)
+                y.append(1.0 if word in top_words else 0.0)
+        
+        return torch.stack(X), torch.tensor(y, dtype=torch.float32)
+
+    def train(self, text, epochs=5):
+        """Train the vocabulary selection network."""
+        X, y = self.build_training_data(text)
+        X = X.to(self.device)
+        y = y.to(self.device)
+        
+        optimizer = optim.Adam(self.vocab_nn.parameters())
+        criterion = nn.BCELoss()
+        
+        self.vocab_nn.train()
+        for epoch in range(epochs):
+            optimizer.zero_grad()
+            output = self.vocab_nn(X).squeeze()
+            loss = criterion(output, y)
+            loss.backward()
+            optimizer.step()
+            
+            print(f"Epoch {epoch + 1}, Loss: {loss.item():.4f}")
+
+    def select_vocabulary(self, text):
+        """Select vocabulary using the trained neural network."""
+        words = preprocess_text(text)
+        word_counts = Counter(words)
+        total_words = len(words)
+        
+        # Build context information
+        word_contexts = {}
+        for i, word in enumerate(words):
+            if word not in word_contexts:
+                word_contexts[word] = set()
+            word_contexts[word].add(i)
+        
+        # Get predictions for all words
+        word_scores = {}
+        self.vocab_nn.eval()
+        with torch.no_grad():
+            for word, count in word_counts.items():
+                if count >= self.min_freq:
+                    features = self.get_word_features(word, count, total_words, word_contexts)
+                    features = features.to(self.device)
+                    score = self.vocab_nn(features.unsqueeze(0)).item()
+                    word_scores[word] = score
+        
+        # Select top words based on neural network scores
+        selected_words = sorted(word_scores.items(), key=lambda x: x[1], reverse=True)
+        selected_words = selected_words[:self.max_vocab_size]
+        
+        # Create word_to_index mapping
+        word_to_index = {word: i for i, (word, _) in enumerate(selected_words)}
+        
+        return word_to_index, len(word_to_index)
+
+def build_vocabulary_with_nn(text_data):
+    """Build vocabulary using neural network selection."""
+    vocab_selector = VocabSelector()
+    print("Training vocabulary selection network...")
+    vocab_selector.train(text_data)
+    print("Selecting vocabulary...")
+    word_to_index, vocab_size = vocab_selector.select_vocabulary(text_data)
+    
+    # Apply feedforward enhancement to last word
+    if text_data:
+        tokens = preprocess_text(text_data)
+        if tokens:
+            last_word = tokens[-1]
+            if last_word in word_to_index:
+                # Move last word to a better position in vocabulary
+                current_index = word_to_index[last_word]
+                enhanced_index = max(0, current_index - feedforward_enhancer)
+                
+                # Shift other words to accommodate the enhanced position
+                for word in word_to_index:
+                    if word_to_index[word] < current_index:
+                        word_to_index[word] += 1
+                word_to_index[last_word] = enhanced_index
+    
+    return word_to_index, vocab_size
 # Main Function
+# Update the main function to use the neural network vocabulary selection
 def main():
     choice = input("Do you want to (1) train or (2) load a model: ")
 
     if choice == '1':
+        print("Reading text file...")
         with open("test.txt", encoding="utf-8") as f:
             text = f.read().lower()
 
-        word_to_index, vocab_size = build_vocabulary(text)
+        print("Building vocabulary using neural network...")
+        word_to_index, vocab_size = build_vocabulary_with_nn(text)
+        
+        print(f"Created vocabulary with {vocab_size} words")
         sequences = create_sequences(word_to_index, preprocess_text(text), sequence_length=4)
         dataset = TextDataset(sequences)
         data_loader = DataLoader(dataset, batch_size=256, shuffle=True)
 
+        print("Training main model...")
         model = KnowledgeAugmentedLSTM(vocab_size)
         train_model(model, data_loader, num_epochs=num_epochs)
         save_model_and_vocab(model, word_to_index)
@@ -295,7 +480,9 @@ def main():
 
     while True:
         user_input = input("User: ")
-        print("AI:", generate_text(model, word_to_index, user_input, sequence_length=4, generate_length=generate_length, temperature=temperature))
-
+        print("AI:", generate_text(model, word_to_index, user_input, 
+                                 sequence_length=4, 
+                                 generate_length=generate_length, 
+                                 temperature=temperature))
 if __name__ == "__main__":
     main()
