@@ -30,7 +30,7 @@ def analyze_sentiment(text):
     # Get the sentiment analysis
     sentiment = blob.sentiment
 
-    return sentiment.polarity
+    return sentiment.subjectivity
     
     
 # Preprocessing and Vocabulary
@@ -287,11 +287,11 @@ def generate_text(model, word_to_index, input_text, sequence_length, generate_le
                 # Add structure to probabilities
                 boost_indices = [word_to_index[word] for word in instruction_words if word in word_to_index]
                 penalties = torch.ones_like(probabilities)
-                polarity = analyze_sentiment(instruction_text)
-                if polarity > 0:         
-                    penalties[boost_indices] = 1.5  # Boost specific tokens
-                elif polarity < 0:
-                    penalties[boost_indices] = 0.1  # Penalize specific tokens
+                subjectivity = analyze_sentiment(instruction_text)
+                if subjectivity > 0:         
+                    penalties[boost_indices] = 2.5  # Boost specific tokens
+                elif subjectivity < 0:
+                    penalties[boost_indices] = 0.001  # Penalize specific tokens
 
                 structured_probs = probabilities * penalties
 
@@ -307,7 +307,7 @@ def generate_text(model, word_to_index, input_text, sequence_length, generate_le
                 # Update input tensor for next step
                 input_tensor = torch.cat(
                     (input_tensor[:, 1:], torch.tensor([[next_word_idx]], dtype=torch.long)),
-                    dim=1
+                    dim=-1
                 )
         print(' '.join([reverse_vocab.get(idx, "<UNK>") for idx in generated_text]))
     return 
