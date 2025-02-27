@@ -269,11 +269,11 @@ def generate_text(model, word_to_index, input_text, sequence_length, generate_le
 
     input_tensor = torch.tensor(indices[-sequence_length:], dtype=torch.long).unsqueeze(0)
     reverse_vocab = {i: word for word, i in word_to_index.items()}
-    
+    instruction_text = ""
     for i in range(10):
         generated_text = []
 
-        instruction_text = input("Instruction: ")
+        instruction_text += input("Instruction: ") + " "
         instruction_words = generate_instruction(model, word_to_index, instruction_text, 
                                                  sequence_length=2, 
                                                  generate_length=generate_length, 
