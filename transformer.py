@@ -275,7 +275,7 @@ def generate_text(model, word_to_index, input_text, sequence_length, generate_le
 
         instruction_text += input("Instruction: ") + " "
         instruction_words = generate_instruction(model, word_to_index, instruction_text, 
-                                                 sequence_length=2, 
+                                                 sequence_length=1, 
                                                  generate_length=generate_length, 
                                                  temperature=temperature)
         
