@@ -9,14 +9,30 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
+from collections import Counter
+from textblob import TextBlob
 
 # Constants
 KB_MEMORY_UNCOMPRESSED = 100000 # use -1 for unlimited
 n = 4  # Use quadgrams for training
-num_epochs = 10
-generate_length = 1000
-temperature = 0.3
+num_epochs = 5
+generate_length = 250
+temperature = 0.7
 feedforward_enhancer = KB_MEMORY_UNCOMPRESSED
+
+
+
+
+def analyze_sentiment(text):
+    # Create a TextBlob object
+    blob = TextBlob(text)
+    
+    # Get the sentiment analysis
+    sentiment = blob.sentiment
+
+    return sentiment.polarity
+    
+    
 # Preprocessing and Vocabulary
 def preprocess_text(text):
     """Clean and tokenize text."""
@@ -137,6 +153,10 @@ class KnowledgeAugmentedLSTM(nn.Module):
         lstm_out, _ = self.lstm(x)
         return self.fc(self.dropout(lstm_out[:, -1, :]))
         
+import torch.nn.functional as F
+
+import torch.nn.functional as F
+
 def train_model(model, data_loader, num_epochs, lr=0.001):
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
@@ -191,18 +211,25 @@ def train_model(model, data_loader, num_epochs, lr=0.001):
             targets_float = inputs_one_hot.float()
             
             # Calculate standard cross-entropy loss
-            loss = criterion(outputs_list, targets)
             
             # Add variance term
             # Using unbiased=False to match numpy's default behavior
             
+            # Get model output first as it has gradients
+            outputs = model(inputs)
+            
             # Apply cumulative input regularization for single target case
-            if epoch > 0 and cumulative_inputs is not None:
-                topk_values, topk_indices = torch.topk(cumulative_inputs, min(100, len(cumulative_inputs)))
-                for i, (idx, count) in enumerate(zip(topk_indices.tolist(), topk_values.tolist())):
-                    norm_dist = cumulative_inputs / (cumulative_inputs.sum() + 1e-10)
-                    entropy = -torch.sum(norm_dist * torch.log(norm_dist + 1e-10))
-                    loss +=  count * targets_float.var(unbiased=False)
+            # Note: We'll use the model's outputs for backpropagation, not the topk values
+            topk_values, topk_indices = torch.topk(cumulative_inputs, min(256, len(cumulative_inputs)))
+            
+            # Set outputs_list to be topk_values as requested, but just for inference
+            # We don't backpropagate through this
+            outputs_list = topk_indices
+            
+            # Since we're using the model's outputs for gradient calculation
+            loss = criterion(outputs, targets)
+            
+            # We just use the topk_values/outputs_list for analysis, not for gradient computation
             
             # Backpropagate the loss
             loss.backward()
@@ -240,6 +267,59 @@ def generate_text(model, word_to_index, input_text, sequence_length, generate_le
     if not indices:
         return "Input text contains no recognizable words."
 
+    input_tensor = torch.tensor(indices[-sequence_length:], dtype=torch.long).unsqueeze(0)
+    reverse_vocab = {i: word for word, i in word_to_index.items()}
+    
+    for i in range(10):
+        generated_text = []
+
+        instruction_text = input("Instruction: ")
+        instruction_words = generate_instruction(model, word_to_index, instruction_text, 
+                                                 sequence_length=2, 
+                                                 generate_length=generate_length, 
+                                                 temperature=temperature)
+        
+        for _ in range(generate_length):
+            with torch.no_grad():
+                output = model(input_tensor)
+                probabilities = torch.softmax(output / temperature, dim=1).squeeze()
+
+                # Add structure to probabilities
+                boost_indices = [word_to_index[word] for word in instruction_words if word in word_to_index]
+                penalties = torch.ones_like(probabilities)
+                polarity = analyze_sentiment(instruction_text)
+                if polarity > 0:         
+                    penalties[boost_indices] = 1.5  # Boost specific tokens
+                elif polarity < 0:
+                    penalties[boost_indices] = 0.1  # Penalize specific tokens
+
+                structured_probs = probabilities * penalties
+
+                # Check for invalid values and normalize probabilities
+                if torch.any(torch.isnan(structured_probs)) or torch.any(structured_probs < 0):
+                    return "Error: Invalid probability values encountered."
+
+                structured_probs = structured_probs / structured_probs.sum()
+
+                next_word_idx = torch.multinomial(structured_probs, 1).item()
+                generated_text.append(next_word_idx)
+
+                # Update input tensor for next step
+                input_tensor = torch.cat(
+                    (input_tensor[:, 1:], torch.tensor([[next_word_idx]], dtype=torch.long)),
+                    dim=1
+                )
+        print(' '.join([reverse_vocab.get(idx, "<UNK>") for idx in generated_text]))
+    return 
+
+
+def generate_instruction(model, word_to_index, input_text, sequence_length, generate_length, temperature):
+    input_sequence = preprocess_text(input_text)
+    indices = [word_to_index.get(word, -1) for word in input_sequence if word in word_to_index]
+
+    if not indices:
+        return "Input text contains no recognizable words."
+
     generated_text = []
     input_tensor = torch.tensor(indices[-sequence_length:], dtype=torch.long).unsqueeze(0)
     reverse_vocab = {i: word for word, i in word_to_index.items()}
@@ -254,29 +334,13 @@ def generate_text(model, word_to_index, input_text, sequence_length, generate_le
             boost_indices = [word_to_index[word] for word in generated_text if word in word_to_index]
             penalties = torch.ones_like(probabilities)
             penalties[boost_indices] = 1.5  # Boost specific tokens
-            structured_probs = probabilities * penalties
-
+            structured_probs = probabilities*torch.linspace(0,len(probabilities), steps=1)
             # Normalize probabilities after adding structure
             structured_probs = structured_probs / structured_probs.sum()
 
-            next_word_idx = torch.multinomial(structured_probs, 1).item()
-            generated_text.append(next_word_idx)
-
-            # Update input tensor for next step
-            input_tensor = torch.cat(
-                (input_tensor[:, 1:], torch.tensor([[next_word_idx]], dtype=torch.long)),
-                dim=1
-            )
-
-    return ' '.join([reverse_vocab.get(idx, "<UNK>") for idx in generated_text])
-
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from collections import Counter
-from tqdm import tqdm
-
+    return structured_probs
+    
+    
 class VocabSelectionNetwork(nn.Module):
     def __init__(self, input_size=768, hidden_size=256):
         super().__init__()
@@ -450,8 +514,8 @@ def build_vocabulary_with_nn(text_data):
                 word_to_index[last_word] = enhanced_index
     
     return word_to_index, vocab_size
+
 # Main Function
-# Update the main function to use the neural network vocabulary selection
 def main():
     choice = input("Do you want to (1) train or (2) load a model: ")
 
@@ -480,9 +544,9 @@ def main():
 
     while True:
         user_input = input("User: ")
-        print("AI:", generate_text(model, word_to_index, user_input, 
+        generate_text(model, word_to_index, user_input, 
                                  sequence_length=4, 
                                  generate_length=generate_length, 
-                                 temperature=temperature))
+                                 temperature=temperature)
 if __name__ == "__main__":
     main()
