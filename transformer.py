@@ -13,10 +13,10 @@ from collections import Counter
 from textblob import TextBlob
 
 # Constants
-KB_MEMORY_UNCOMPRESSED = 100000 # use -1 for unlimited
+KB_MEMORY_UNCOMPRESSED = 50000 # use -1 for unlimited
 n = 4  # Use quadgrams for training
 num_epochs = 5
-generate_length = 250
+generate_length = 100
 temperature = 0.7
 feedforward_enhancer = KB_MEMORY_UNCOMPRESSED
 
@@ -269,47 +269,43 @@ def generate_text(model, word_to_index, input_text, sequence_length, generate_le
 
     input_tensor = torch.tensor(indices[-sequence_length:], dtype=torch.long).unsqueeze(0)
     reverse_vocab = {i: word for word, i in word_to_index.items()}
-    instruction_text = ""
-    for i in range(10):
-        generated_text = []
+    
+    generated_text = []
+    
+    for _ in range(generate_length):
+        with torch.no_grad():
+            output = model(input_tensor)
+            probabilities = torch.softmax(output / temperature, dim=1).squeeze()
 
-        instruction_text += input("Instruction: ") + " "
-        instruction_words = generate_instruction(model, word_to_index, instruction_text, 
-                                                 sequence_length=1, 
-                                                 generate_length=generate_length, 
-                                                 temperature=temperature)
-        
-        for _ in range(generate_length):
-            with torch.no_grad():
-                output = model(input_tensor)
-                probabilities = torch.softmax(output / temperature, dim=1).squeeze()
+            # Add structure to probabilities
+            boost_indices = torch.tensor(indices, dtype=torch.long)
+            boost_indices = boost_indices[(boost_indices >= 0) & (boost_indices < probabilities.size(0))]
 
-                # Add structure to probabilities
-                boost_indices = [word_to_index[word] for word in instruction_words if word in word_to_index]
-                penalties = torch.ones_like(probabilities)
-                subjectivity = analyze_sentiment(instruction_text)
-                if subjectivity > 0:         
-                    penalties[boost_indices] = 2.5  # Boost specific tokens
-                elif subjectivity < 0:
-                    penalties[boost_indices] = 0.001  # Penalize specific tokens
+            penalties = torch.ones_like(probabilities)
+            subjectivity = analyze_sentiment(' '.join([reverse_vocab.get(idx, "<UNK>") for idx in generated_text]))
+            if subjectivity > 0:         
+                penalties[boost_indices] = 1.5  # Boost specific tokens
+            elif subjectivity < 0:
+                penalties[boost_indices] = 0.5  # Penalize specific tokens
 
-                structured_probs = probabilities * penalties
+            structured_probs = probabilities * penalties
 
-                # Check for invalid values and normalize probabilities
-                if torch.any(torch.isnan(structured_probs)) or torch.any(structured_probs < 0):
-                    return "Error: Invalid probability values encountered."
+            # Check for invalid values and normalize probabilities
+            if torch.any(torch.isnan(structured_probs)) or torch.any(structured_probs < 0):
+                return "Error: Invalid probability values encountered."
 
-                structured_probs = structured_probs / structured_probs.sum()
+            structured_probs = structured_probs / structured_probs.sum()
 
-                next_word_idx = torch.multinomial(structured_probs, 1).item()
-                generated_text.append(next_word_idx)
+            next_word_idx = torch.multinomial(structured_probs, 1).item()
+            generated_text.append(next_word_idx)
 
-                # Update input tensor for next step
-                input_tensor = torch.cat(
-                    (input_tensor[:, 1:], torch.tensor([[next_word_idx]], dtype=torch.long)),
-                    dim=-1
-                )
-        print(' '.join([reverse_vocab.get(idx, "<UNK>") for idx in generated_text]))
+            # Update input tensor for next step
+            input_tensor = torch.cat(
+                (input_tensor[:, 1:], torch.tensor([[next_word_idx]], dtype=torch.long)),
+                dim=-1
+            )
+    print(' '.join([reverse_vocab.get(idx, "<UNK>") for idx in generated_text]))
+    print()
     return 
 
 
