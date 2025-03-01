@@ -5,7 +5,7 @@ from collections import Counter
 import numpy as np
 import re
 
-KB_limit = 99999
+KB_limit = 9999
 # Model Definition
 class CyberneticsLSTM(nn.Module):
     def __init__(self, vocab_size, embedding_dim=128, hidden_dim=256):
@@ -84,7 +84,7 @@ def generate_text(model, prompt, vocab, seq_length=5, max_length=250, temperatur
             next_word_idx = np.random.choice(len(vocab), p=probabilities)
             next_word = vocab_inv[next_word_idx]
             generated_text += ' ' + next_word
-            input_tensor = torch.tensor([next_word_idx]).unsqueeze(0)
+            input_tensor = torch.cat((input_tensor, torch.tensor([[next_word_idx]])), dim=1)
     return generated_text
 
 # Example text data
