@@ -6,6 +6,7 @@ import json
 import re
 import numpy as np
 KB_limit = 9999
+sequence_length = 3
 def preprocess_text(text):
     text = text.lower()
     text = re.sub(r'[^a-z0-9\s]', '', text)
@@ -18,7 +19,7 @@ def build_vocabulary(text):
     return vocab, len(vocab)
 
 class CyberneticsDataset(Dataset):
-    def __init__(self, file_path, vocab, sequence_length=5):
+    def __init__(self, file_path, vocab, sequence_length=sequence_length):
         with open(file_path, "r", encoding="utf-8") as f:
             self.data = preprocess_text(f.read()[:KB_limit])  # Tokenized text
 
@@ -124,11 +125,11 @@ word_to_index, vocab_size = build_vocabulary(text_data)
 
 # Train the model
 model = CyberneticsLSTM(vocab_size)
-train_model(model, word_to_index, vocab_size, epochs=10, batch_size=4)
+train_model(model, word_to_index, vocab_size, epochs=10, batch_size=sequence_length+1)
 
 while True:
     user_input = input("USER: ")
     if user_input.lower() in ["exit", "quit"]:
         break
-    generated = generate_text(model, word_to_index, user_input, sequence_length=5, generate_length=50, temperature=0.7)
+    generated = generate_text(model, word_to_index, user_input, sequence_length, generate_length=250, temperature=0.7)
     print("Generated Text:\n", generated)
