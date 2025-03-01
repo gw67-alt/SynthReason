@@ -147,8 +147,9 @@ def generate_text(model, prompt, vocab, seq_length=5, max_length=250, temperatur
             probabilities = torch.nn.functional.softmax(output, dim=-1).squeeze().cpu().numpy()
             next_word_idx = np.random.choice(len(vocab), p=probabilities)
             next_word = vocab_inv.get(next_word_idx, '<UNK>')
-            generated_text += ' ' + next_word
-            input_tensor = torch.cat((input_tensor, torch.tensor([[next_word_idx]])), dim=1)
+            if next_word != generated_text.split()[-1]:
+                generated_text += ' ' + next_word
+                input_tensor = torch.cat((input_tensor, torch.tensor([[next_word_idx]])), dim=1)
 
     return generated_text
 
