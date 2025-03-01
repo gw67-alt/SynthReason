@@ -5,7 +5,7 @@ from collections import Counter
 import numpy as np
 import re
 
-KB_limit = 999999
+KB_limit = 99999
 # Model Definition
 class CyberneticsLSTM(nn.Module):
     def __init__(self, vocab_size, embedding_dim=128, hidden_dim=256):
