@@ -64,7 +64,7 @@ class CyberneticsLSTM(nn.Module):
         out = self.fc(out)
         return out
 
-def train_model(model, vocab, vocab_size, epochs=10, batch_size=2):
+def train_model(model, vocab, vocab_size, epochs=10, batch_size=sequence_length):
     dataset = CyberneticsDataset("test.txt", vocab)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=pad_collate)
 
@@ -89,7 +89,7 @@ def train_model(model, vocab, vocab_size, epochs=10, batch_size=2):
 
     torch.save(model.state_dict(), "cybernetics_model.pth")
 
-def generate_text(model, word_to_index, input_text, sequence_length, generate_length, temperature=1.0):
+def generate_text(model, word_to_index, input_text, sequence_length, generate_length, temperature=0.7):
     input_sequence = preprocess_text(input_text)
     index_to_word = {i: word for word, i in word_to_index.items()}
     input_indices = [word_to_index.get(word, 0) for word in input_sequence]
