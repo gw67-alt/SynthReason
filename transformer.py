@@ -5,6 +5,7 @@ from collections import Counter
 import numpy as np
 import re
 
+KB_limit = 999999
 # Model Definition
 class CyberneticsLSTM(nn.Module):
     def __init__(self, vocab_size, embedding_dim=128, hidden_dim=256):
@@ -88,7 +89,7 @@ def generate_text(model, prompt, vocab, seq_length=5, max_length=250, temperatur
 
 # Example text data
 with open("test.txt", "r", encoding="utf-8") as f:
-    text = f.read()[:99999]
+    text = ' '.join(f.read().split()[:KB_limit])
 
 # Build vocabulary efficiently
 text_processed = re.sub(r'[^\w\s]', '', text.lower())
