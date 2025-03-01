@@ -4,9 +4,10 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
+from tqdm import tqdm
 import re
 import pickle
-
+KB_limit = -1
 # Preprocessing text
 def preprocess_text(text):
     text = text.lower()
@@ -65,14 +66,17 @@ def train_model(model, data_loader, num_epochs=10, lr=0.001):
     model.train()
     for epoch in range(num_epochs):
         total_loss = 0
-        for inputs, targets in data_loader:
+        progress_bar = tqdm(data_loader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False)   
+        for inputs, targets in progress_bar:
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = custom_loss(outputs, targets)
             loss.backward()
             optimizer.step()
-            total_loss += loss.item()
-        print(f"Epoch {epoch+1}, Loss: {total_loss/len(data_loader):.4f}")
+            total_loss += loss.item()     
+            # Update progress bar
+            progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))  
+        print(f"Epoch {epoch+1}, Loss: {total_loss/len(data_loader):.4f}") 
     return model
 
 # Save Model & Vocabulary
@@ -106,18 +110,35 @@ def generate_text(model, word_to_index, input_text, sequence_length, generate_le
             input_indices.append(next_index)
     return " ".join(generated_text)
 
-# Example Usage
-if __name__ == "__main__":
-    with open("test.txt", encoding="utf-8") as f:
-        text_data = ' '.join(f.read().lower().split()[:9999])
-    word_to_index, vocab_size = build_vocabulary(text_data)
-    sequences = create_sequences(word_to_index, preprocess_text(text_data), 5)
-    dataset = TextDataset(sequences)
-    data_loader = DataLoader(dataset, batch_size=32, shuffle=True)
-    model = KnowledgeAugmentedLSTM(vocab_size)
-    trained_model = train_model(model, data_loader, num_epochs=10)
-    save_model_and_vocab(trained_model, word_to_index)
-    loaded_model, loaded_vocab = load_model_and_vocab()
+# Main Function
+def main():
+    choice = input("Do you want to (1) train or (2) load a model: ")
+
+    if choice == '1':
+        with open("test.txt", encoding="utf-8") as f:
+            text_data = ' '.join(f.read().lower().split()[:KB_limit])
+        word_to_index, vocab_size = build_vocabulary(text_data)
+        sequences = create_sequences(word_to_index, preprocess_text(text_data), 5)
+        dataset = TextDataset(sequences)
+        data_loader = DataLoader(dataset, batch_size=512, shuffle=True)
+        model = KnowledgeAugmentedLSTM(vocab_size)
+        trained_model = train_model(model, data_loader, num_epochs=10)
+        save_model_and_vocab(trained_model, word_to_index)
+        loaded_model, loaded_vocab = trained_model, word_to_index  # Ensure consistency
+
+    elif choice == '2':
+        loaded_model, loaded_vocab = load_model_and_vocab()
+
+    else:
+        print("Invalid option.")
+        return
+
     while True:
-        generated = generate_text(loaded_model, loaded_vocab, input("USER: "), sequence_length=5, generate_length=250, temperature=0.7)
+        user_input = input("USER: ")
+        if user_input.lower() in ["exit", "quit"]:
+            break
+        generated = generate_text(loaded_model, loaded_vocab, user_input, sequence_length=5, generate_length=250, temperature=0.7)
         print("Generated Text:\n", generated)
+
+if __name__ == "__main__":
+    main()
