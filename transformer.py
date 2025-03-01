@@ -59,7 +59,7 @@ def prepare_batch(input_sequences, target_sequences, batch_size):
     num_batches = len(input_sequences) // batch_size
     for i in range(num_batches):
         start_idx = i * batch_size
-        end_idx = (i + 1) * batch_size
+        end_idx = (i + 10) * batch_size
         input_batch = torch.stack(input_sequences[start_idx:end_idx])
         target_batch = torch.stack(target_sequences[start_idx:end_idx])
         yield input_batch, target_batch
