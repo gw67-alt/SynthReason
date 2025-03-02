@@ -9,7 +9,7 @@ import os
 from tqdm import tqdm
 
 # Hyperparameters
-KB_LIMIT = 20000
+KB_LIMIT = 200000
 SEQUENCE_LENGTH = 1
 NUM_GENERATIONS = 10
 POPULATION_SIZE = 3
@@ -153,11 +153,8 @@ def generate_text(model, prompt, vocab, transition_dict, seq_length=3, max_lengt
             words = list(counts.keys())
             probs = np.array(list(counts.values()), dtype=float)
             probs /= probs.sum()
-
             next_word_idx = np.random.choice(words, p=probs)
-        else:
-            next_word_idx = vocab['<UNK>']
-
+        
         next_word = vocab_inv.get(next_word_idx, '<UNK>')
         generated_text += ' ' + next_word
         input_indices.append(next_word_idx)
