@@ -11,36 +11,6 @@ from tqdm import tqdm
 # Hyperparameters
 KB_LIMIT = 10000 # -1 for unlimited
 SEQUENCE_LENGTH = 1
-NUM_GENERATIONS = 10
-POPULATION_SIZE = 5
-MUTATION_RATE = 10.01
-BATCH_SIZE = 1024
-LEARNING_RATE = 0.001
-NUM_EPOCHS = 5
-EMBEDDING_DIM = 16
-HIDDEN_DIM = 32
-NUM_LAYERS = 3
-
-# LSTM Model with EANT-based mutation
-class CyberneticsEANT(nn.Module):
-    def __init__(self, vocab_size, embedding_dim=EMBEDDING_DIM, hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS):
-        super(CyberneticsEANT, self).__init__()
-        self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, vocab_size)
-
-    def forward(self, x, hidden=None):
-        embedded = self.embedding(x)
-        out, hidden = self.lstm(embedded, hidden)
-        out = self.fc(out)
-        return out, hidden
-
-    def mutate(self):
-        """Applies random mutation to the model."""
-        with torch.no_grad():
-            for param in self.parameters():
-                if torch.rand(1).item() < MUTATION_RATE:
-                    param += torch.randn_like(param) * 0.1  # Small mutation
 
 # Preprocess the text data
 def preprocess_text(text, vocab):
@@ -66,51 +36,9 @@ def create_sequences(text_data, vocab, sequence_length):
             transition_dict[input_seq] = Counter()
         transition_dict[input_seq][target_word] += 1  # Increment occurrence
 
-    return input_sequences, target_sequences, transition_dict
+    return transition_dict
 
-def prepare_batch(input_sequences, target_sequences, batch_size):
-    num_batches = len(input_sequences) // batch_size
-    for i in range(num_batches):
-        start_idx = i * batch_size
-        end_idx = (i + 1) * batch_size
-        input_batch = torch.stack(input_sequences[start_idx:end_idx])
-        target_batch = torch.stack(target_sequences[start_idx:end_idx])
-        yield input_batch, target_batch
-
-def train_model(model, train_data, num_epochs=NUM_EPOCHS):
-    """Trains a single model and returns its final loss."""
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    model.train()
-    input_sequences, target_sequences, vocab = train_data
-    total_loss = 0
-
-    for epoch in range(num_epochs):
-        epoch_loss = 0
-        batches = list(prepare_batch(input_sequences, target_sequences, BATCH_SIZE))
-        for input_batch, target_batch in batches:
-            optimizer.zero_grad()
-            output, _ = model(input_batch)
-            output = output.view(-1, output.size(-1))
-            target_batch = target_batch.view(-1)
-            loss = criterion(output, target_batch)
-            loss.backward()
-            optimizer.step()
-            epoch_loss += loss.item()
-        total_loss += epoch_loss
-    return total_loss / num_epochs
-
-def evolve_population(population, train_data, num_generations=NUM_GENERATIONS):
-    """Evolves the population using EANT (mutation and survival)."""
-    fitness_scores = []
-    for i, model in enumerate(population):
-        loss = train_model(model, train_data)
-        fitness_scores.append((model, loss))
-        fitness_scores.sort(key=lambda x: x[1])
-        if len(fitness_scores) < 4:
-            return fitness_scores[0][0]
-
-def generate_text(model, prompt, vocab, transition_dict, seq_length=3, max_length=250):
+def generate_text(prompt, vocab, transition_dict, seq_length=3, max_length=250):
     vocab_inv = {idx: word for word, idx in vocab.items()}
     input_indices = [vocab[word] for word in prompt.lower().split() if word in vocab]
 
@@ -118,7 +46,7 @@ def generate_text(model, prompt, vocab, transition_dict, seq_length=3, max_lengt
         input_indices = [vocab['<PAD>']] + input_indices
 
     generated_text = prompt
-
+    next_word_idx
     for _ in range(max_length):
         input_tuple = tuple(input_indices[-seq_length:])
 
@@ -129,54 +57,27 @@ def generate_text(model, prompt, vocab, transition_dict, seq_length=3, max_lengt
             probs /= probs.sum()
 
             next_word_idx = np.random.choice(words, p=probs)
-        else:
-            break
-
         next_word = vocab_inv[next_word_idx]
         generated_text += ' ' + next_word
         input_indices.append(next_word_idx)
 
     return generated_text
 
-def save_model(model, filepath):
-    torch.save(model.state_dict(), filepath)
-
-def load_model(model, filepath):
-    model.load_state_dict(torch.load(filepath))
-    return model
-
 # Load text data
 with open("test.txt", "r", encoding="utf-8") as f:
     text = ' '.join(f.read().split()[:KB_LIMIT])
 
 # Build vocabulary
-text_processed = text
-tokens = text_processed.split()
+tokens = text.split()
 word_counts = Counter(tokens)
 vocab = {word: idx for idx, (word, _) in enumerate(word_counts.items(), 1)}
 vocab['<PAD>'] = 0
+
 # Create input sequences and transition matrix
-input_sequences, target_sequences, transition_dict = create_sequences(text_processed, vocab, SEQUENCE_LENGTH)
-population = [CyberneticsEANT(len(vocab)) for _ in range(POPULATION_SIZE)]
-
-model_filepath = "best_model.pth"
-
-# Check if a saved model exists
-if os.path.exists(model_filepath):
-    print("Loading saved model...")
-    best_model = CyberneticsEANT(len(vocab))
-    best_model = load_model(best_model, model_filepath)
-    print("Model loaded.")
-else:
-    print("Starting evolution...")
-    best_model = evolve_population(population, (input_sequences, target_sequences, vocab))
-    print("Evolution complete!")
-    print("Saving best model...")
-    save_model(best_model, model_filepath)
-    print("Model saved.")
+transition_dict = create_sequences(text, vocab, SEQUENCE_LENGTH)
 
 # Interactive Text Generation (Markovian)
 while True:
     prompt = input("USER: ")
-    generated_text = generate_text(best_model, prompt, vocab, transition_dict, seq_length=SEQUENCE_LENGTH, max_length=250)
+    generated_text = generate_text(prompt, vocab, transition_dict, seq_length=SEQUENCE_LENGTH, max_length=250)
     print("Generated text:\n", generated_text)
