@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 # Hyperparameters
 KB_LIMIT = -1 # -1 for unlimited
-SEQUENCE_LENGTH = 2
+SEQUENCE_LENGTH = 1
 
 # Preprocess the text data
 def preprocess_text(text, vocab):
