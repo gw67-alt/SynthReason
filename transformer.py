@@ -7,18 +7,21 @@ import re
 import random
 
 # Hyperparameters
-KB_LIMIT = 999
-SEQUENCE_LENGTH = 3
+KB_LIMIT = 1999
+SEQUENCE_LENGTH = 1
 NUM_GENERATIONS = 10
 POPULATION_SIZE = 10
-MUTATION_RATE = 0.2
-BATCH_SIZE = 32
+MUTATION_RATE = 0.1
+BATCH_SIZE = 1024  
 LEARNING_RATE = 0.001
 NUM_EPOCHS = 5
+EMBEDDING_DIM = 128
+HIDDEN_DIM = 256
+NUM_LAYERS = 1
 
 # LSTM Model with EANT-based mutation
 class CyberneticsEANT(nn.Module):
-    def __init__(self, vocab_size, embedding_dim=128, hidden_dim=256, num_layers=1):
+    def __init__(self, vocab_size, embedding_dim=EMBEDDING_DIM, hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS):
         super(CyberneticsEANT, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, num_layers, batch_first=True)
@@ -43,23 +46,31 @@ def preprocess_text(text, vocab):
     tokens = text.split()
     return [vocab.get(word, vocab['<UNK>']) for word in tokens]
 
-# Create input_sequences and target_sequences correctly
 def create_sequences(text_data, vocab, sequence_length):
     data = preprocess_text(text_data, vocab)
     input_sequences = []
     target_sequences = []
+    transition_dict = {}
+
     for i in range(len(data) - sequence_length):
-        input_seq = data[i:i + sequence_length]
-        target_seq = data[i + 1:i + sequence_length + 1]
+        input_seq = tuple(data[i:i + sequence_length])
+        target_word = data[i + sequence_length]
+
         input_sequences.append(torch.tensor(input_seq, dtype=torch.long))
-        target_sequences.append(torch.tensor(target_seq, dtype=torch.long))
-    return input_sequences, target_sequences
+        target_sequences.append(torch.tensor(target_word, dtype=torch.long))
+
+        # Markov Transition Table
+        if input_seq not in transition_dict:
+            transition_dict[input_seq] = Counter()
+        transition_dict[input_seq][target_word] += 1  # Increment occurrence
+
+    return input_sequences, target_sequences, transition_dict
 
 def prepare_batch(input_sequences, target_sequences, batch_size):
     num_batches = len(input_sequences) // batch_size
     for i in range(num_batches):
         start_idx = i * batch_size
-        end_idx = (i + 10) * batch_size
+        end_idx = (i + 1) * batch_size  # Corrected batch range
         input_batch = torch.stack(input_sequences[start_idx:end_idx])
         target_batch = torch.stack(target_sequences[start_idx:end_idx])
         yield input_batch, target_batch
@@ -84,7 +95,6 @@ def train_model(model, train_data, num_epochs=NUM_EPOCHS):
             optimizer.step()
             epoch_loss += loss.item()
         total_loss += epoch_loss
-
     return total_loss / num_epochs  # Average loss
 
 def evolve_population(population, train_data, num_generations=NUM_GENERATIONS):
@@ -107,7 +117,7 @@ def evolve_population(population, train_data, num_generations=NUM_GENERATIONS):
         # Sort by loss (lower is better)
         fitness_scores.sort(key=lambda x: x[1])
 
-        print(f"Generation {generation+1}: Best Loss = {fitness_scores[0][1]}")
+        print(f"Generation {generation+1}/{NUM_GENERATIONS}")
 
         # Ensure we have at least two models to continue
         if len(fitness_scores) < 2:
@@ -115,7 +125,7 @@ def evolve_population(population, train_data, num_generations=NUM_GENERATIONS):
             return fitness_scores[0][0]  # Return the best model we have
 
         # Select top-performing models
-        top_models = [m for m, _ in fitness_scores[:max(2, len(fitness_scores)//2)]]
+        top_models = [m for m, _ in fitness_scores[:max(2, len(fitness_scores) // 2)]]
 
         # Create the next generation through mutation
         new_population = []
@@ -129,27 +139,34 @@ def evolve_population(population, train_data, num_generations=NUM_GENERATIONS):
 
     return population[0]
 
-# Text generation function
-def generate_text(model, prompt, vocab, seq_length=5, max_length=250, temperature=1.0):
+def generate_text(model, prompt, vocab, transition_dict, seq_length=3, max_length=250):
     vocab_inv = {idx: word for word, idx in vocab.items()}
     input_indices = [vocab.get(word, vocab['<UNK>']) for word in prompt.lower().split()]
+
+    # Ensure prompt has enough words
     while len(input_indices) < seq_length:
         input_indices = [vocab['<PAD>']] + input_indices
-    model.eval()
-    input_tensor = torch.tensor(input_indices).unsqueeze(0)
+
     generated_text = prompt
-    hidden = None
 
     for _ in range(max_length):
-        with torch.no_grad():
-            output, hidden = model(input_tensor, hidden)
-            output = output[:, -1, :] / temperature
-            probabilities = torch.nn.functional.softmax(output, dim=-1).squeeze().cpu().numpy()
-            next_word_idx = np.random.choice(len(vocab), p=probabilities)
-            next_word = vocab_inv.get(next_word_idx, '<UNK>')
-            if next_word != generated_text.split()[-1]:
-                generated_text += ' ' + next_word
-                input_tensor = torch.cat((input_tensor, torch.tensor([[next_word_idx]])), dim=1)
+        input_tuple = tuple(input_indices[-seq_length:])  # Last `n` words
+
+        # Check if input exists in transition dictionary
+        if input_tuple in transition_dict:
+            # Get probabilities from Counter and normalize
+            counts = transition_dict[input_tuple]
+            words = list(counts.keys())
+            probs = np.array(list(counts.values()), dtype=float)
+            probs /= probs.sum()  # Normalize probabilities
+
+            next_word_idx = np.random.choice(words, p=probs)
+        else:
+            next_word_idx = vocab['<UNK>']  # Fallback to unknown token
+
+        next_word = vocab_inv.get(next_word_idx, '<UNK>')
+        generated_text += ' ' + next_word
+        input_indices.append(next_word_idx)
 
     return generated_text
 
@@ -164,18 +181,16 @@ word_counts = Counter(tokens)
 vocab = {word: idx for idx, (word, _) in enumerate(word_counts.items(), 1)}
 vocab['<PAD>'] = 0
 vocab['<UNK>'] = len(vocab)
-
-# Create input sequences
-input_sequences, target_sequences = create_sequences(text_processed, vocab, SEQUENCE_LENGTH)
-
-# Create initial population
+# Create input sequences and transition matrix
+input_sequences, target_sequences, transition_dict = create_sequences(text_processed, vocab, SEQUENCE_LENGTH)
 population = [CyberneticsEANT(len(vocab)) for _ in range(POPULATION_SIZE)]
 
-# Evolve the population
+print("Starting evolution...")
 best_model = evolve_population(population, (input_sequences, target_sequences, vocab))
+print("Evolution complete!")
 
-# Interactive Text Generation
+# Interactive Text Generation (Markovian)
 while True:
     prompt = input("USER: ")
-    generated_text = generate_text(best_model, prompt, vocab, seq_length=SEQUENCE_LENGTH, max_length=250, temperature=0.7)
+    generated_text = generate_text(best_model, prompt, vocab, transition_dict, seq_length=SEQUENCE_LENGTH, max_length=250)
     print("Generated text:\n", generated_text)
