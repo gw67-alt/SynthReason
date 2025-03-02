@@ -1,15 +1,12 @@
 import torch
-import torch.nn as nn
-import torch.optim as optim
 from collections import Counter
 import numpy as np
 import re
 import random
 import os
-from tqdm import tqdm
 
 # Hyperparameters
-KB_LIMIT = -1 # -1 for unlimited
+KB_LIMIT = -1  # -1 for unlimited
 SEQUENCE_LENGTH = 1
 
 # Preprocess the text data
@@ -18,26 +15,27 @@ def preprocess_text(text, vocab):
     tokens = text.split()
     return [vocab[word] for word in tokens if word in vocab]
 
+# Create sequences and normalize transition probabilities
 def create_sequences(text_data, vocab, sequence_length):
     data = preprocess_text(text_data, vocab)
-    input_sequences = []
-    target_sequences = []
     transition_dict = {}
 
     for i in range(len(data) - sequence_length):
         input_seq = tuple(data[i:i + sequence_length])
         target_word = data[i + sequence_length]
 
-        input_sequences.append(torch.tensor(input_seq, dtype=torch.long))
-        target_sequences.append(torch.tensor(target_word, dtype=torch.long))
-
-        # Markov Transition Table
         if input_seq not in transition_dict:
             transition_dict[input_seq] = Counter()
         transition_dict[input_seq][target_word] += 1  # Increment occurrence
 
+    # Normalize transition probabilities
+    for key, counter in transition_dict.items():
+        total = sum(counter.values())
+        transition_dict[key] = {k: v / total for k, v in counter.items()}  # Normalization
+
     return transition_dict
 
+# Generate text using Markov chain
 def generate_text(prompt, vocab, transition_dict, seq_length=3, max_length=250):
     vocab_inv = {idx: word for word, idx in vocab.items()}
     input_indices = [vocab[word] for word in prompt.lower().split() if word in vocab]
@@ -51,12 +49,11 @@ def generate_text(prompt, vocab, transition_dict, seq_length=3, max_length=250):
         input_tuple = tuple(input_indices[-seq_length:])
 
         if input_tuple in transition_dict:
-            counts = transition_dict[input_tuple]
-            words = list(counts.keys())
-            probs = np.array(list(counts.values()), dtype=float)
-            probs /= probs.sum()
+            probs_dict = transition_dict[input_tuple]
+            words = list(probs_dict.keys())
+            probs = np.array(list(probs_dict.values()), dtype=float)
 
-            next_word_idx = np.random.choice(words, p=probs)
+            next_word_idx = np.random.choice(words, p=probs)  # Sampling from normalized probabilities
             next_word = vocab_inv[next_word_idx]
         else:
             break
@@ -65,7 +62,6 @@ def generate_text(prompt, vocab, transition_dict, seq_length=3, max_length=250):
         input_indices.append(next_word_idx)
 
     return generated_text
-
 
 # Load text data
 with open("test.txt", "r", encoding="utf-8") as f:
@@ -77,7 +73,7 @@ word_counts = Counter(tokens)
 vocab = {word: idx for idx, (word, _) in enumerate(word_counts.items(), 1)}
 vocab['<PAD>'] = 0
 
-# Create input sequences and transition matrix
+# Create input sequences and transition matrix with normalized probabilities
 transition_dict = create_sequences(text, vocab, SEQUENCE_LENGTH)
 
 # Interactive Text Generation (Markovian)
