@@ -107,9 +107,10 @@ def save_model(vocab, model, vocab_path="vocab.json", model_path="model.pth"):
     torch.save(model.state_dict(), model_path)
 
 # Load the model and vocabulary
-def load_model(vocab_path="vocab.json", model_path="model.pth", vocab_size=None, embedding_dim=None, hidden_dim=None):
+def load_model(vocab_path="vocab.json", model_path="model.pth", embedding_dim=50, hidden_dim=128):
     with open(vocab_path, 'r') as f:
         vocab = json.load(f)
+    vocab_size = len(vocab)
     model = MarkovModel(vocab_size, embedding_dim, hidden_dim)
     model.load_state_dict(torch.load(model_path))
     return vocab, model
@@ -118,23 +119,29 @@ def load_model(vocab_path="vocab.json", model_path="model.pth", vocab_size=None,
 with open("test.txt", "r", encoding="utf-8") as f:
     text = ' '.join(f.read().split()[:KB_LIMIT])
 
-# Build vocabulary
-tokens = preprocess_text(text)
-word_counts = Counter(tokens)
-vocab = {word: idx for idx, (word, _) in enumerate(word_counts.items(), 1)}
-vocab['<PAD>'] = 0
-vocab['<UNK>'] = len(vocab)  # Add unknown token
-vocab_inv = {idx: word for word, idx in vocab.items()}
+try:
+    vocab, model = load_model()
+    vocab_inv = {idx: word for word, idx in vocab.items()}
 
-# Create input sequences and targets
-sequences, targets = create_sequences(text, vocab, SEQUENCE_LENGTH)
+except:
+    # Build vocabulary
+    tokens = preprocess_text(text)
+    word_counts = Counter(tokens)
+    vocab = {word: idx for idx, (word, _) in enumerate(word_counts.items(), 1)}
+    vocab['<PAD>'] = 0
+    vocab['<UNK>'] = len(vocab)  # Add unknown token
+    vocab_inv = {idx: word for word, idx in vocab.items()}
 
-# Initialize and train the model
-model = MarkovModel(len(vocab), EMBEDDING_DIM, HIDDEN_DIM)
-train_model(model, sequences, targets, len(vocab), EPOCHS, LEARNING_RATE)
+    # Create input sequences and targets
+    sequences, targets = create_sequences(text, vocab, SEQUENCE_LENGTH)
 
-# Save the model
-save_model(vocab, model)
+    # Initialize and train the model
+    model = MarkovModel(len(vocab), EMBEDDING_DIM, HIDDEN_DIM)
+    train_model(model, sequences, targets, len(vocab), EPOCHS, LEARNING_RATE)
+
+    # Save the model
+
+    save_model(vocab, model)
 
 # Interactive Text Generation (Markovian)
 while True:
