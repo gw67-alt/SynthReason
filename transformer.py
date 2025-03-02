@@ -9,7 +9,7 @@ import os
 from tqdm import tqdm
 
 # Hyperparameters
-KB_LIMIT = 200000
+KB_LIMIT = 10000 # -1 for unlimited
 SEQUENCE_LENGTH = 1
 NUM_GENERATIONS = 10
 POPULATION_SIZE = 3
@@ -46,7 +46,7 @@ class CyberneticsEANT(nn.Module):
 def preprocess_text(text, vocab):
     text = re.sub(r'[^\w\s]', '', text.lower())
     tokens = text.split()
-    return [vocab.get(word, vocab['<UNK>']) for word in tokens]
+    return [vocab[word] for word in tokens if word in vocab]
 
 def create_sequences(text_data, vocab, sequence_length):
     data = preprocess_text(text_data, vocab)
@@ -119,11 +119,11 @@ def evolve_population(population, train_data, num_generations=NUM_GENERATIONS):
 
         fitness_scores.sort(key=lambda x: x[1])
 
-        if len(fitness_scores) < 2:
+        if len(fitness_scores) < 4:
             print(f"Warning: Only one model left. Stopping evolution.")
             return fitness_scores[0][0]
 
-        top_models = [m for m, _ in fitness_scores[:max(2, len(fitness_scores) // 2)]]
+        top_models = [m for _, m in fitness_scores[:max(2, len(fitness_scores) // 2)]]
 
         new_population = []
         for model in top_models:
@@ -138,7 +138,7 @@ def evolve_population(population, train_data, num_generations=NUM_GENERATIONS):
 
 def generate_text(model, prompt, vocab, transition_dict, seq_length=3, max_length=250):
     vocab_inv = {idx: word for word, idx in vocab.items()}
-    input_indices = [vocab.get(word, vocab['<UNK>']) for word in prompt.lower().split()]
+    input_indices = [vocab[word] for word in prompt.lower().split() if word in vocab]
 
     while len(input_indices) < seq_length:
         input_indices = [vocab['<PAD>']] + input_indices
@@ -156,9 +156,9 @@ def generate_text(model, prompt, vocab, transition_dict, seq_length=3, max_lengt
 
             next_word_idx = np.random.choice(words, p=probs)
         else:
-            next_word_idx = vocab['<UNK>']
+            break
 
-        next_word = vocab_inv.get(next_word_idx, '<UNK>')
+        next_word = vocab_inv[next_word_idx]
         generated_text += ' ' + next_word
         input_indices.append(next_word_idx)
 
@@ -176,12 +176,11 @@ with open("test.txt", "r", encoding="utf-8") as f:
     text = ' '.join(f.read().split()[:KB_LIMIT])
 
 # Build vocabulary
-text_processed = re.sub(r'\d', '', text.lower())
+text_processed = text
 tokens = text_processed.split()
 word_counts = Counter(tokens)
 vocab = {word: idx for idx, (word, _) in enumerate(word_counts.items(), 1)}
 vocab['<PAD>'] = 0
-vocab['<UNK>'] = len(vocab)
 # Create input sequences and transition matrix
 input_sequences, target_sequences, transition_dict = create_sequences(text_processed, vocab, SEQUENCE_LENGTH)
 population = [CyberneticsEANT(len(vocab)) for _ in range(POPULATION_SIZE)]
