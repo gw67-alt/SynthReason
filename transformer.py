@@ -9,8 +9,8 @@ import os
 from tqdm import tqdm
 
 # Hyperparameters
-KB_LIMIT = 10000 # -1 for unlimited
-SEQUENCE_LENGTH = 1
+KB_LIMIT = -1 # -1 for unlimited
+SEQUENCE_LENGTH = 2
 
 # Preprocess the text data
 def preprocess_text(text, vocab):
@@ -57,11 +57,15 @@ def generate_text(prompt, vocab, transition_dict, seq_length=3, max_length=250):
             probs /= probs.sum()
 
             next_word_idx = np.random.choice(words, p=probs)
-        next_word = vocab_inv[next_word_idx]
+            next_word = vocab_inv[next_word_idx]
+        else:
+            break
+
         generated_text += ' ' + next_word
         input_indices.append(next_word_idx)
 
     return generated_text
+
 
 # Load text data
 with open("test.txt", "r", encoding="utf-8") as f:
