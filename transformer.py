@@ -46,7 +46,7 @@ def generate_text(prompt, vocab, transition_dict, seq_length=3, max_length=250):
         input_indices = [vocab['<PAD>']] + input_indices
 
     generated_text = prompt
-    next_word_idx
+
     for _ in range(max_length):
         input_tuple = tuple(input_indices[-seq_length:])
 
