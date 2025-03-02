@@ -60,6 +60,7 @@ def generate_text(prompt, vocab, transition_dict, seq_length=3, max_length=250):
 
         generated_text += ' ' + next_word
         input_indices.append(next_word_idx)
+        input_tuple = tuple(input_indices[-seq_length:])
 
     return generated_text
 
