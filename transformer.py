@@ -7,13 +7,14 @@ import os
 import json
 
 # Hyperparameters
-KB_LIMIT = 1999  # -1 for unlimited
+KB_LIMIT = 1999  # Limit the number of tokens to be used from the text (-1 for unlimited)
 SEQUENCE_LENGTH = 2
 TEMPERATURE = 1.0
 EMBEDDING_DIM = 50
 HIDDEN_DIM = 128
 EPOCHS = 10
 LEARNING_RATE = 0.001
+LAPLACIAN_ALPHA = 0.01  # Regularization strength for the Laplacian operator
 
 # Preprocess the text data
 def preprocess_text(text):
@@ -50,8 +51,15 @@ class MarkovModel(nn.Module):
         output = self.fc(lstm_out)
         return output
 
+# Laplacian Regularization
+def laplacian_regularization(embeddings, alpha=0.01):
+    laplacian_loss = 0
+    for i in range(embeddings.size(0) - 1):
+        laplacian_loss += torch.norm(embeddings[i] - embeddings[i + 1], p=2)
+    return alpha * laplacian_loss
+
 # Train the model
-def train_model(model, sequences, targets, vocab_size, epochs, learning_rate):
+def train_model(model, sequences, targets, epochs, learning_rate, laplacian_alpha):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -66,6 +74,12 @@ def train_model(model, sequences, targets, vocab_size, epochs, learning_rate):
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, labels)
+
+            # Laplacian regularization
+            embeddings = model.embedding(inputs).squeeze(0)
+            laplacian_loss = laplacian_regularization(embeddings, laplacian_alpha)
+            loss += laplacian_loss
+
             loss.backward()
             optimizer.step()
 
@@ -114,7 +128,6 @@ def load_model(vocab_path="vocab.json", model_path="model.pth", embedding_dim=50
     model = MarkovModel(vocab_size, embedding_dim, hidden_dim)
     model.load_state_dict(torch.load(model_path))
     return vocab, model
-
 # Load text data
 with open("test.txt", "r", encoding="utf-8") as f:
     text = ' '.join(f.read().split()[:KB_LIMIT])
