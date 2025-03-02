@@ -12,7 +12,7 @@ from tqdm import tqdm
 KB_LIMIT = 10000 # -1 for unlimited
 SEQUENCE_LENGTH = 1
 NUM_GENERATIONS = 10
-POPULATION_SIZE = 3
+POPULATION_SIZE = 5
 MUTATION_RATE = 10.01
 BATCH_SIZE = 1024
 LEARNING_RATE = 0.001
@@ -102,39 +102,13 @@ def train_model(model, train_data, num_epochs=NUM_EPOCHS):
 
 def evolve_population(population, train_data, num_generations=NUM_GENERATIONS):
     """Evolves the population using EANT (mutation and survival)."""
-    for generation in tqdm(range(num_generations), desc="Generations"):
-        fitness_scores = []
-
-        # Train each model and store its loss
-        for i, model in enumerate(population):
-            try:
-                loss = train_model(model, train_data)
-                fitness_scores.append((model, loss))
-            except Exception as e:
-                print(f"Error training model {i}: {e}")
-
-        if not fitness_scores:
-            print(f"Generation {generation+1}: No valid models! Using fallback.")
-            return population[0]
-
+    fitness_scores = []
+    for i, model in enumerate(population):
+        loss = train_model(model, train_data)
+        fitness_scores.append((model, loss))
         fitness_scores.sort(key=lambda x: x[1])
-
         if len(fitness_scores) < 4:
-            print(f"Warning: Only one model left. Stopping evolution.")
             return fitness_scores[0][0]
-
-        top_models = [m for _, m in fitness_scores[:max(2, len(fitness_scores) // 2)]]
-
-        new_population = []
-        for model in top_models:
-            new_model = CyberneticsEANT(len(vocab), model.embedding.embedding_dim, model.lstm.hidden_size)
-            new_model.load_state_dict(model.state_dict())
-            new_model.mutate()
-            new_population.append(new_model)
-
-        population = new_population if new_population else top_models
-
-    return population[0]
 
 def generate_text(model, prompt, vocab, transition_dict, seq_length=3, max_length=250):
     vocab_inv = {idx: word for word, idx in vocab.items()}
