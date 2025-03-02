@@ -7,17 +7,17 @@ import re
 import random
 
 # Hyperparameters
-KB_LIMIT = 1999
+KB_LIMIT = 20000
 SEQUENCE_LENGTH = 1
 NUM_GENERATIONS = 10
-POPULATION_SIZE = 10
-MUTATION_RATE = 0.1
+POPULATION_SIZE = 3
+MUTATION_RATE = 10.01
 BATCH_SIZE = 1024  
 LEARNING_RATE = 0.001
 NUM_EPOCHS = 5
-EMBEDDING_DIM = 128
-HIDDEN_DIM = 256
-NUM_LAYERS = 1
+EMBEDDING_DIM = 16
+HIDDEN_DIM = 32
+NUM_LAYERS = 3
 
 # LSTM Model with EANT-based mutation
 class CyberneticsEANT(nn.Module):
@@ -175,7 +175,7 @@ with open("test.txt", "r", encoding="utf-8") as f:
     text = ' '.join(f.read().split()[:KB_LIMIT])
 
 # Build vocabulary
-text_processed = re.sub(r'[^\w\s]', '', text.lower())
+text_processed = re.sub(r'\d', '', text.lower())
 tokens = text_processed.split()
 word_counts = Counter(tokens)
 vocab = {word: idx for idx, (word, _) in enumerate(word_counts.items(), 1)}
