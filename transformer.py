@@ -5,6 +5,8 @@ from collections import Counter
 import numpy as np
 import re
 import random
+import os
+from tqdm import tqdm
 
 # Hyperparameters
 KB_LIMIT = 20000
@@ -12,7 +14,7 @@ SEQUENCE_LENGTH = 1
 NUM_GENERATIONS = 10
 POPULATION_SIZE = 3
 MUTATION_RATE = 10.01
-BATCH_SIZE = 1024  
+BATCH_SIZE = 1024
 LEARNING_RATE = 0.001
 NUM_EPOCHS = 5
 EMBEDDING_DIM = 16
@@ -70,7 +72,7 @@ def prepare_batch(input_sequences, target_sequences, batch_size):
     num_batches = len(input_sequences) // batch_size
     for i in range(num_batches):
         start_idx = i * batch_size
-        end_idx = (i + 1) * batch_size  # Corrected batch range
+        end_idx = (i + 1) * batch_size
         input_batch = torch.stack(input_sequences[start_idx:end_idx])
         target_batch = torch.stack(target_sequences[start_idx:end_idx])
         yield input_batch, target_batch
@@ -85,7 +87,8 @@ def train_model(model, train_data, num_epochs=NUM_EPOCHS):
 
     for epoch in range(num_epochs):
         epoch_loss = 0
-        for input_batch, target_batch in prepare_batch(input_sequences, target_sequences, BATCH_SIZE):
+        batches = list(prepare_batch(input_sequences, target_sequences, BATCH_SIZE))
+        for input_batch, target_batch in batches:
             optimizer.zero_grad()
             output, _ = model(input_batch)
             output = output.view(-1, output.size(-1))
@@ -95,11 +98,11 @@ def train_model(model, train_data, num_epochs=NUM_EPOCHS):
             optimizer.step()
             epoch_loss += loss.item()
         total_loss += epoch_loss
-    return total_loss / num_epochs  # Average loss
+    return total_loss / num_epochs
 
 def evolve_population(population, train_data, num_generations=NUM_GENERATIONS):
     """Evolves the population using EANT (mutation and survival)."""
-    for generation in range(num_generations):
+    for generation in tqdm(range(num_generations), desc="Generations"):
         fitness_scores = []
 
         # Train each model and store its loss
@@ -110,32 +113,26 @@ def evolve_population(population, train_data, num_generations=NUM_GENERATIONS):
             except Exception as e:
                 print(f"Error training model {i}: {e}")
 
-        if not fitness_scores:  # Ensure at least one valid model exists
+        if not fitness_scores:
             print(f"Generation {generation+1}: No valid models! Using fallback.")
-            return population[0]  # Return the first model as a fallback to avoid crash
+            return population[0]
 
-        # Sort by loss (lower is better)
         fitness_scores.sort(key=lambda x: x[1])
 
-        print(f"Generation {generation+1}/{NUM_GENERATIONS}")
-
-        # Ensure we have at least two models to continue
         if len(fitness_scores) < 2:
             print(f"Warning: Only one model left. Stopping evolution.")
-            return fitness_scores[0][0]  # Return the best model we have
+            return fitness_scores[0][0]
 
-        # Select top-performing models
         top_models = [m for m, _ in fitness_scores[:max(2, len(fitness_scores) // 2)]]
 
-        # Create the next generation through mutation
         new_population = []
         for model in top_models:
             new_model = CyberneticsEANT(len(vocab), model.embedding.embedding_dim, model.lstm.hidden_size)
             new_model.load_state_dict(model.state_dict())
-            new_model.mutate()  # Apply mutation
+            new_model.mutate()
             new_population.append(new_model)
 
-        population = new_population if new_population else top_models  # Ensure population isn't empty
+        population = new_population if new_population else top_models
 
     return population[0]
 
@@ -143,32 +140,36 @@ def generate_text(model, prompt, vocab, transition_dict, seq_length=3, max_lengt
     vocab_inv = {idx: word for word, idx in vocab.items()}
     input_indices = [vocab.get(word, vocab['<UNK>']) for word in prompt.lower().split()]
 
-    # Ensure prompt has enough words
     while len(input_indices) < seq_length:
         input_indices = [vocab['<PAD>']] + input_indices
 
     generated_text = prompt
 
     for _ in range(max_length):
-        input_tuple = tuple(input_indices[-seq_length:])  # Last `n` words
+        input_tuple = tuple(input_indices[-seq_length:])
 
-        # Check if input exists in transition dictionary
         if input_tuple in transition_dict:
-            # Get probabilities from Counter and normalize
             counts = transition_dict[input_tuple]
             words = list(counts.keys())
             probs = np.array(list(counts.values()), dtype=float)
-            probs /= probs.sum()  # Normalize probabilities
+            probs /= probs.sum()
 
             next_word_idx = np.random.choice(words, p=probs)
         else:
-            next_word_idx = vocab['<UNK>']  # Fallback to unknown token
+            next_word_idx = vocab['<UNK>']
 
         next_word = vocab_inv.get(next_word_idx, '<UNK>')
         generated_text += ' ' + next_word
         input_indices.append(next_word_idx)
 
     return generated_text
+
+def save_model(model, filepath):
+    torch.save(model.state_dict(), filepath)
+
+def load_model(model, filepath):
+    model.load_state_dict(torch.load(filepath))
+    return model
 
 # Load text data
 with open("test.txt", "r", encoding="utf-8") as f:
@@ -185,9 +186,21 @@ vocab['<UNK>'] = len(vocab)
 input_sequences, target_sequences, transition_dict = create_sequences(text_processed, vocab, SEQUENCE_LENGTH)
 population = [CyberneticsEANT(len(vocab)) for _ in range(POPULATION_SIZE)]
 
-print("Starting evolution...")
-best_model = evolve_population(population, (input_sequences, target_sequences, vocab))
-print("Evolution complete!")
+model_filepath = "best_model.pth"
+
+# Check if a saved model exists
+if os.path.exists(model_filepath):
+    print("Loading saved model...")
+    best_model = CyberneticsEANT(len(vocab))
+    best_model = load_model(best_model, model_filepath)
+    print("Model loaded.")
+else:
+    print("Starting evolution...")
+    best_model = evolve_population(population, (input_sequences, target_sequences, vocab))
+    print("Evolution complete!")
+    print("Saving best model...")
+    save_model(best_model, model_filepath)
+    print("Model saved.")
 
 # Interactive Text Generation (Markovian)
 while True:
