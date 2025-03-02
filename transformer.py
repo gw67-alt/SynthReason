@@ -7,7 +7,7 @@ import os
 import json
 
 # Hyperparameters
-KB_LIMIT = 1999  # Limit the number of tokens to be used from the text (-1 for unlimited)
+KB_LIMIT = 2999  # Limit the number of tokens to be used from the text (-1 for unlimited)
 SEQUENCE_LENGTH = 2
 TEMPERATURE = 1.0
 EMBEDDING_DIM = 50
@@ -59,7 +59,7 @@ def laplacian_regularization(embeddings, alpha=0.01):
     return alpha * laplacian_loss
 
 # Train the model
-def train_model(model, sequences, targets, epochs, learning_rate, laplacian_alpha):
+def train_model(model, sequences, targets, vocab, epochs, learning_rate, laplacian_alpha):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -128,6 +128,7 @@ def load_model(vocab_path="vocab.json", model_path="model.pth", embedding_dim=50
     model = MarkovModel(vocab_size, embedding_dim, hidden_dim)
     model.load_state_dict(torch.load(model_path))
     return vocab, model
+
 # Load text data
 with open("test.txt", "r", encoding="utf-8") as f:
     text = ' '.join(f.read().split()[:KB_LIMIT])
@@ -150,7 +151,7 @@ except:
 
     # Initialize and train the model
     model = MarkovModel(len(vocab), EMBEDDING_DIM, HIDDEN_DIM)
-    train_model(model, sequences, targets, len(vocab), EPOCHS, LEARNING_RATE)
+    train_model(model, sequences, targets, vocab, EPOCHS, LEARNING_RATE, LAPLACIAN_ALPHA)
 
     # Save the model
 
