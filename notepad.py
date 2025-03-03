@@ -457,23 +457,9 @@ def main():
     gap_filler = GapFillerAI()
     
     try:
-        # Try to load a previously saved model first
-        if not gap_filler.load_trained_data("trained_gap_filler.json"):
-            print("No saved model found or error loading it.")
-            print("Please provide a training file (qa_facts.txt)...")
-            try:
-                with open("qa_facts.txt", "r", encoding="utf-8") as f:
-                    training_data = f.read()
-                gap_filler.train(training_data)
-                
-                # Save the model for future use
-                gap_filler.save_trained_data("trained_gap_filler.json")
-            except Exception as e:
-                print(f"Error loading training file: {e}")
-                print("Using minimal default training data...")
-                # Minimal training data as fallback
-                training_data = "This is a sentence.\nAnother example.\nHow are you?\nI am fine."
-                gap_filler.train(training_data)
+        with open("qa_facts.txt", "r", encoding="utf-8") as f:
+            training_data = f.read()
+            gap_filler.train(training_data)
     except Exception as e:
         print(f"Initialization error: {e}")
         print("Using minimal default training data...")
