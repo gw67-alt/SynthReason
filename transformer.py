@@ -37,7 +37,7 @@ def preprocess_text(text, vocab):
     return [vocab[word] for word in tokens if word in vocab]
 
 # Create sequences and normalize transition probabilities
-def create_sequences(text_data, vocab, sequence_length, char_ratios):
+def create_sequences(text_data, vocab, sequence_length):
     data = preprocess_text(text_data, vocab)
     transition_dict = {}
     for i in range(len(data) - sequence_length):
@@ -45,17 +45,17 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios):
         target_word = data[i + sequence_length]
         if input_seq not in transition_dict:
             transition_dict[input_seq] = Counter()
-        transition_dict[input_seq][target_word] +=  char_ratios.get(data[i], 1)
+        transition_dict[input_seq][target_word] +=  1
     
     # Normalize transition probabilities and combine with character ratios
     for key, counter in transition_dict.items():
         total = sum(counter.values())
-        transition_dict[key] = {k: (v / total) * char_ratios.get(key, 1) for k, v in counter.items()}
+        transition_dict[key] = {k: (v / total) for k, v in counter.items()}
     
     return transition_dict
 
 # Generate text using Markov chain with adjustments
-def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max_length=250):
+def generate_text(prompt, vocab, transition_dict, seq_length=3, max_length=250):
     vocab_inv = {idx: word for word, idx in set(vocab.items())}
     input_indices = [vocab[word] for word in prompt.lower().split() if word in vocab]
     while len(input_indices) < seq_length:
@@ -70,7 +70,8 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max
             words = list(probs_dict.keys())
             probs = np.array(list(probs_dict.values()), dtype=float)
             next_word = "a"
-            
+            char_ratios = calculate_character_ratios(generated_text)
+
             for i in range(1, min(WINDOW_SIZE, len(recent_transitions)) + 1):
                 past_transition = recent_transitions[-i]
                 decay = DECAY_FACTOR ** char_ratios[next_word[0]]
@@ -99,7 +100,6 @@ with open("kb.txt", "r", encoding="utf-8") as f:
 text = re.sub(r'\d+', '', text)
 text = filter_single_char_words(text)
 texts = text.split()
-char_ratios = calculate_character_ratios(texts)
 
 # Build vocabulary
 tokens = text.split()
@@ -108,10 +108,10 @@ vocab = {word: idx for idx, (word, _) in enumerate(word_counts.items(), 1)}
 vocab['<PAD>'] = 0
 
 # Create input sequences and transition matrix with normalized probabilities
-transition_dict = create_sequences(text, vocab, SEQUENCE_LENGTH, char_ratios)
+transition_dict = create_sequences(text, vocab, SEQUENCE_LENGTH)
 
 # Interactive Text Generation (Markovian)
 while True:
     prompt = input("USER: ")
-    generated_text = generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=SEQUENCE_LENGTH, max_length=250)
+    generated_text = generate_text(prompt, vocab, transition_dict, seq_length=SEQUENCE_LENGTH, max_length=250)
     print("Generated text:\n", generated_text)
