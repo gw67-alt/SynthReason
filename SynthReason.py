@@ -55,7 +55,7 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios):
 
 # Generate text using Markov chain with adjustments
 def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max_length=250):
-    vocab_inv = {idx: word for word, idx in vocab.items()}
+    vocab_inv = {idx: word for word, idx in set(vocab.items())}
     input_indices = [vocab[word] for word in prompt.lower().split() if word in vocab]
     while len(input_indices) < seq_length:
         input_indices = [vocab['<PAD>']] + input_indices
@@ -93,7 +93,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max
     return generated_text
 
 # Load text data and calculate character ratios
-with open("test.txt", "r", encoding="utf-8") as f:
+with open("kb.txt", "r", encoding="utf-8") as f:
     text = ' '.join(f.read().split()[:KB_LIMIT])
 text = re.sub(r'\d+', '', text)
 
