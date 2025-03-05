@@ -1,3 +1,4 @@
+
 import string
 import torch
 from collections import Counter
@@ -31,7 +32,7 @@ def calculate_character_ratios(data):
                     char_count[first_letter] += 1
                     total_items = len(data)
 
-                char_ratios.update({item[-1]: char_count[char] / total_items for char in char_count.keys()})
+                char_ratios.update({char: char_count[char] / total_items for char in char_count.keys()})
     return char_ratios
 
 # Preprocess the text data
@@ -98,7 +99,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max
     return generated_text
 
 # Load text data and calculate character ratios
-with open("test.txt", "r", encoding="utf-8") as f:
+with open("kb.txt", "r", encoding="utf-8") as f:
     text = ' '.join(f.read().split()[:KB_LIMIT])
 text = re.sub(r'\d+', '', text)
 text = filter_single_char_words(text)
