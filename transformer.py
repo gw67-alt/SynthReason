@@ -27,11 +27,6 @@ def calculate_character_ratios(data):
             if first_letter in char_count:
                 char_count[first_letter] += 1
                 total_items = len(data)
-                first_letter = item[-1].lower()
-                if first_letter in char_count:
-                    char_count[first_letter] += 1
-                    total_items = len(data)
-
                 char_ratios.update({char: char_count[char] / total_items for char in char_count.keys()})
     return char_ratios
 
