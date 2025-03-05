@@ -44,7 +44,7 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios):
         target_word = data[i + sequence_length]
         if input_seq not in transition_dict:
             transition_dict[input_seq] = Counter()
-        transition_dict[input_seq][target_word] += 1
+        transition_dict[input_seq][target_word] +=  char_ratios.get(data[i], 1)
     
     # Normalize transition probabilities and combine with character ratios
     for key, counter in transition_dict.items():
