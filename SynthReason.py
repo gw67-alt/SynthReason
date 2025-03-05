@@ -11,11 +11,6 @@ SEQUENCE_LENGTH = 2
 DECAY_FACTOR = 1.9  # Decay factor for stable diffusion
 WINDOW_SIZE = 5000  # Size of the window to consider for adjustments
 
-# Function to sort data alphabetically and by length
-def sort_alphabetically_and_by_length(data):
-    data.sort(key=lambda x: (len(x),x.lower()))
-    return data
-
 # Function to calculate character ratios
 def calculate_character_ratios(data):
     char_count = {letter: 0 for letter in string.ascii_lowercase}
@@ -98,8 +93,7 @@ with open("kb.txt", "r", encoding="utf-8") as f:
 text = re.sub(r'\d+', '', text)
 
 texts = text.split()
-sorted_texts = sort_alphabetically_and_by_length(texts)
-char_ratios = calculate_character_ratios(sorted_texts)
+char_ratios = calculate_character_ratios(texts)
 
 # Build vocabulary
 tokens = text.split()
