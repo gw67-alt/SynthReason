@@ -88,7 +88,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max
     return generated_text
 
 # Load text data and calculate character ratios
-with open("kb.txt", "r", encoding="utf-8") as f:
+with open("test.txt", "r", encoding="utf-8") as f:
     text = ' '.join(f.read().split()[:KB_LIMIT])
 text = re.sub(r'\d+', '', text)
 
