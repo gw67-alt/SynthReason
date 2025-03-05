@@ -6,9 +6,9 @@ import re
 import os
 
 # Parameters
-KB_LIMIT = 99999
-SEQUENCE_LENGTH = 1
-DECAY_FACTOR = 0.9  # Decay factor for stable diffusion
+KB_LIMIT = -1
+SEQUENCE_LENGTH = 2
+DECAY_FACTOR = 1.9  # Decay factor for stable diffusion
 WINDOW_SIZE = 5000  # Size of the window to consider for adjustments
 
 # Function to sort data alphabetically and by length
