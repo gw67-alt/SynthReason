@@ -13,7 +13,7 @@ WINDOW_SIZE = 5000  # Size of the window to consider for adjustments
 
 # Function to sort data alphabetically and by length
 def sort_alphabetically_and_by_length(data):
-    data.sort(key=lambda x: (x.lower(), len(x)))
+    data.sort(key=lambda x: (len(x),x.lower()))
     return data
 
 # Function to calculate character ratios
