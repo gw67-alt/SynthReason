@@ -47,8 +47,7 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios):
         transition_dict[key] = {k: (v / total) * char_ratios.get(k, 1) for k, v in counter.items()}
     
     return transition_dict
-
-# Generate text using Markov chain with adjustments
+# Generate text using Markov chain with adjustments and character ratio masking
 def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max_length=250):
     vocab_inv = {idx: word for word, idx in set(vocab.items())}
     input_indices = [vocab[word] for word in prompt.lower().split() if word in vocab]
@@ -65,26 +64,47 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max
             probs = np.array(list(probs_dict.values()), dtype=float)
             next_word = "a"
             
+            # Apply character ratio masking to probabilities
+            for i, word_idx in enumerate(words):
+                if word_idx in vocab_inv:
+                    word = vocab_inv[word_idx]
+                    if word and len(word) > 0:
+                        first_char = word[0].lower()
+                        if first_char in char_ratios:
+                            # Apply char ratio as a mask/modifier to the probability
+                            probs[i] *= (1.0 + char_ratios[first_char])
+            
+            # Continue with existing logic for recent transitions
             for i in range(1, min(WINDOW_SIZE, len(recent_transitions)) + 1):
                 past_transition = recent_transitions[-i]
-                decay = DECAY_FACTOR ** char_ratios[next_word[0]]
+                decay = DECAY_FACTOR ** char_ratios.get(next_word[0], 1)
                 if past_transition in words:
                     try:
-                        probs[words.index(past_transition)] *= char_ratios[next_word[0]]
+                        probs[words.index(past_transition)] *= char_ratios.get(next_word[0], 1)
                     except:
                         False
+            
+            # Ensure probabilities are valid
             probs = np.maximum(probs, 0)
-            probs /= probs.sum()
-            next_word_idx = np.random.choice(words, p=probs)
-            next_word = vocab_inv[next_word_idx]
+            if probs.sum() > 0:  # Avoid division by zero
+                probs /= probs.sum()
+                next_word_idx = np.random.choice(words, p=probs)
+                next_word = vocab_inv[next_word_idx]
+            else:
+                # If all probabilities became zero, choose randomly
+                next_word_idx = np.random.choice(words)
+                next_word = vocab_inv[next_word_idx]
         else:
             break
+            
         generated_text += ' ' + next_word
         input_indices.append(next_word_idx)
         input_tuple = tuple(input_indices[-seq_length:])
         recent_transitions.append(next_word_idx)
         if len(recent_transitions) > WINDOW_SIZE:
-            recent_transitions *= char_ratios[next_word[0]]
+            # Corrected: this should likely remove old transitions, not multiply by ratio
+            recent_transitions.pop(0)
+    
     return generated_text
 
 # Load text data and calculate character ratios
