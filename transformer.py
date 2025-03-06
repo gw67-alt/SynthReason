@@ -73,8 +73,7 @@ def generate_text(prompt, vocab, transition_dict, seq_length=3, max_length=250):
             char_ratios = calculate_character_ratios(generated_text)
 
             for i in range(1, min(WINDOW_SIZE, len(recent_transitions)) + 1):
-                past_transition = recent_transitions[-i]
-                decay = DECAY_FACTOR ** char_ratios[next_word[0]]
+                past_transition = input_tuple[-1]
                 if past_transition in words:
                     try:
                         probs[words.index(past_transition)] *= char_ratios[next_word[0]]
@@ -95,7 +94,7 @@ def generate_text(prompt, vocab, transition_dict, seq_length=3, max_length=250):
     return generated_text
 
 # Load text data and calculate character ratios
-with open("kb.txt", "r", encoding="utf-8") as f:
+with open("test.txt", "r", encoding="utf-8") as f:
     text = ' '.join(f.read().split()[:KB_LIMIT])
 text = re.sub(r'\d+', '', text)
 text = filter_single_char_words(text)
