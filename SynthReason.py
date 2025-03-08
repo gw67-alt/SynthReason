@@ -11,6 +11,50 @@ SEQUENCE_LENGTH = 2
 DECAY_FACTOR = 1.9  # Decay factor for stable diffusion
 WINDOW_SIZE = 5000  # Size of the window to consider for adjustments
 
+# Set Operations Integration
+class SetTheoryModifier:
+    def __init__(self):
+        # Empty set implementation - used to represent ∅
+        self.empty_set = set()
+        
+        # Initialize the set operation z=∅∩∉
+        # Since this is a conceptual operation, we'll represent it as a modifier
+        # to the Markov chain's behavior rather than a literal set operation
+        self.z_empty_not_in = {
+            'active': True,                # Whether the operation affects generation
+            'influence_factor': 0.75,      # How strongly it affects probabilities
+            'empty_boost': 1.5,           # Factor to boost words representing emptiness
+            'contradiction_penalty': 0.5   # Factor to reduce words representing presence
+        }
+    
+    def apply_set_theory_modifiers(self, probs, words, vocab_inv):
+        """Apply set theory concepts directly to the probability distribution"""
+        modified_probs = probs.copy()
+        
+        # Apply the z=∅∩∉ operation effects
+        if self.z_empty_not_in['active']:
+            for i, word_idx in enumerate(words):
+                if word_idx in vocab_inv:
+                    word = vocab_inv[word_idx].lower()
+                    
+                    # Boost words that represent emptiness or absence
+                    if any(empty_word in word for empty_word in ['empty', 'nothing', 'void', 'none', 'zero', 'absent']):
+                        modified_probs[i] *= self.z_empty_not_in['empty_boost']
+                    
+                    # Penalize words that strongly represent presence or inclusion
+                    if any(presence_word in word for presence_word in ['full', 'contain', 'include', 'present', 'exist']):
+                        modified_probs[i] *= self.z_empty_not_in['contradiction_penalty']
+        
+        # Ensure probabilities are valid
+        modified_probs = np.maximum(modified_probs, 0)
+        if modified_probs.sum() > 0:
+            modified_probs /= modified_probs.sum()
+        else:
+            # If all probabilities became zero, revert to original
+            modified_probs = probs.copy()
+            
+        return modified_probs
+
 # Function to calculate character ratios
 def calculate_character_ratios(data):
     char_count = {letter: 0 for letter in string.ascii_lowercase}
@@ -47,22 +91,26 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios):
         transition_dict[key] = {k: (v / total) * char_ratios.get(k, 1) for k, v in counter.items()}
     
     return transition_dict
-# Generate text using Markov chain with adjustments and character ratio masking
+
+# Generate text using Markov chain with set theory modifications
 def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max_length=250):
+    # Initialize the set theory modifier
+    set_modifier = SetTheoryModifier()
+    
     vocab_inv = {idx: word for word, idx in set(vocab.items())}
     input_indices = [vocab[word] for word in prompt.lower().split() if word in vocab]
     while len(input_indices) < seq_length:
         input_indices = [vocab['<PAD>']] + input_indices
+    
     generated_text = prompt
     recent_transitions = []
-
+    
     for _ in range(max_length):
         input_tuple = tuple(input_indices[-seq_length:])
         if input_tuple in transition_dict:
             probs_dict = transition_dict[input_tuple]
             words = list(probs_dict.keys())
             probs = np.array(list(probs_dict.values()), dtype=float)
-            next_word = "a"
             
             # Apply character ratio masking to probabilities
             for i, word_idx in enumerate(words):
@@ -74,7 +122,12 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max
                             # Apply char ratio as a mask/modifier to the probability
                             probs[i] *= (1.0 + char_ratios[first_char])
             
+            # Apply set theory modifiers to probabilities
+            # This is where z=∅∩∉ directly influences the generation
+            probs = set_modifier.apply_set_theory_modifiers(probs, words, vocab_inv)
+            
             # Continue with existing logic for recent transitions
+            next_word = "a"
             for i in range(1, min(WINDOW_SIZE, len(recent_transitions)) + 1):
                 past_transition = recent_transitions[-i]
                 decay = DECAY_FACTOR ** char_ratios.get(next_word[0], 1)
@@ -84,14 +137,13 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max
                     except:
                         False
             
-            # Ensure probabilities are valid
+            # Ensure probabilities are valid again after all modifications
             probs = np.maximum(probs, 0)
-            if probs.sum() > 0:  # Avoid division by zero
+            if probs.sum() > 0:
                 probs /= probs.sum()
                 next_word_idx = np.random.choice(words, p=probs)
                 next_word = vocab_inv[next_word_idx]
             else:
-                # If all probabilities became zero, choose randomly
                 next_word_idx = np.random.choice(words)
                 next_word = vocab_inv[next_word_idx]
         else:
@@ -102,30 +154,41 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max
         input_tuple = tuple(input_indices[-seq_length:])
         recent_transitions.append(next_word_idx)
         if len(recent_transitions) > WINDOW_SIZE:
-            # Corrected: this should likely remove old transitions, not multiply by ratio
             recent_transitions.pop(0)
     
     return generated_text
 
-# Load text data and calculate character ratios
-with open("test.txt", "r", encoding="utf-8") as f:
-    text = ' '.join(f.read().split()[:KB_LIMIT])
-text = re.sub(r'\d+', '', text)
+# Main function
+def main():
+    try:
+        # Load text data and calculate character ratios
+        with open("test.txt", "r", encoding="utf-8") as f:
+            text = ' '.join(f.read().split()[:KB_LIMIT])
+        text = re.sub(r'\d+', '', text)
 
-texts = text.split()
-char_ratios = calculate_character_ratios(texts)
+        texts = text.split()
+        char_ratios = calculate_character_ratios(texts)
 
-# Build vocabulary
-tokens = text.split()
-word_counts = Counter(tokens)
-vocab = {word: idx for idx, (word, _) in enumerate(word_counts.items(), 1)}
-vocab['<PAD>'] = 0
+        # Build vocabulary
+        tokens = text.split()
+        word_counts = Counter(tokens)
+        vocab = {word: idx for idx, (word, _) in enumerate(word_counts.items(), 1)}
+        vocab['<PAD>'] = 0
 
-# Create input sequences and transition matrix with normalized probabilities
-transition_dict = create_sequences(text, vocab, SEQUENCE_LENGTH, char_ratios)
+        # Create input sequences and transition matrix with normalized probabilities
+        transition_dict = create_sequences(text, vocab, SEQUENCE_LENGTH, char_ratios)
 
-# Interactive Text Generation (Markovian)
-while True:
-    prompt = input("USER: ")
-    generated_text = generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=SEQUENCE_LENGTH, max_length=250)
-    print("Generated text:\n", generated_text)
+        # Interactive Text Generation with embedded set theory operations
+        print("Text generator running with embedded set theory operations (z=∅∩∉).")
+        while True:
+            prompt = input("USER: ")
+            generated_text = generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=SEQUENCE_LENGTH, max_length=250)
+            print("Generated text:\n", generated_text)
+    
+    except FileNotFoundError:
+        print("Error: test.txt file not found. Please create this file with your training text data.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+if __name__ == "__main__":
+    main()
