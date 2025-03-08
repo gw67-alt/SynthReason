@@ -36,7 +36,7 @@ class SetTheoryModifier:
             for i, word_idx in enumerate(words):
                 if word_idx in vocab_inv:
                     word = vocab_inv[word_idx].lower()
-                    
+                    # 'not in' refers to non existence or 'in' refers to in existence
                     # Boost words that represent emptiness or absence
                     if any(empty_word not in word for empty_word in ['empty', 'nothing', 'void', 'none', 'zero', 'absent', 'null', 'blank', 'bare', 'hollow', 'devoid', 'vacant', 'indefinite', 'unoccupied', 'nonexistent', 'lack', 'unfilled', 'desolate', 'incomplete', 'deficient', 'insubstantial', 'forlorn', 'unused', 'undeveloped', 'unavailable', 'unfurnished', 'uninhabited', 'unmarked', 'inconspicuous', 'insignificant', 'abandoned', 'unnoticed', 'unseen', 'unimportant', 'unreal', 'dispersed', 'unassembled', 'untouched', 'bare-bones', 'scant', 'minimal', 'unproductive', 'emaciated', 'unplanted', 'washed-out', 'vacuous', 'sterile', 'unmanifested', 'unmade', 'unformed', 'stripped']):
                         modified_probs[i] *= self.z_empty_not_in['empty_boost']
