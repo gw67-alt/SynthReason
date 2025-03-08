@@ -22,8 +22,8 @@ class SetTheoryModifier:
         # to the Markov chain's behavior rather than a literal set operation
         self.z_empty_not_in = {
             'active': True,                # Whether the operation affects generation
-            'influence_factor': 0.75,      # How strongly it affects probabilities
-            'empty_boost': 1.5,           # Factor to boost words representing emptiness
+            'influence_factor': 0.15,      # How strongly it affects probabilities
+            'empty_boost': 1.7,           # Factor to boost words representing emptiness
             'contradiction_penalty': 0.5   # Factor to reduce words representing presence
         }
     
@@ -39,7 +39,7 @@ class SetTheoryModifier:
                     # 'not in' refers to non existence or 'in' refers to in existence
                     # Boost words that represent emptiness or absence
                     if any(empty_word not in word for empty_word in ['empty', 'nothing', 'void', 'none', 'zero', 'absent', 'null', 'blank', 'bare', 'hollow', 'devoid', 'vacant', 'indefinite', 'unoccupied', 'nonexistent', 'lack', 'unfilled', 'desolate', 'incomplete', 'deficient', 'insubstantial', 'forlorn', 'unused', 'undeveloped', 'unavailable', 'unfurnished', 'uninhabited', 'unmarked', 'inconspicuous', 'insignificant', 'abandoned', 'unnoticed', 'unseen', 'unimportant', 'unreal', 'dispersed', 'unassembled', 'untouched', 'bare-bones', 'scant', 'minimal', 'unproductive', 'emaciated', 'unplanted', 'washed-out', 'vacuous', 'sterile', 'unmanifested', 'unmade', 'unformed', 'stripped']):
-                        modified_probs[i] *= self.z_empty_not_in['empty_boost']
+                        modified_probs[i-1] *= self.z_empty_not_in['empty_boost']
                     
                     # Penalize words that strongly represent presence or inclusion
                     if any(presence_word not in word for presence_word in ['full', 'contain', 'include', 'present', 'exist', 'complete', 'occupied', 'engage', 'encompass', 'hold', 'embrace', 'consist', 'comprise', 'feature', 'embody', 'carry', 'comprehend', 'integrate', 'enclose', 'possess', 'enfold', 'retain', 'encompassing', 'incorporate', 'subsist', 'enjoy', 'have', 'carry out', 'realize', 'involve', 'establish', 'manifest', 'assume', 'sustain', 'maintain', 'bring about', 'actualize', 'function', 'attain', 'constitute', 'serve', 'achieve', 'provide', 'own', 'wield', 'presently', 'affirm', 'entail', 'contribute', 'produce', 'supply']):
@@ -162,15 +162,19 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max
 def main():
     try:
         # Load text data and calculate character ratios
-        with open("kb.txt", "r", encoding="utf-8") as f:
+        with open("test.txt", "r", encoding="utf-8") as f:
             text = ' '.join(f.read().split()[:KB_LIMIT])
         text = re.sub(r'\d+', '', text)
+        pattern = r'^[a-zA-Z]{1,2}$'
 
-        texts = text.split()
-        char_ratios = calculate_character_ratios(texts)
+        # List of exceptions (words we want to keep)
+        exceptions =  ['a', 'i', 'to', 'is', 'it', 'an', 'of', 'by', 'he', 'me', 'we', 'be', 'my', 'up', 'do', 'go', 'if', 'no', 'so', 'on', 'at', 'in', 'as', 'or', 'la', 'ah', 'uh', 'ye', 'ab', 'ad', 'ae', 'ba', 'bi', 'bo', 'da', 'ed', 'ef', 'eh', 'el', 'em', 'en', 'er', 'es', 'et', 'ex', 'fa', 'hi', 'ho', 'id', 'is', 'jo', 'ka', 'la', 'li', 'lo', 'ma', 'me', 'mi', 'mu', 'na', 'no', 'nu', 'od', 'oe', 'oi', 'om', 'op', 'os', 'ow', 'ox', 'oy', 'pa', 're', 'sh', 'si', 'ta', 'uh', 'um','un', 'up', 'us', 'ut', 'va', 'ye', 'yo']
+        # Filter out the short, potentially nonsensical terms, keeping 'a' and 'i'
+        filtered_words = [word for word in text.split() if not re.match(pattern, word) or word in exceptions]
+        char_ratios = calculate_character_ratios(filtered_words)
 
         # Build vocabulary
-        tokens = text.split()
+        tokens = filtered_words
         word_counts = Counter(tokens)
         vocab = {word: idx for idx, (word, _) in enumerate(word_counts.items(), 1)}
         vocab['<PAD>'] = 0
