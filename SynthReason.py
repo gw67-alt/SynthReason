@@ -38,11 +38,11 @@ class SetTheoryModifier:
                     word = vocab_inv[word_idx].lower()
                     
                     # Boost words that represent emptiness or absence
-                    if any(empty_word in word for empty_word in ['empty', 'nothing', 'void', 'none', 'zero', 'absent']):
+                    if any(empty_word not in word for empty_word in ['empty', 'nothing', 'void', 'none', 'zero', 'absent', 'null', 'blank', 'bare', 'hollow', 'devoid', 'vacant', 'indefinite', 'unoccupied', 'nonexistent', 'lack', 'unfilled', 'desolate', 'incomplete', 'deficient', 'insubstantial', 'forlorn', 'unused', 'undeveloped', 'unavailable', 'unfurnished', 'uninhabited', 'unmarked', 'inconspicuous', 'insignificant', 'abandoned', 'unnoticed', 'unseen', 'unimportant', 'unreal', 'dispersed', 'unassembled', 'untouched', 'bare-bones', 'scant', 'minimal', 'unproductive', 'emaciated', 'unplanted', 'washed-out', 'vacuous', 'sterile', 'unmanifested', 'unmade', 'unformed', 'stripped']):
                         modified_probs[i] *= self.z_empty_not_in['empty_boost']
                     
                     # Penalize words that strongly represent presence or inclusion
-                    if any(presence_word in word for presence_word in ['full', 'contain', 'include', 'present', 'exist']):
+                    if any(presence_word not in word for presence_word in ['full', 'contain', 'include', 'present', 'exist', 'complete', 'occupied', 'engage', 'encompass', 'hold', 'embrace', 'consist', 'comprise', 'feature', 'embody', 'carry', 'comprehend', 'integrate', 'enclose', 'possess', 'enfold', 'retain', 'encompassing', 'incorporate', 'subsist', 'enjoy', 'have', 'carry out', 'realize', 'involve', 'establish', 'manifest', 'assume', 'sustain', 'maintain', 'bring about', 'actualize', 'function', 'attain', 'constitute', 'serve', 'achieve', 'provide', 'own', 'wield', 'presently', 'affirm', 'entail', 'contribute', 'produce', 'supply']):
                         modified_probs[i] *= self.z_empty_not_in['contradiction_penalty']
         
         # Ensure probabilities are valid
@@ -162,7 +162,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max
 def main():
     try:
         # Load text data and calculate character ratios
-        with open("test.txt", "r", encoding="utf-8") as f:
+        with open("kb.txt", "r", encoding="utf-8") as f:
             text = ' '.join(f.read().split()[:KB_LIMIT])
         text = re.sub(r'\d+', '', text)
 
