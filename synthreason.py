@@ -4,8 +4,7 @@ from collections import Counter
 import numpy as np
 import re
 import os
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import pickle
 
 # Parameters
 KB_LIMIT = -1
@@ -28,6 +27,30 @@ class SetTheoryModifier:
                 'influence_factor': 0.15,
                 'empty_boost': 1.7,
                 'contradiction_penalty': 0.5
+            },
+            'union': {
+                'name': 'z=A∪B',
+                'description': 'Union operation',
+                'active': False,
+                'influence_factor': 0.2,
+                'diversity_boost': 1.5,
+                'repetition_penalty': 0.6
+            },
+            'intersection': {
+                'name': 'z=A∩B',
+                'description': 'Intersection operation',
+                'active': False,
+                'influence_factor': 0.25,
+                'commonality_boost': 1.8,
+                'divergence_penalty': 0.4
+            },
+            'complement': {
+                'name': 'z=Aᶜ',
+                'description': 'Complement operation',
+                'active': False,
+                'influence_factor': 0.3,
+                'inverse_boost': 1.6,
+                'similarity_penalty': 0.5
             }
         }
     
@@ -84,11 +107,46 @@ class SetTheoryModifier:
                     for i, word_idx in enumerate(words):
                         if word_idx in vocab_inv:
                             word = vocab_inv[word_idx].lower()
-                            if any(empty_word not in word for empty_word in description_words):
+                            if any(empty_word in word for empty_word in description_words):
                                 modified_probs[i] *= operation['empty_boost']
-                            if any(presence_word not in word for presence_word in action_words):
+                            if any(presence_word in word for presence_word in action_words):
                                 modified_probs[i] *= operation['contradiction_penalty']
                 
+                elif op_key == 'union':
+                    # Union operation: Boost diversity, penalize repetition
+                    recent_words = set()
+                    for i, word_idx in enumerate(words):
+                        if word_idx in vocab_inv:
+                            word = vocab_inv[word_idx].lower()
+                            if any(diverse_word in word for diverse_word in diverse_words):
+                                modified_probs[i] *= operation['diversity_boost']
+                            if word in recent_words:
+                                modified_probs[i] *= operation['repetition_penalty']
+                            recent_words.add(word)
+                
+                elif op_key == 'intersection':
+                    # Intersection operation: Boost commonality, penalize divergence
+                    for i, word_idx in enumerate(words):
+                        if word_idx in vocab_inv:
+                            word = vocab_inv[word_idx].lower()
+                            if any(common_word in word for common_word in common_words):
+                                modified_probs[i] *= operation['commonality_boost']
+                            if any(diverse_word in word for diverse_word in diverse_words):
+                                modified_probs[i] *= operation['divergence_penalty']
+                
+                elif op_key == 'complement':
+                    # Complement operation: Boost inverse concepts, penalize similarity
+                    # This requires knowledge of antonyms, but as a simple approximation:
+                    for i, word_idx in enumerate(words):
+                        if word_idx in vocab_inv:
+                            word = vocab_inv[word_idx].lower()
+                            # Simple approximation: boost words with negative prefixes
+                            if word.startswith(('un', 'non', 'in', 'dis', 'anti')):
+                                modified_probs[i] *= operation['inverse_boost']
+                            # Penalize words that are very common (as an approximation of similarity)
+                            if word in common_words:
+                                modified_probs[i] *= operation['similarity_penalty']
+        
         # Ensure probabilities are valid
         modified_probs = np.maximum(modified_probs, 0)
         if modified_probs.sum() > 0:
@@ -117,8 +175,12 @@ def preprocess_text(text, vocab):
     text = re.sub(r'[^\w\s]', '', text.lower())
     tokens = text.split()
     return [vocab[word] for word in tokens if word in vocab]
+import threading
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import numpy as np
 
-def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywords, num_threads=None, progress_callback=None):
+def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywords, num_threads=None):
     """
     Create sequences and normalize transition probabilities with topic categorization using multiple threads.
     
@@ -129,16 +191,10 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywo
         char_ratios: Dictionary with character weighting ratios
         topic_keywords: Dictionary of topics and their associated keywords
         num_threads: Number of threads to use (defaults to CPU count if None)
-        progress_callback: Optional callback function to report progress (0-100)
         
     Returns:
         tuple: (transition_dict, topic_transition_dict)
     """
-    import threading
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from collections import Counter
-    import tqdm
-    
     # Preprocess text data
     data = preprocess_text(text_data, vocab)
     
@@ -162,17 +218,10 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywo
     transition_dict = {}
     topic_transition_dict = {}
     
-    # Create progress bar
-    total_items = len(data) - sequence_length
-    pbar = tqdm.tqdm(total=total_items, desc="Processing sequences", disable=progress_callback is not None)
-    processed_items = 0
-    
     def process_chunk(start_idx, end_idx):
         """Process a chunk of the data and return local dictionaries"""
-        nonlocal processed_items
         local_transition_dict = {}
         local_topic_dict = {}
-        local_processed = 0
         
         for i in range(start_idx, end_idx):
             input_seq = tuple(data[i:i + sequence_length])
@@ -192,25 +241,6 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywo
             if input_seq not in local_topic_dict[topic]:
                 local_topic_dict[topic][input_seq] = Counter()
             local_topic_dict[topic][input_seq][target_word] += char_ratios.get(data[i], 1)
-            
-            local_processed += 1
-            
-            # Update progress every 1000 items to avoid lock contention
-            if local_processed % 1000 == 0:
-                with lock:
-                    processed_items += 1000
-                    pbar.update(1000)
-                    if progress_callback:
-                        progress_callback(int(processed_items * 100 / total_items))
-        
-        # Update remaining progress
-        with lock:
-            remaining = local_processed % 1000
-            if remaining > 0:
-                processed_items += remaining
-                pbar.update(remaining)
-                if progress_callback:
-                    progress_callback(int(processed_items * 100 / total_items))
         
         return local_transition_dict, local_topic_dict
     
@@ -238,93 +268,22 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywo
         futures = [executor.submit(process_chunk, start, end) for start, end in chunks]
         
         for future in as_completed(futures):
-            try:
-                local_transition_dict, local_topic_dict = future.result()
-                merge_results(local_transition_dict, local_topic_dict)
-            except Exception as e:
-                pbar.write(f"Error processing chunk: {str(e)}")
-    
-    pbar.close()
+            local_transition_dict, local_topic_dict = future.result()
+            merge_results(local_transition_dict, local_topic_dict)
     
     # Normalize general transition probabilities
-    pbar = tqdm.tqdm(total=len(transition_dict), desc="Normalizing transitions")
-    for i, (key, counter) in enumerate(transition_dict.items()):
+    for key, counter in transition_dict.items():
         total = sum(counter.values())
         if total > 0:  # Avoid division by zero
             transition_dict[key] = {k: (v / total) * char_ratios.get(k, 1) for k, v in counter.items()}
-        if i % 100 == 0 and progress_callback:
-            progress_callback(int(i * 100 / len(transition_dict)))
-        pbar.update(1)
     
     # Normalize topic-specific transition probabilities
-    pbar.close()
-    total_topic_entries = sum(len(transitions) for transitions in topic_transition_dict.values())
-    pbar = tqdm.tqdm(total=total_topic_entries, desc="Normalizing topic transitions")
-    
-    current = 0
     for topic, transitions in topic_transition_dict.items():
         for key, counter in transitions.items():
             total = sum(counter.values())
             if total > 0:  # Avoid division by zero
                 topic_transition_dict[topic][key] = {k: (v / total) * char_ratios.get(k, 1) for k, v in counter.items()}
-            current += 1
-            if current % 100 == 0 and progress_callback:
-                progress_callback(int(current * 100 / total_topic_entries))
-            pbar.update(1)
     
-    pbar.close()
-    
-    return transition_dict, topic_transition_dict
-
-def save_transition_dicts(transition_dict, topic_transition_dict, filepath):
-    """
-    Save transition dictionaries to a file using pickle.
-    
-    Args:
-        transition_dict: The general transition dictionary
-        topic_transition_dict: The topic-specific transition dictionary
-        filepath: Path to the output file
-    """
-    import pickle
-    import os
-    
-    # Ensure directory exists
-    os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
-    
-    data = {
-        'transition_dict': transition_dict,
-        'topic_transition_dict': topic_transition_dict
-    }
-    
-    print(f"Saving transition dictionaries to {filepath}...")
-    with open(filepath, 'wb') as f:
-        pickle.dump(data, f)
-    print(f"Saved successfully!")
-
-def load_transition_dicts(filepath):
-    """
-    Load transition dictionaries from a file.
-    
-    Args:
-        filepath: Path to the input file
-        
-    Returns:
-        tuple: (transition_dict, topic_transition_dict)
-    """
-    import pickle
-    import os
-    
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"File not found: {filepath}")
-    
-    print(f"Loading transition dictionaries from {filepath}...")
-    with open(filepath, 'rb') as f:
-        data = pickle.load(f)
-    
-    transition_dict = data.get('transition_dict', {})
-    topic_transition_dict = data.get('topic_transition_dict', {})
-    
-    print(f"Loaded {len(transition_dict)} general transitions and {len(topic_transition_dict)} topic-specific transitions")
     return transition_dict, topic_transition_dict
 
 
@@ -532,36 +491,22 @@ def detect_topic(text, topic_keywords):
     else:
         return None, []
 
-# Modified main loop to incorporate automatic topic detection
+def save_data(vocab, char_ratios, filtered_words, transition_dict, topic_dict):
+    """Save data to pickle files."""
+    with open("vocab.pkl", "wb") as f:
+        pickle.dump(vocab, f)
+    with open("char_ratios.pkl", "wb") as f:
+        pickle.dump(char_ratios, f)
+    with open("filtered_words.pkl", "wb") as f:
+        pickle.dump(filtered_words, f)
+    with open("transition_dict.pkl", "wb") as f:
+        pickle.dump(transition_dict, f)
+    with open("topic_dict.pkl", "wb") as f:
+        pickle.dump(topic_dict, f)
+    print("Data saved successfully.")
+    
 def main():
-    try:
- # Ensure category files exist
-        ensure_category_files_exist()
-
-        # Initialize set theory modifier
-        set_modifier = SetTheoryModifier()
-        
-        # Load text data and calculate character ratios
-        with open("kb.txt", "r", encoding="utf-8") as f:
-            text = ' '.join(f.read().split()[:KB_LIMIT])
-        text = re.sub(r'\d+', '', text)
-        pattern = r'^[a-zA-Z]{1,2}$'
-
-        # List of exceptions (words we want to keep)
-        exceptions = ['a', 'i', 'to', 'is', 'it', 'an', 'of', 'by', 'he', 'me', 'we', 'be', 'my', 'up', 'do', 'go', 'if', 'no', 'so', 'on', 'at', 'in', 'as', 'or', 'la', 'ah', 'uh', 'ye', 'ab', 'ad', 'ae', 'ba', 'bi', 'bo', 'da', 'ed', 'ef', 'eh', 'el', 'em', 'en', 'er', 'es', 'et', 'ex', 'fa', 'hi', 'ho', 'id', 'is', 'jo', 'ka', 'la', 'li', 'lo', 'ma', 'me', 'mi', 'mu', 'na', 'no', 'nu', 'od', 'oe', 'oi', 'om', 'op', 'os', 'ow', 'ox', 'oy', 'pa', 're', 'sh', 'si', 'ta', 'uh', 'um','un', 'up', 'us', 'ut', 'va', 'ye', 'yo']
-        
-        # Filter out the short, potentially nonsensical terms, keeping exceptions
-        filtered_words = [word for word in text.split() if not re.match(pattern, word) or word in exceptions]
-        char_ratios = calculate_character_ratios(filtered_words)
-
-        # Build vocabulary
-        tokens = filtered_words
-        word_counts = Counter(tokens)
-        vocab = {word: idx for idx, (word, _) in enumerate(word_counts.items(), 1)}
-        vocab['<PAD>'] = 0
-        
-        # Define topic keywords (customize these based on your text corpus)
-        topic_keywords = {
+    topic_keywords = {
         "science": [
             "science", "physics", "chemistry", "biology", "experiment", "theory", "research", "data",
             "laboratory", "scientist", "hypothesis", "observation", "methodology", "analysis", "discovery",
@@ -961,93 +906,138 @@ def main():
             "solo", "duet", "trio", "quartet", "quintet", "sextet", "septet", "octet", "nonet", "recording", "studio",
             "mixing", "mastering", "production", "producer", "engineer", "live performance", "concert", "recital", "tour"
         ]}
-        
-        # Create input sequences and transition matrices with normalized probabilities
-        # Save to file
-        try:
-            transition_dict, topic_transition_dict = load_transition_dicts("output/transitions.pkl")
-        except:
-            transition_dict, topic_transition_dict = create_sequences(text, vocab, SEQUENCE_LENGTH, char_ratios, topic_keywords)
-            save_transition_dicts(transition_dict, topic_transition_dict, "output/transitions.pkl")
-        
-        # Interactive Text Generation with embedded set theory operations and topic selection
-        print("Enhanced Text Generator with Set Theory Categories")
-        print("Available topics:", list(topic_keywords.keys()) + ["general"])
-        print("Available commands:")
-        print("  /topic <topic>         - Set the current topic")
-        print("  /topic auto            - Enable automatic topic detection")
-        print("  /topic manual          - Disable automatic topic detection")
-        print("  /exit                  - Exit the program")
-        
-        current_topic = None
-        auto_topic_detection = False
-        
-        while True:
-            prompt = input("USER: ")
-            
-            # Check for commands
-            if prompt.startswith("/"):
-                cmd_parts = prompt.split()
-                cmd = cmd_parts[0].lower()
-                
-                # Topic command
-                if cmd == "/topic" and len(cmd_parts) > 1:
-                    requested_topic = cmd_parts[1].lower()
-                    
-                    if requested_topic == "auto":
-                        auto_topic_detection = True
-                        print("Automatic topic detection enabled")
-                        
-                    elif requested_topic == "manual":
-                        auto_topic_detection = False
-                        print("Automatic topic detection disabled")
-                        
-                    elif requested_topic in topic_keywords or requested_topic == "general":
-                        print(f"Topic set to: {requested_topic}")
-                        current_topic = requested_topic if requested_topic != "general" else None
-                        auto_topic_detection = False  # Disable auto detection when manually setting topic
-                        
-                    else:
-                        print(f"Unknown topic: {requested_topic}")
-                        print("Available topics:", list(topic_keywords.keys()) + ["general"])
-                
-                # [Your existing command handling code here]
-            
-            # Generate text
-            else:
-                active_topic = current_topic
-                
-                # Auto-detect topic if enabled and no manual topic is set
-                if auto_topic_detection or current_topic is None:
-                    detected_topic, matched_keywords = detect_topic(prompt, topic_keywords)
-                    
-                    if detected_topic:
-                        if auto_topic_detection or current_topic is None:
-                            active_topic = detected_topic
-                            keyword_display = ", ".join(matched_keywords[:3])
-                            if len(matched_keywords) > 3:
-                                keyword_display += f" and {len(matched_keywords) - 3} more"
-                            print(f"[Auto-detected topic: {detected_topic} based on: {keyword_display}]")
-                
-                generated_text = generate_text(
-                    prompt, 
-                    vocab, 
-                    transition_dict, 
-                    char_ratios,
-                    set_modifier,
-                    topic_transition_dict=topic_transition_dict,
-                    topic=active_topic,
-                    seq_length=SEQUENCE_LENGTH, 
-                    max_length=250
-                )
-                
-                print("Generated text:\n", generated_text)
-    
+    try:
+        with open("vocab.pkl", "rb") as f:
+            vocab = pickle.load(f)
+        with open("char_ratios.pkl", "rb") as f:
+            char_ratios = pickle.load(f)
+        with open("filtered_words.pkl", "rb") as f:
+            filtered_words = pickle.load(f)
+        with open("transition_dict.pkl", "rb") as f:
+            transition_dict = pickle.load(f)
+        with open("topic_dict.pkl", "rb") as f:
+            topic_dict = pickle.load(f)
+        print("Backup data loaded successfully.")
     except FileNotFoundError:
-        print("Error: test.txt file not found. Please create this file with your training text data.")
-    except Exception as e:
-        print(f"An error occurred: {e}")
+        print("Error: Saved files not found. Constructing")      
+
+        # Ensure category files exist
+        ensure_category_files_exist()
+
+        # Initialize set theory modifier
+        set_modifier = SetTheoryModifier()
         
+        # Load text data and calculate character ratios
+        with open("test.txt", "r", encoding="utf-8") as f:
+            text = ' '.join(f.read().split()[:KB_LIMIT])
+        text = re.sub(r'\d+', '', text)
+        pattern = r'^[a-zA-Z]{1,2}$'
+
+        # List of exceptions (words we want to keep)
+        exceptions = ['a', 'i', 'to', 'is', 'it', 'an', 'of', 'by', 'he', 'me', 'we', 'be', 'my', 'up', 'do', 'go', 'if', 'no', 'so', 'on', 'at', 'in', 'as', 'or', 'la', 'ah', 'uh', 'ye', 'ab', 'ad', 'ae', 'ba', 'bi', 'bo', 'da', 'ed', 'ef', 'eh', 'el', 'em', 'en', 'er', 'es', 'et', 'ex', 'fa', 'hi', 'ho', 'id', 'is', 'jo', 'ka', 'la', 'li', 'lo', 'ma', 'me', 'mi', 'mu', 'na', 'no', 'nu', 'od', 'oe', 'oi', 'om', 'op', 'os', 'ow', 'ox', 'oy', 'pa', 're', 'sh', 'si', 'ta', 'uh', 'um','un', 'up', 'us', 'ut', 'va', 'ye', 'yo']
+        
+        # Filter out the short, potentially nonsensical terms, keeping exceptions
+        filtered_words = [word for word in text.split() if not re.match(pattern, word) or word in exceptions]
+        char_ratios = calculate_character_ratios(filtered_words)
+
+        # Build vocabulary
+        tokens = filtered_words
+        word_counts = Counter(tokens)
+        vocab = {word: idx for idx, (word, _) in enumerate(word_counts.items(), 1)}
+        vocab['<PAD>'] = 0
+
+        # Create input sequences and transition matrix with normalized probabilities
+        transition_dict, topic_dict = create_sequences(text, vocab, SEQUENCE_LENGTH, char_ratios, topic_keywords)
+        save_data(vocab, char_ratios, filtered_words, transition_dict, topic_dict)
+    
+    # Create topic_transition_dict from topic_dict for text generation
+    topic_transition_dict = topic_dict
+    
+    # Interactive Text Generation with embedded set theory operations and topic selection
+    print("Enhanced Text Generator with Set Theory Categories")
+    print("Available topics:", list(topic_keywords.keys()) + ["general"])
+    print("Available commands:")
+    print("  /topic <topic>         - Set the current topic")
+    print("  /topic auto            - Enable automatic topic detection")
+    print("  /topic manual          - Disable automatic topic detection")
+    print("  /exit                  - Exit the program")
+    
+    # Initialize set theory modifier - moved here from the try/except block
+    set_modifier = SetTheoryModifier()
+    
+    current_topic = None
+    auto_topic_detection = False
+    
+    try:
+        while True:
+            try:
+                prompt = input("USER: ")
+                
+                # Check for commands
+                if prompt.startswith("/"):
+                    cmd_parts = prompt.split()
+                    cmd = cmd_parts[0].lower()
+                    
+                    # Topic command
+                    if cmd == "/topic" and len(cmd_parts) > 1:
+                        requested_topic = cmd_parts[1].lower()
+                        
+                        if requested_topic == "auto":
+                            auto_topic_detection = True
+                            print("Automatic topic detection enabled")
+                            
+                        elif requested_topic == "manual":
+                            auto_topic_detection = False
+                            print("Automatic topic detection disabled")
+                            
+                        elif requested_topic in topic_keywords or requested_topic == "general":
+                            print(f"Topic set to: {requested_topic}")
+                            current_topic = requested_topic if requested_topic != "general" else None
+                            auto_topic_detection = False  # Disable auto detection when manually setting topic
+                            
+                        else:
+                            print(f"Unknown topic: {requested_topic}")
+                            print("Available topics:", list(topic_keywords.keys()) + ["general"])
+                    
+                    # Exit command
+                    elif cmd == "/exit":
+                        print("Exiting program.")
+                        break
+                
+                # Generate text
+                else:
+                    active_topic = current_topic
+                    
+                    # Auto-detect topic if enabled and no manual topic is set
+                    if auto_topic_detection or current_topic is None:
+                        detected_topic, matched_keywords = detect_topic(prompt, topic_keywords)
+                        
+                        if detected_topic:
+                            if auto_topic_detection or current_topic is None:
+                                active_topic = detected_topic
+                                keyword_display = ", ".join(matched_keywords[:3])
+                                if len(matched_keywords) > 3:
+                                    keyword_display += f" and {len(matched_keywords) - 3} more"
+                                print(f"[Auto-detected topic: {detected_topic} based on: {keyword_display}]")
+                    
+                    generated_text = generate_text(
+                        prompt, 
+                        vocab, 
+                        transition_dict, 
+                        char_ratios,
+                        set_modifier,
+                        topic_transition_dict=topic_dict,
+                        topic=active_topic,
+                        seq_length=SEQUENCE_LENGTH, 
+                        max_length=250
+                    )
+                    
+                    print("Generated text:\n", generated_text)
+            except EOFError:
+                print("Input stream ended. Exiting...")
+                break
+    except KeyboardInterrupt:
+        print("\nProgram interrupted. Exiting...")
 
 if __name__ == "__main__":
     main()
