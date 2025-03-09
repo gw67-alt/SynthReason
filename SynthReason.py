@@ -424,13 +424,13 @@ def ensure_category_files_exist():
             with open(filename, "w", encoding="utf-8") as f:
                 f.write("\n".join(words))
             print(f"Created {filename} with default words")
-
+    return categories
 # Main function
 def main():
     try:
         # Ensure category files exist
-        ensure_category_files_exist()
-        
+        print(ensure_category_files_exist())
+
         # Initialize set theory modifier
         set_modifier = SetTheoryModifier()
         
@@ -495,12 +495,6 @@ def main():
         print("Available topics:", list(topic_keywords.keys()) + ["general"])
         print("Available commands:")
         print("  /topic <topic>         - Set the current topic")
-        print("  /set list              - List active set theory operations")
-        print("  /set toggle <op>       - Toggle a set operation on/off")
-        print("  /set param <op> <p> <v> - Set parameter value for operation")
-        print("  /cat list              - List available word categories")
-        print("  /cat view <category>   - View words in a category")
-        print("  /cat add <cat> <word>  - Add word to a category")
         print("  /exit                  - Exit the program")
         
         current_topic = None
