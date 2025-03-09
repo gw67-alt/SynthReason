@@ -902,23 +902,6 @@ def main():
             "pure", "clear", "pristine", "unsullied", "unblemished", "untainted", "clean", "spotless", "immaculate"
         ],
         
-        "common": [
-            # Articles
-            "the", "a", "an",
-            # Conjunctions
-            "and", "but", "or", "nor", "for", "yet", "so", "because", "although", "since", "unless", "while",
-            # Prepositions
-            "of", "to", "in", "for", "on", "with", "by", "at", "from", "into", "during", "through", "across", "between",
-            # Pronouns
-            "he", "she", "it", "they", "we", "you", "I", "me", "him", "her", "them", "us", "who", "whom", "whose",
-            # Auxiliaries
-            "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "shall",
-            # Demonstratives
-            "this", "that", "these", "those",
-            # Common adverbs
-            "not", "very", "too", "also", "just", "only", "even", "still", "rather", "quite", "somewhat"
-        ],
-        
         "diverse": [
             # Uniqueness
             "unique", "singular", "unparalleled", "unprecedented", "unmatched", "exclusive", "distinctive", "original",
@@ -967,7 +950,7 @@ def main():
         set_modifier = SetTheoryModifier()
         
         # Load text data and calculate character ratios
-        with open("test.txt", "r", encoding="utf-8") as f:
+        with open("kb.txt", "r", encoding="utf-8") as f:
             text = ' '.join(f.read().split()[:KB_LIMIT])
         text = re.sub(r'\d+', '', text)
         pattern = r'^[a-zA-Z]{1,2}$'
