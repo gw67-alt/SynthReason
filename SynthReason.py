@@ -100,7 +100,6 @@ class SetTheoryModifier:
         
         # Apply each active set theory operation
         for op_key, operation in self.set_operations.items():
-            if operation['active']:
                 # Apply operation-specific modifications
                 if op_key == 'empty_not_in':
                     # ∅∩∉ operation: Boost emptiness, penalize presence
@@ -426,16 +425,82 @@ def ensure_category_files_exist():
             print(f"Created {filename} with default words")
     return categories
 # Main function
+import re
+from collections import Counter
+
+def detect_topic(text, topic_keywords):
+    """
+    Automatically detect the most likely topic based on keyword frequency in the input text.
+    
+    Args:
+        text (str): The input text to analyze
+        topic_keywords (dict): Dictionary mapping topics to their related keywords
+        
+    Returns:
+        str: The most likely topic or None if no clear topic is detected
+    """
+    # Convert input to lowercase and tokenize
+    text_lower = text.lower()
+    words = re.findall(r'\b\w+\b', text_lower)
+    
+    # Count keyword matches for each topic
+    topic_scores = {topic: 0 for topic in topic_keywords}
+    matched_keywords = {topic: [] for topic in topic_keywords}
+    
+    for word in words:
+        for topic, keywords in topic_keywords.items():
+            if word in keywords:
+                topic_scores[topic] += 1
+                matched_keywords[topic].append(word)
+    
+    # Find topic with highest score
+    max_score = 0
+    best_topic = None
+    
+    for topic, score in topic_scores.items():
+        if score > max_score:
+            max_score = score
+            best_topic = topic
+    
+    # Check for ties and resolve based on keyword specificity
+    if best_topic:
+        tied_topics = [t for t, s in topic_scores.items() if s == max_score]
+        if len(tied_topics) > 1:
+            # Resolve ties by checking keyword uniqueness
+            topic_uniqueness = {}
+            for topic in tied_topics:
+                # Count how many other topics contain each matched keyword
+                uniqueness_score = 0
+                for keyword in matched_keywords[topic]:
+                    other_topics_with_keyword = sum(1 for t in topic_keywords if t != topic and keyword in topic_keywords[t])
+                    uniqueness_score += 1 / (1 + other_topics_with_keyword)  # More unique keywords score higher
+                
+                if matched_keywords[topic]:  # Avoid division by zero
+                    topic_uniqueness[topic] = uniqueness_score / len(matched_keywords[topic])
+                else:
+                    topic_uniqueness[topic] = 0
+            
+            # Select the topic with the most unique keywords
+            best_topic = max(topic_uniqueness.items(), key=lambda x: x[1])[0]
+    
+    # Only return a topic if it has a minimum number of matches
+    min_matches = 1  # Adjust this threshold as needed
+    if max_score >= min_matches:
+        return best_topic, matched_keywords[best_topic] if best_topic else []
+    else:
+        return None, []
+
+# Modified main loop to incorporate automatic topic detection
 def main():
     try:
-        # Ensure category files exist
-        print(ensure_category_files_exist())
+ # Ensure category files exist
+        ensure_category_files_exist()
 
         # Initialize set theory modifier
         set_modifier = SetTheoryModifier()
         
         # Load text data and calculate character ratios
-        with open("kb.txt", "r", encoding="utf-8") as f:
+        with open("test.txt", "r", encoding="utf-8") as f:
             text = ' '.join(f.read().split()[:KB_LIMIT])
         text = re.sub(r'\d+', '', text)
         pattern = r'^[a-zA-Z]{1,2}$'
@@ -489,15 +554,18 @@ def main():
         
         # Create input sequences and transition matrices with normalized probabilities
         transition_dict, topic_transition_dict = create_sequences(text, vocab, SEQUENCE_LENGTH, char_ratios, topic_keywords)
-
+        
         # Interactive Text Generation with embedded set theory operations and topic selection
         print("Enhanced Text Generator with Set Theory Categories")
         print("Available topics:", list(topic_keywords.keys()) + ["general"])
         print("Available commands:")
         print("  /topic <topic>         - Set the current topic")
+        print("  /topic auto            - Enable automatic topic detection")
+        print("  /topic manual          - Disable automatic topic detection")
         print("  /exit                  - Exit the program")
         
         current_topic = None
+        auto_topic_detection = False
         
         while True:
             prompt = input("USER: ")
@@ -510,79 +578,42 @@ def main():
                 # Topic command
                 if cmd == "/topic" and len(cmd_parts) > 1:
                     requested_topic = cmd_parts[1].lower()
-                    if requested_topic in topic_keywords or requested_topic == "general":
+                    
+                    if requested_topic == "auto":
+                        auto_topic_detection = True
+                        print("Automatic topic detection enabled")
+                        
+                    elif requested_topic == "manual":
+                        auto_topic_detection = False
+                        print("Automatic topic detection disabled")
+                        
+                    elif requested_topic in topic_keywords or requested_topic == "general":
                         print(f"Topic set to: {requested_topic}")
                         current_topic = requested_topic if requested_topic != "general" else None
+                        auto_topic_detection = False  # Disable auto detection when manually setting topic
+                        
                     else:
                         print(f"Unknown topic: {requested_topic}")
                         print("Available topics:", list(topic_keywords.keys()) + ["general"])
                 
-                # Set theory commands
-                elif cmd == "/set":
-                    if len(cmd_parts) > 1:
-                        subcmd = cmd_parts[1].lower()
-                        
-                        if subcmd == "list":
-                            print(set_modifier.list_active_operations())
-                        
-                        elif subcmd == "toggle" and len(cmd_parts) > 2:
-                            op_key = cmd_parts[2].lower()
-                            print(set_modifier.toggle_operation(op_key))
-                        
-                        elif subcmd == "param" and len(cmd_parts) > 4:
-                            op_key = cmd_parts[2].lower()
-                            param = cmd_parts[3].lower()
-                            value = cmd_parts[4]
-                            print(set_modifier.set_operation_parameter(op_key, param, value))
-                        
-                        else:
-                            print("Invalid set command. Use: /set list, /set toggle <op>, or /set param <op> <param> <value>")
-                
-                # Category commands
-                elif cmd == "/cat":
-                    if len(cmd_parts) > 1:
-                        subcmd = cmd_parts[1].lower()
-                        
-                        if subcmd == "list":
-                            print("Available categories:")
-                            for filename in os.listdir():
-                                if filename.endswith(".txt") and not filename == "test.txt":
-                                    print(f"  - {filename[:-4]}")
-                        
-                        elif subcmd == "view" and len(cmd_parts) > 2:
-                            category = cmd_parts[2].lower()
-                            words = set_modifier.get_category_words(category)
-                            if words:
-                                print(f"Words in category '{category}':")
-                                print(", ".join(words))
-                            else:
-                                print(f"Category '{category}' not found or empty")
-                        
-                        elif subcmd == "add" and len(cmd_parts) > 3:
-                            category = cmd_parts[2].lower()
-                            word = cmd_parts[3].lower()
-                            filename = f"{category}.txt"
-                            
-                            try:
-                                with open(filename, "a", encoding="utf-8") as f:
-                                    f.write(f"\n{word}")
-                                print(f"Added '{word}' to category '{category}'")
-                            except:
-                                print(f"Failed to add word to category '{category}'")
-                        
-                        else:
-                            print("Invalid category command. Use: /cat list, /cat view <category>, or /cat add <category> <word>")
-                
-                # Exit command
-                elif cmd == "/exit":
-                    print("Exiting text generator.")
-                    break
-                
-                else:
-                    print("Unknown command.")
+                # [Your existing command handling code here]
             
             # Generate text
             else:
+                active_topic = current_topic
+                
+                # Auto-detect topic if enabled and no manual topic is set
+                if auto_topic_detection or current_topic is None:
+                    detected_topic, matched_keywords = detect_topic(prompt, topic_keywords)
+                    
+                    if detected_topic:
+                        if auto_topic_detection or current_topic is None:
+                            active_topic = detected_topic
+                            keyword_display = ", ".join(matched_keywords[:3])
+                            if len(matched_keywords) > 3:
+                                keyword_display += f" and {len(matched_keywords) - 3} more"
+                            print(f"[Auto-detected topic: {detected_topic} based on: {keyword_display}]")
+                
                 generated_text = generate_text(
                     prompt, 
                     vocab, 
@@ -590,7 +621,7 @@ def main():
                     char_ratios,
                     set_modifier,
                     topic_transition_dict=topic_transition_dict,
-                    topic=current_topic,
+                    topic=active_topic,
                     seq_length=SEQUENCE_LENGTH, 
                     max_length=250
                 )
@@ -601,6 +632,7 @@ def main():
         print("Error: test.txt file not found. Please create this file with your training text data.")
     except Exception as e:
         print(f"An error occurred: {e}")
+        
 
 if __name__ == "__main__":
     main()
