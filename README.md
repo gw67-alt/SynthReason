@@ -66,12 +66,7 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Acknowledgements
 
-- [Your Name](https://github.com/gw67-alt) - Creator and maintainer
-
-## Contact
-
-For any inquiries or issues, please contact [your-email@example.com](mailto:your-email@example.com).
+- [George Wagenknecht](https://github.com/gw67-alt) - Creator and maintainer
 
 ```
 
-Feel free to customize the template as needed. Let me know if you need any additional sections or details!
