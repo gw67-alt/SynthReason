@@ -1,5 +1,3 @@
-Sure! I'll help you create a README for your SynthReason-2.0 repository. Here's a template to get you started:
-
 ```markdown
 # SynthReason-2.0
 
