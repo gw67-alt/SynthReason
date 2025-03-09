@@ -89,41 +89,6 @@ class SetTheoryModifier:
                             if any(presence_word in word for presence_word in action_words):
                                 modified_probs[i] *= operation['contradiction_penalty']
                 
-                elif op_key == 'union':
-                    # Union operation: Boost diversity, penalize repetition
-                    recent_words = set()
-                    for i, word_idx in enumerate(words):
-                        if word_idx in vocab_inv:
-                            word = vocab_inv[word_idx].lower()
-                            if any(diverse_word in word for diverse_word in diverse_words):
-                                modified_probs[i] *= operation['diversity_boost']
-                            if word in recent_words:
-                                modified_probs[i] *= operation['repetition_penalty']
-                            recent_words.add(word)
-                
-                elif op_key == 'intersection':
-                    # Intersection operation: Boost commonality, penalize divergence
-                    for i, word_idx in enumerate(words):
-                        if word_idx in vocab_inv:
-                            word = vocab_inv[word_idx].lower()
-                            if any(common_word in word for common_word in common_words):
-                                modified_probs[i] *= operation['commonality_boost']
-                            if any(diverse_word in word for diverse_word in diverse_words):
-                                modified_probs[i] *= operation['divergence_penalty']
-                
-                elif op_key == 'complement':
-                    # Complement operation: Boost inverse concepts, penalize similarity
-                    # This requires knowledge of antonyms, but as a simple approximation:
-                    for i, word_idx in enumerate(words):
-                        if word_idx in vocab_inv:
-                            word = vocab_inv[word_idx].lower()
-                            # Simple approximation: boost words with negative prefixes
-                            if word.startswith(('un', 'non', 'in', 'dis', 'anti')):
-                                modified_probs[i] *= operation['inverse_boost']
-                            # Penalize words that are very common (as an approximation of similarity)
-                            if word in common_words:
-                                modified_probs[i] *= operation['similarity_penalty']
-        
         # Ensure probabilities are valid
         modified_probs = np.maximum(modified_probs, 0)
         if modified_probs.sum() > 0:
