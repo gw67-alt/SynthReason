@@ -4,6 +4,8 @@ from collections import Counter
 import numpy as np
 import re
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Parameters
 KB_LIMIT = -1
@@ -174,12 +176,8 @@ def preprocess_text(text, vocab):
     text = re.sub(r'[^\w\s]', '', text.lower())
     tokens = text.split()
     return [vocab[word] for word in tokens if word in vocab]
-import threading
-from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import numpy as np
 
-def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywords, num_threads=None):
+def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywords, num_threads=None, progress_callback=None):
     """
     Create sequences and normalize transition probabilities with topic categorization using multiple threads.
     
@@ -190,10 +188,16 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywo
         char_ratios: Dictionary with character weighting ratios
         topic_keywords: Dictionary of topics and their associated keywords
         num_threads: Number of threads to use (defaults to CPU count if None)
+        progress_callback: Optional callback function to report progress (0-100)
         
     Returns:
         tuple: (transition_dict, topic_transition_dict)
     """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from collections import Counter
+    import tqdm
+    
     # Preprocess text data
     data = preprocess_text(text_data, vocab)
     
@@ -217,10 +221,17 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywo
     transition_dict = {}
     topic_transition_dict = {}
     
+    # Create progress bar
+    total_items = len(data) - sequence_length
+    pbar = tqdm.tqdm(total=total_items, desc="Processing sequences", disable=progress_callback is not None)
+    processed_items = 0
+    
     def process_chunk(start_idx, end_idx):
         """Process a chunk of the data and return local dictionaries"""
+        nonlocal processed_items
         local_transition_dict = {}
         local_topic_dict = {}
+        local_processed = 0
         
         for i in range(start_idx, end_idx):
             input_seq = tuple(data[i:i + sequence_length])
@@ -240,6 +251,25 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywo
             if input_seq not in local_topic_dict[topic]:
                 local_topic_dict[topic][input_seq] = Counter()
             local_topic_dict[topic][input_seq][target_word] += char_ratios.get(data[i], 1)
+            
+            local_processed += 1
+            
+            # Update progress every 1000 items to avoid lock contention
+            if local_processed % 1000 == 0:
+                with lock:
+                    processed_items += 1000
+                    pbar.update(1000)
+                    if progress_callback:
+                        progress_callback(int(processed_items * 100 / total_items))
+        
+        # Update remaining progress
+        with lock:
+            remaining = local_processed % 1000
+            if remaining > 0:
+                processed_items += remaining
+                pbar.update(remaining)
+                if progress_callback:
+                    progress_callback(int(processed_items * 100 / total_items))
         
         return local_transition_dict, local_topic_dict
     
@@ -267,22 +297,93 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywo
         futures = [executor.submit(process_chunk, start, end) for start, end in chunks]
         
         for future in as_completed(futures):
-            local_transition_dict, local_topic_dict = future.result()
-            merge_results(local_transition_dict, local_topic_dict)
+            try:
+                local_transition_dict, local_topic_dict = future.result()
+                merge_results(local_transition_dict, local_topic_dict)
+            except Exception as e:
+                pbar.write(f"Error processing chunk: {str(e)}")
+    
+    pbar.close()
     
     # Normalize general transition probabilities
-    for key, counter in transition_dict.items():
+    pbar = tqdm.tqdm(total=len(transition_dict), desc="Normalizing transitions")
+    for i, (key, counter) in enumerate(transition_dict.items()):
         total = sum(counter.values())
         if total > 0:  # Avoid division by zero
             transition_dict[key] = {k: (v / total) * char_ratios.get(k, 1) for k, v in counter.items()}
+        if i % 100 == 0 and progress_callback:
+            progress_callback(int(i * 100 / len(transition_dict)))
+        pbar.update(1)
     
     # Normalize topic-specific transition probabilities
+    pbar.close()
+    total_topic_entries = sum(len(transitions) for transitions in topic_transition_dict.values())
+    pbar = tqdm.tqdm(total=total_topic_entries, desc="Normalizing topic transitions")
+    
+    current = 0
     for topic, transitions in topic_transition_dict.items():
         for key, counter in transitions.items():
             total = sum(counter.values())
             if total > 0:  # Avoid division by zero
                 topic_transition_dict[topic][key] = {k: (v / total) * char_ratios.get(k, 1) for k, v in counter.items()}
+            current += 1
+            if current % 100 == 0 and progress_callback:
+                progress_callback(int(current * 100 / total_topic_entries))
+            pbar.update(1)
     
+    pbar.close()
+    
+    return transition_dict, topic_transition_dict
+
+def save_transition_dicts(transition_dict, topic_transition_dict, filepath):
+    """
+    Save transition dictionaries to a file using pickle.
+    
+    Args:
+        transition_dict: The general transition dictionary
+        topic_transition_dict: The topic-specific transition dictionary
+        filepath: Path to the output file
+    """
+    import pickle
+    import os
+    
+    # Ensure directory exists
+    os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+    
+    data = {
+        'transition_dict': transition_dict,
+        'topic_transition_dict': topic_transition_dict
+    }
+    
+    print(f"Saving transition dictionaries to {filepath}...")
+    with open(filepath, 'wb') as f:
+        pickle.dump(data, f)
+    print(f"Saved successfully!")
+
+def load_transition_dicts(filepath):
+    """
+    Load transition dictionaries from a file.
+    
+    Args:
+        filepath: Path to the input file
+        
+    Returns:
+        tuple: (transition_dict, topic_transition_dict)
+    """
+    import pickle
+    import os
+    
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"File not found: {filepath}")
+    
+    print(f"Loading transition dictionaries from {filepath}...")
+    with open(filepath, 'rb') as f:
+        data = pickle.load(f)
+    
+    transition_dict = data.get('transition_dict', {})
+    topic_transition_dict = data.get('topic_transition_dict', {})
+    
+    print(f"Loaded {len(transition_dict)} general transitions and {len(topic_transition_dict)} topic-specific transitions")
     return transition_dict, topic_transition_dict
 
 
@@ -500,7 +601,7 @@ def main():
         set_modifier = SetTheoryModifier()
         
         # Load text data and calculate character ratios
-        with open("test.txt", "r", encoding="utf-8") as f:
+        with open("kb.txt", "r", encoding="utf-8") as f:
             text = ' '.join(f.read().split()[:KB_LIMIT])
         text = re.sub(r'\d+', '', text)
         pattern = r'^[a-zA-Z]{1,2}$'
@@ -921,7 +1022,12 @@ def main():
         ]}
         
         # Create input sequences and transition matrices with normalized probabilities
-        transition_dict, topic_transition_dict = create_sequences(text, vocab, SEQUENCE_LENGTH, char_ratios, topic_keywords)
+        # Save to file
+        try:
+            transition_dict, topic_transition_dict = load_transition_dicts("output/transitions.pkl")
+        except:
+            transition_dict, topic_transition_dict = create_sequences(text, vocab, SEQUENCE_LENGTH, char_ratios, topic_keywords)
+            save_transition_dicts(transition_dict, topic_transition_dict, "output/transitions.pkl")
         
         # Interactive Text Generation with embedded set theory operations and topic selection
         print("Enhanced Text Generator with Set Theory Categories")
