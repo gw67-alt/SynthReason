@@ -29,30 +29,6 @@ class SetTheoryModifier:
                 'influence_factor': 0.15,
                 'empty_boost': 1.7,
                 'contradiction_penalty': 0.5
-            },
-            'union': {
-                'name': 'z=A∪B',
-                'description': 'Union operation',
-                'active': False,
-                'influence_factor': 0.2,
-                'diversity_boost': 1.5,
-                'repetition_penalty': 0.6
-            },
-            'intersection': {
-                'name': 'z=A∩B',
-                'description': 'Intersection operation',
-                'active': False,
-                'influence_factor': 0.25,
-                'commonality_boost': 1.8,
-                'divergence_penalty': 0.4
-            },
-            'complement': {
-                'name': 'z=Aᶜ',
-                'description': 'Complement operation',
-                'active': False,
-                'influence_factor': 0.3,
-                'inverse_boost': 1.6,
-                'similarity_penalty': 0.5
             }
         }
     
@@ -104,50 +80,14 @@ class SetTheoryModifier:
         # Apply each active set theory operation
         for op_key, operation in self.set_operations.items():
                 # Apply operation-specific modifications
-                if op_key == 'empty_not_in':
                     # ∅∩∉ operation: Boost emptiness, penalize presence
                     for i, word_idx in enumerate(words):
                         if word_idx in vocab_inv:
                             word = vocab_inv[word_idx].lower()
-                            if any(empty_word in word for empty_word in description_words):
+                            if any(empty_word not in word for empty_word in description_words):
                                 modified_probs[i] *= operation['empty_boost']
-                            if any(presence_word in word for presence_word in action_words):
+                            if any(presence_word not in word for presence_word in action_words):
                                 modified_probs[i] *= operation['contradiction_penalty']
-                
-                elif op_key == 'union':
-                    # Union operation: Boost diversity, penalize repetition
-                    recent_words = set()
-                    for i, word_idx in enumerate(words):
-                        if word_idx in vocab_inv:
-                            word = vocab_inv[word_idx].lower()
-                            if any(diverse_word in word for diverse_word in diverse_words):
-                                modified_probs[i] *= operation['diversity_boost']
-                            if word in recent_words:
-                                modified_probs[i] *= operation['repetition_penalty']
-                            recent_words.add(word)
-                
-                elif op_key == 'intersection':
-                    # Intersection operation: Boost commonality, penalize divergence
-                    for i, word_idx in enumerate(words):
-                        if word_idx in vocab_inv:
-                            word = vocab_inv[word_idx].lower()
-                            if any(common_word in word for common_word in common_words):
-                                modified_probs[i] *= operation['commonality_boost']
-                            if any(diverse_word in word for diverse_word in diverse_words):
-                                modified_probs[i] *= operation['divergence_penalty']
-                
-                elif op_key == 'complement':
-                    # Complement operation: Boost inverse concepts, penalize similarity
-                    # This requires knowledge of antonyms, but as a simple approximation:
-                    for i, word_idx in enumerate(words):
-                        if word_idx in vocab_inv:
-                            word = vocab_inv[word_idx].lower()
-                            # Simple approximation: boost words with negative prefixes
-                            if word.startswith(('un', 'non', 'in', 'dis', 'anti')):
-                                modified_probs[i] *= operation['inverse_boost']
-                            # Penalize words that are very common (as an approximation of similarity)
-                            if word in common_words:
-                                modified_probs[i] *= operation['similarity_penalty']
         
         # Ensure probabilities are valid
         modified_probs = np.maximum(modified_probs, 0)
@@ -244,14 +184,14 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywo
             # Update local transition dictionary
             if input_seq not in local_transition_dict:
                 local_transition_dict[input_seq] = Counter()
-            local_transition_dict[input_seq][target_word] += char_ratios.get(data[i], 1)
+            local_transition_dict[input_seq][target_word] += char_ratios.get(data[i + sequence_length +1], 1)
             
             # Update local topic-specific transition dictionary
             if topic not in local_topic_dict:
                 local_topic_dict[topic] = {}
             if input_seq not in local_topic_dict[topic]:
                 local_topic_dict[topic][input_seq] = Counter()
-            local_topic_dict[topic][input_seq][target_word] += char_ratios.get(data[i], 1)
+            local_topic_dict[topic][input_seq][target_word] += char_ratios.get(data[i + sequence_length +1], 1)
             
             local_processed += 1
             
@@ -978,7 +918,7 @@ def main():
         set_modifier = SetTheoryModifier()
         
         # Load text data and calculate character ratios
-        with open("test.txt", "r", encoding="utf-8") as f:
+        with open("kb.txt", "r", encoding="utf-8") as f:
             text = ' '.join(f.read().split()[:KB_LIMIT])
         text = re.sub(r'\d+', '', text)
         pattern = r'^[a-zA-Z]{1,2}$'
