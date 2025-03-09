@@ -28,30 +28,6 @@ class SetTheoryModifier:
                 'influence_factor': 0.15,
                 'empty_boost': 1.7,
                 'contradiction_penalty': 0.5
-            },
-            'union': {
-                'name': 'z=A∪B',
-                'description': 'Union operation',
-                'active': False,
-                'influence_factor': 0.2,
-                'diversity_boost': 1.5,
-                'repetition_penalty': 0.6
-            },
-            'intersection': {
-                'name': 'z=A∩B',
-                'description': 'Intersection operation',
-                'active': False,
-                'influence_factor': 0.25,
-                'commonality_boost': 1.8,
-                'divergence_penalty': 0.4
-            },
-            'complement': {
-                'name': 'z=Aᶜ',
-                'description': 'Complement operation',
-                'active': False,
-                'influence_factor': 0.3,
-                'inverse_boost': 1.6,
-                'similarity_penalty': 0.5
             }
         }
     
@@ -601,7 +577,7 @@ def main():
         set_modifier = SetTheoryModifier()
         
         # Load text data and calculate character ratios
-        with open("test.txt", "r", encoding="utf-8") as f:
+        with open("kb.txt", "r", encoding="utf-8") as f:
             text = ' '.join(f.read().split()[:KB_LIMIT])
         text = re.sub(r'\d+', '', text)
         pattern = r'^[a-zA-Z]{1,2}$'
