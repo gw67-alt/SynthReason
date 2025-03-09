@@ -184,14 +184,14 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywo
             # Update local transition dictionary
             if input_seq not in local_transition_dict:
                 local_transition_dict[input_seq] = Counter()
-            local_transition_dict[input_seq][target_word] += char_ratios.get(data[i + sequence_length +1], 1)
+            local_transition_dict[input_seq][target_word] += char_ratios.get(data[i + sequence_length + 1], 1)
             
             # Update local topic-specific transition dictionary
             if topic not in local_topic_dict:
                 local_topic_dict[topic] = {}
             if input_seq not in local_topic_dict[topic]:
                 local_topic_dict[topic][input_seq] = Counter()
-            local_topic_dict[topic][input_seq][target_word] += char_ratios.get(data[i + sequence_length +1], 1)
+            local_topic_dict[topic][input_seq][target_word] += char_ratios.get(data[i + sequence_length + 1], 1)
             
             local_processed += 1
             
@@ -393,28 +393,6 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
     
     return generated_text
 
-# Create word category files if they don't exist
-def ensure_category_files_exist():
-    # Define categories and their example words
-    categories = {
-        "actions": ["create", "move", "add", "include", "insert", "join", "combine", "contain", "exist", "have", 
-                   "hold", "keep", "maintain", "possess", "retain", "sustain", "obtain", "acquire", "gain"],
-        "descriptions": ["empty", "void", "absent", "lacking", "missing", "without", "none", "nothing", "hollow", 
-                        "vacant", "barren", "bare", "blank", "desolate", "devoid", "exhausted", "gone", "vacuous"],
-        "common": ["the", "and", "of", "to", "a", "in", "that", "is", "was", "he", "for", "it", "with", "as", 
-                  "his", "on", "be", "at", "by", "had", "are", "but", "from", "they", "she", "this", "not"],
-        "diverse": ["unique", "distinct", "different", "varied", "assorted", "diverse", "eclectic", "heterogeneous", 
-                   "manifold", "miscellaneous", "mixed", "multifarious", "sundry", "unusual", "unlike", "rare"]
-    }
-    
-    # Create files if they don't exist
-    for category, words in categories.items():
-        filename = f"{category}.txt"
-        if not os.path.exists(filename):
-            with open(filename, "w", encoding="utf-8") as f:
-                f.write("\n".join(words))
-            print(f"Created {filename} with default words")
-    return categories
 # Main function
 import re
 from collections import Counter
@@ -895,6 +873,80 @@ def main():
             "soundtrack", "film score", "theme", "leitmotif", "riff", "hook", "verse", "chorus", "bridge", "intro", "outro",
             "solo", "duet", "trio", "quartet", "quintet", "sextet", "septet", "octet", "nonet", "recording", "studio",
             "mixing", "mastering", "production", "producer", "engineer", "live performance", "concert", "recital", "tour"
+        ],
+        "actions": [
+            # Creation
+            "create", "build", "develop", "generate", "produce", "construct", "design", "invent", "forge", "craft",
+            # Movement
+            "move", "transfer", "shift", "relocate", "transport", "displace", "advance", "proceed", "travel",
+            # Addition
+            "add", "append", "attach", "include", "insert", "incorporate", "supplement", "join", "combine", "merge",
+            # Possession
+            "have", "hold", "keep", "maintain", "possess", "retain", "sustain", "own", "contain", "preserve",
+            # Acquisition
+            "obtain", "acquire", "gain", "attain", "secure", "procure", "gather", "collect", "amass", "accumulate",
+            # Transformation
+            "change", "transform", "convert", "modify", "alter", "adjust", "adapt", "revise", "evolve", "transition"
+        ],
+        
+        "descriptions": [
+            # Emptiness/Absence
+            "empty", "void", "vacant", "hollow", "bare", "barren", "blank", "unfilled", "unoccupied", "deserted", 
+            # Lacking
+            "absent", "lacking", "missing", "without", "devoid", "deprived", "deficient", "insufficient", "inadequate",
+            # Nothingness
+            "none", "nothing", "zero", "nil", "nonexistent", "vanished", "gone", "exhausted", "depleted", "spent",
+            # Desolation
+            "desolate", "abandoned", "forsaken", "neglected", "uninhabited", "isolated", "secluded", "remote", "vacuous",
+            # Purity/Clearness
+            "pure", "clear", "pristine", "unsullied", "unblemished", "untainted", "clean", "spotless", "immaculate"
+        ],
+        
+        "common": [
+            # Articles
+            "the", "a", "an",
+            # Conjunctions
+            "and", "but", "or", "nor", "for", "yet", "so", "because", "although", "since", "unless", "while",
+            # Prepositions
+            "of", "to", "in", "for", "on", "with", "by", "at", "from", "into", "during", "through", "across", "between",
+            # Pronouns
+            "he", "she", "it", "they", "we", "you", "I", "me", "him", "her", "them", "us", "who", "whom", "whose",
+            # Auxiliaries
+            "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "shall",
+            # Demonstratives
+            "this", "that", "these", "those",
+            # Common adverbs
+            "not", "very", "too", "also", "just", "only", "even", "still", "rather", "quite", "somewhat"
+        ],
+        
+        "diverse": [
+            # Uniqueness
+            "unique", "singular", "unparalleled", "unprecedented", "unmatched", "exclusive", "distinctive", "original",
+            # Difference
+            "different", "distinct", "unlike", "dissimilar", "contrasting", "divergent", "separate", "discrete",
+            # Variety
+            "varied", "diverse", "assorted", "miscellaneous", "heterogeneous", "eclectic", "multifarious", "manifold",
+            # Rarity
+            "rare", "uncommon", "unusual", "exceptional", "extraordinary", "scarce", "infrequent", "sporadic", "exotic",
+            # Complexity
+            "complex", "intricate", "elaborate", "sophisticated", "multifaceted", "nuanced", "layered", "convoluted"
+        ],
+        "emotions": [
+            # Positive
+            "happy", "joyful", "elated", "excited", "content", "satisfied", "proud", "grateful", "hopeful", "optimistic",
+            # Negative
+            "sad", "angry", "frustrated", "disappointed", "anxious", "fearful", "depressed", "resentful", "bitter",
+            # Neutral/Complex
+            "curious", "surprised", "confused", "nostalgic", "contemplative", "ambivalent", "intrigued", "awestruck"
+        ],
+        
+        "concepts": [
+            # Abstract ideas
+            "freedom", "justice", "truth", "beauty", "wisdom", "knowledge", "power", "harmony", "balance", "equality",
+            # Philosophical
+            "existence", "consciousness", "reality", "identity", "purpose", "meaning", "ethics", "morality", "virtue",
+            # Social
+            "community", "society", "culture", "tradition", "progress", "innovation", "cooperation", "competition"
         ]}
     try:
         with open("vocab.pkl", "rb") as f:
@@ -911,9 +963,6 @@ def main():
     except FileNotFoundError:
         print("Error: Saved files not found. Constructing")      
 
-        # Ensure category files exist
-        ensure_category_files_exist()
-
         # Initialize set theory modifier
         set_modifier = SetTheoryModifier()
         
@@ -924,7 +973,7 @@ def main():
         pattern = r'^[a-zA-Z]{1,2}$'
 
         # List of exceptions (words we want to keep)
-        exceptions = ['a', 'i', 'to', 'is', 'it', 'an', 'of', 'by', 'he', 'me', 'we', 'be', 'my', 'up', 'do', 'go', 'if', 'no', 'so', 'on', 'at', 'in', 'as', 'or', 'la', 'ah', 'uh', 'ye', 'ab', 'ad', 'ae', 'ba', 'bi', 'bo', 'da', 'ed', 'ef', 'eh', 'el', 'em', 'en', 'er', 'es', 'et', 'ex', 'fa', 'hi', 'ho', 'id', 'is', 'jo', 'ka', 'la', 'li', 'lo', 'ma', 'me', 'mi', 'mu', 'na', 'no', 'nu', 'od', 'oe', 'oi', 'om', 'op', 'os', 'ow', 'ox', 'oy', 'pa', 're', 'sh', 'si', 'ta', 'uh', 'um','un', 'up', 'us', 'ut', 'va', 'ye', 'yo']
+        exceptions = ['a', 'i', 'to', 'is', 'it', 'an', 'of', 'by', 'he', 'me', 'we', 'be', 'my', 'up', 'do', 'go', 'if', 'no', 'so', 'on', 'at', 'in', 'as', 'or', 'la', 'ah', 'uh', 'ye', 'ab', 'ad', 'ae', 'ba', 'bi', 'bo', 'da', 'ed', 'ef', 'eh', 'el', 'em', 'en', 'er', 'es', 'ex', 'fa', 'hi', 'ho', 'id', 'is', 'jo', 'ka', 'la', 'li', 'lo', 'ma', 'me', 'mi', 'mu', 'na', 'no', 'nu', 'od', 'oe', 'oi', 'om', 'op', 'os', 'ow', 'ox', 'oy', 'pa', 're', 'sh', 'si', 'ta', 'uh', 'um','un', 'up', 'us', 'ut', 'va', 'ye', 'yo']
         
         # Filter out the short, potentially nonsensical terms, keeping exceptions
         filtered_words = [word for word in text.split() if not re.match(pattern, word) or word in exceptions]
@@ -944,7 +993,7 @@ def main():
     topic_transition_dict = topic_dict
     
     # Interactive Text Generation with embedded set theory operations and topic selection
-    print("Enhanced Text Generator with Set Theory Categories")
+    print("Enhanced Text Generator with Set Theory")
     print("Available topics:", list(topic_keywords.keys()) + ["general"])
     print("Available commands:")
     print("  /topic <topic>         - Set the current topic")
