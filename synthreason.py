@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 KB_LIMIT = -1
 SEQUENCE_LENGTH = 2
 DECAY_FACTOR = 1.9  # Decay factor for stable diffusion
-WINDOW_SIZE = 5  # Size of the window to consider for adjustments
+WINDOW_SIZE = 15  # Size of the window to consider for adjustments
 
 # Enhanced Set Operations Integration with Categories
 class SetTheoryModifier:
