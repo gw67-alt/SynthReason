@@ -84,9 +84,9 @@ class SetTheoryModifier:
                     for i, word_idx in enumerate(words):
                         if word_idx in vocab_inv:
                             word = vocab_inv[word_idx].lower()
-                            if any(empty_word in word for empty_word in description_words):
+                            if any(empty_word not in word for empty_word in description_words):
                                 modified_probs[i] *= operation['empty_boost']
-                            if any(presence_word in word for presence_word in action_words):
+                            if any(presence_word not in word for presence_word in action_words):
                                 modified_probs[i] *= operation['contradiction_penalty']
                 
         # Ensure probabilities are valid
