@@ -11,39 +11,141 @@ SEQUENCE_LENGTH = 2
 DECAY_FACTOR = 1.9  # Decay factor for stable diffusion
 WINDOW_SIZE = 5000  # Size of the window to consider for adjustments
 
-# Set Operations Integration
+# Enhanced Set Operations Integration with Categories
 class SetTheoryModifier:
     def __init__(self):
         # Empty set implementation - used to represent ∅
         self.empty_set = set()
         
-        # Initialize the set operation z=∅∩∉
-        # Since this is a conceptual operation, we'll represent it as a modifier
-        # to the Markov chain's behavior rather than a literal set operation
-        self.z_empty_not_in = {
-            'active': True,                # Whether the operation affects generation
-            'influence_factor': 0.15,      # How strongly it affects probabilities
-            'empty_boost': 1.7,           # Factor to boost words representing emptiness
-            'contradiction_penalty': 0.5   # Factor to reduce words representing presence
+        # Set theory operations categorized by concept
+        self.set_operations = {
+            'empty_not_in': {
+                'name': 'z=∅∩∉',
+                'description': 'Empty set and not-in operation',
+                'active': True,
+                'influence_factor': 0.15,
+                'empty_boost': 1.7,
+                'contradiction_penalty': 0.5
+            },
+            'union': {
+                'name': 'z=A∪B',
+                'description': 'Union operation',
+                'active': False,
+                'influence_factor': 0.2,
+                'diversity_boost': 1.5,
+                'repetition_penalty': 0.6
+            },
+            'intersection': {
+                'name': 'z=A∩B',
+                'description': 'Intersection operation',
+                'active': False,
+                'influence_factor': 0.25,
+                'commonality_boost': 1.8,
+                'divergence_penalty': 0.4
+            },
+            'complement': {
+                'name': 'z=Aᶜ',
+                'description': 'Complement operation',
+                'active': False,
+                'influence_factor': 0.3,
+                'inverse_boost': 1.6,
+                'similarity_penalty': 0.5
+            }
         }
     
+    def toggle_operation(self, operation_key):
+        """Toggle a specific set operation on/off"""
+        if operation_key in self.set_operations:
+            self.set_operations[operation_key]['active'] = not self.set_operations[operation_key]['active']
+            return f"{operation_key} ({self.set_operations[operation_key]['name']}) is now {'active' if self.set_operations[operation_key]['active'] else 'inactive'}"
+        return f"Unknown operation: {operation_key}"
+    
+    def set_operation_parameter(self, operation_key, param_name, value):
+        """Set a parameter value for a specific operation"""
+        if operation_key in self.set_operations and param_name in self.set_operations[operation_key]:
+            try:
+                self.set_operations[operation_key][param_name] = float(value)
+                return f"Set {param_name} to {value} for {operation_key}"
+            except ValueError:
+                return f"Invalid value: {value}. Must be a number."
+        return f"Unknown operation or parameter: {operation_key}.{param_name}"
+    
+    def list_active_operations(self):
+        """List all currently active set theory operations"""
+        active_ops = [f"{key} ({op['name']}): {op['description']}" 
+                     for key, op in self.set_operations.items() 
+                     if op['active']]
+        if active_ops:
+            return "Active set theory operations:\n" + "\n".join(active_ops)
+        else:
+            return "No set theory operations are currently active"
+    
+    def get_category_words(self, category):
+        """Get words associated with a specific category or set theory concept"""
+        try:
+            with open(f"{category}.txt", "r", encoding="utf-8") as f:
+                return [line.strip() for line in f.readlines()]
+        except FileNotFoundError:
+            return []
+    
     def apply_set_theory_modifiers(self, probs, words, vocab_inv):
-        """Apply set theory concepts directly to the probability distribution"""
+        """Apply multiple set theory concepts to the probability distribution"""
         modified_probs = probs.copy()
         
-        # Apply the z=∅∩∉ operation effects
-        if self.z_empty_not_in['active']:
-            for i, word_idx in enumerate(words):
-                if word_idx in vocab_inv:
-                    word = vocab_inv[word_idx].lower()
-                    # 'not in' refers to non existence or 'in' refers to in existence
-                    # Boost words that represent emptiness or absence
-                    if any(empty_word not in word for empty_word in ['empty', 'nothing', 'void', 'none', 'zero', 'absent', 'null', 'blank', 'bare', 'hollow', 'devoid', 'vacant', 'indefinite', 'unoccupied', 'nonexistent', 'lack', 'unfilled', 'desolate', 'incomplete', 'deficient', 'insubstantial', 'forlorn', 'unused', 'undeveloped', 'unavailable', 'unfurnished', 'uninhabited', 'unmarked', 'inconspicuous', 'insignificant', 'abandoned', 'unnoticed', 'unseen', 'unimportant', 'unreal', 'dispersed', 'unassembled', 'untouched', 'bare-bones', 'scant', 'minimal', 'unproductive', 'emaciated', 'unplanted', 'washed-out', 'vacuous', 'sterile', 'unmanifested', 'unmade', 'unformed', 'stripped']):
-                        modified_probs[i-1] *= self.z_empty_not_in['empty_boost']
-                    
-                    # Penalize words that strongly represent presence or inclusion
-                    if any(presence_word not in word for presence_word in ['full', 'contain', 'include', 'present', 'exist', 'complete', 'occupied', 'engage', 'encompass', 'hold', 'embrace', 'consist', 'comprise', 'feature', 'embody', 'carry', 'comprehend', 'integrate', 'enclose', 'possess', 'enfold', 'retain', 'encompassing', 'incorporate', 'subsist', 'enjoy', 'have', 'carry out', 'realize', 'involve', 'establish', 'manifest', 'assume', 'sustain', 'maintain', 'bring about', 'actualize', 'function', 'attain', 'constitute', 'serve', 'achieve', 'provide', 'own', 'wield', 'presently', 'affirm', 'entail', 'contribute', 'produce', 'supply']):
-                        modified_probs[i] *= self.z_empty_not_in['contradiction_penalty']
+        # Get category word lists for different concepts
+        action_words = self.get_category_words("actions")
+        description_words = self.get_category_words("descriptions")
+        common_words = self.get_category_words("common")
+        diverse_words = self.get_category_words("diverse")
+        
+        # Apply each active set theory operation
+        for op_key, operation in self.set_operations.items():
+            if operation['active']:
+                # Apply operation-specific modifications
+                if op_key == 'empty_not_in':
+                    # ∅∩∉ operation: Boost emptiness, penalize presence
+                    for i, word_idx in enumerate(words):
+                        if word_idx in vocab_inv:
+                            word = vocab_inv[word_idx].lower()
+                            if any(empty_word in word for empty_word in description_words):
+                                modified_probs[i] *= operation['empty_boost']
+                            if any(presence_word in word for presence_word in action_words):
+                                modified_probs[i] *= operation['contradiction_penalty']
+                
+                elif op_key == 'union':
+                    # Union operation: Boost diversity, penalize repetition
+                    recent_words = set()
+                    for i, word_idx in enumerate(words):
+                        if word_idx in vocab_inv:
+                            word = vocab_inv[word_idx].lower()
+                            if any(diverse_word in word for diverse_word in diverse_words):
+                                modified_probs[i] *= operation['diversity_boost']
+                            if word in recent_words:
+                                modified_probs[i] *= operation['repetition_penalty']
+                            recent_words.add(word)
+                
+                elif op_key == 'intersection':
+                    # Intersection operation: Boost commonality, penalize divergence
+                    for i, word_idx in enumerate(words):
+                        if word_idx in vocab_inv:
+                            word = vocab_inv[word_idx].lower()
+                            if any(common_word in word for common_word in common_words):
+                                modified_probs[i] *= operation['commonality_boost']
+                            if any(diverse_word in word for diverse_word in diverse_words):
+                                modified_probs[i] *= operation['divergence_penalty']
+                
+                elif op_key == 'complement':
+                    # Complement operation: Boost inverse concepts, penalize similarity
+                    # This requires knowledge of antonyms, but as a simple approximation:
+                    for i, word_idx in enumerate(words):
+                        if word_idx in vocab_inv:
+                            word = vocab_inv[word_idx].lower()
+                            # Simple approximation: boost words with negative prefixes
+                            if word.startswith(('un', 'non', 'in', 'dis', 'anti')):
+                                modified_probs[i] *= operation['inverse_boost']
+                            # Penalize words that are very common (as an approximation of similarity)
+                            if word in common_words:
+                                modified_probs[i] *= operation['similarity_penalty']
         
         # Ensure probabilities are valid
         modified_probs = np.maximum(modified_probs, 0)
@@ -73,30 +175,142 @@ def preprocess_text(text, vocab):
     text = re.sub(r'[^\w\s]', '', text.lower())
     tokens = text.split()
     return [vocab[word] for word in tokens if word in vocab]
+import threading
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import numpy as np
 
-# Create sequences and normalize transition probabilities
-def create_sequences(text_data, vocab, sequence_length, char_ratios):
-    data = preprocess_text(text_data, vocab)
-    transition_dict = {}
-    for i in range(len(data) - sequence_length):
-        input_seq = tuple(data[i:i + sequence_length])
-        target_word = data[i + sequence_length]
-        if input_seq not in transition_dict:
-            transition_dict[input_seq] = Counter()
-        transition_dict[input_seq][target_word] +=  char_ratios.get(data[i], 1)
+def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywords, num_threads=None):
+    """
+    Create sequences and normalize transition probabilities with topic categorization using multiple threads.
     
-    # Normalize transition probabilities and combine with character ratios
+    Args:
+        text_data: The preprocessed text data as a string
+        vocab: Dictionary mapping words to indices
+        sequence_length: Length of input sequences
+        char_ratios: Dictionary with character weighting ratios
+        topic_keywords: Dictionary of topics and their associated keywords
+        num_threads: Number of threads to use (defaults to CPU count if None)
+        
+    Returns:
+        tuple: (transition_dict, topic_transition_dict)
+    """
+    # Preprocess text data
+    data = preprocess_text(text_data, vocab)
+    
+    # Determine chunk size based on number of threads
+    if num_threads is None:
+        import multiprocessing
+        num_threads = multiprocessing.cpu_count()
+    
+    # Create chunks of data for parallel processing
+    chunk_size = max(1, (len(data) - sequence_length) // num_threads)
+    chunks = [(i, min(i + chunk_size, len(data) - sequence_length)) 
+              for i in range(0, len(data) - sequence_length, chunk_size)]
+    
+    # Lock for thread-safe updates to shared dictionaries
+    lock = threading.Lock()
+    
+    # Create reverse vocabulary for topic identification
+    vocab_inv = {idx: word for word, idx in vocab.items()}
+    
+    # Shared dictionaries for results
+    transition_dict = {}
+    topic_transition_dict = {}
+    
+    def process_chunk(start_idx, end_idx):
+        """Process a chunk of the data and return local dictionaries"""
+        local_transition_dict = {}
+        local_topic_dict = {}
+        
+        for i in range(start_idx, end_idx):
+            input_seq = tuple(data[i:i + sequence_length])
+            target_word = data[i + sequence_length]
+            
+            # Identify the topic for this sequence
+            topic = identify_topic(input_seq, vocab_inv, topic_keywords)
+            
+            # Update local transition dictionary
+            if input_seq not in local_transition_dict:
+                local_transition_dict[input_seq] = Counter()
+            local_transition_dict[input_seq][target_word] += char_ratios.get(data[i], 1)
+            
+            # Update local topic-specific transition dictionary
+            if topic not in local_topic_dict:
+                local_topic_dict[topic] = {}
+            if input_seq not in local_topic_dict[topic]:
+                local_topic_dict[topic][input_seq] = Counter()
+            local_topic_dict[topic][input_seq][target_word] += char_ratios.get(data[i], 1)
+        
+        return local_transition_dict, local_topic_dict
+    
+    def merge_results(local_transition_dict, local_topic_dict):
+        """Merge local dictionaries into the shared dictionaries"""
+        with lock:
+            # Merge transition dictionaries
+            for input_seq, counter in local_transition_dict.items():
+                if input_seq not in transition_dict:
+                    transition_dict[input_seq] = Counter()
+                transition_dict[input_seq].update(counter)
+            
+            # Merge topic dictionaries
+            for topic, transitions in local_topic_dict.items():
+                if topic not in topic_transition_dict:
+                    topic_transition_dict[topic] = {}
+                
+                for input_seq, counter in transitions.items():
+                    if input_seq not in topic_transition_dict[topic]:
+                        topic_transition_dict[topic][input_seq] = Counter()
+                    topic_transition_dict[topic][input_seq].update(counter)
+    
+    # Process chunks in parallel
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [executor.submit(process_chunk, start, end) for start, end in chunks]
+        
+        for future in as_completed(futures):
+            local_transition_dict, local_topic_dict = future.result()
+            merge_results(local_transition_dict, local_topic_dict)
+    
+    # Normalize general transition probabilities
     for key, counter in transition_dict.items():
         total = sum(counter.values())
-        transition_dict[key] = {k: (v / total) * char_ratios.get(k, 1) for k, v in counter.items()}
+        if total > 0:  # Avoid division by zero
+            transition_dict[key] = {k: (v / total) * char_ratios.get(k, 1) for k, v in counter.items()}
     
-    return transition_dict
+    # Normalize topic-specific transition probabilities
+    for topic, transitions in topic_transition_dict.items():
+        for key, counter in transitions.items():
+            total = sum(counter.values())
+            if total > 0:  # Avoid division by zero
+                topic_transition_dict[topic][key] = {k: (v / total) * char_ratios.get(k, 1) for k, v in counter.items()}
+    
+    return transition_dict, topic_transition_dict
 
-# Generate text using Markov chain with set theory modifications
-def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max_length=250):
-    # Initialize the set theory modifier
-    set_modifier = SetTheoryModifier()
+
+def identify_topic(sequence, vocab_inv, topic_keywords):
+    """
+    Identify the topic of a sequence based on keywords.
     
+    Args:
+        sequence: Tuple of word indices
+        vocab_inv: Inverse vocabulary (index to word)
+        topic_keywords: Dictionary of topics and their associated keywords
+        
+    Returns:
+        str: The identified topic or 'general' if no specific topic is found
+    """
+    # Convert sequence indices to words
+    words = [vocab_inv.get(idx, '') for idx in sequence]
+    
+    # Check for topic keywords in the sequence
+    for topic, keywords in topic_keywords.items():
+        if any(keyword in words for keyword in keywords):
+            return topic
+    
+    return 'general'  # Default topic if no specific topic is found
+
+# Generate text using Markov chain with set theory modifications and topic bias
+def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, topic_transition_dict=None, topic=None, topic_bias=0.7, seq_length=3, max_length=250):
     vocab_inv = {idx: word for word, idx in set(vocab.items())}
     input_indices = [vocab[word] for word in prompt.lower().split() if word in vocab]
     while len(input_indices) < seq_length:
@@ -107,10 +321,42 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max
     
     for _ in range(max_length):
         input_tuple = tuple(input_indices[-seq_length:])
-        if input_tuple in transition_dict:
-            probs_dict = transition_dict[input_tuple]
-            words = list(probs_dict.keys())
-            probs = np.array(list(probs_dict.values()), dtype=float)
+        
+        # Determine if we have transitions for this sequence
+        has_general = input_tuple in transition_dict
+        has_topic = topic and topic in topic_transition_dict and input_tuple in topic_transition_dict[topic]
+        
+        if has_general or has_topic:
+            # If we have topic-specific transitions and general transitions, blend them
+            if has_general and has_topic:
+                general_probs = transition_dict[input_tuple]
+                topic_probs = topic_transition_dict[topic][input_tuple]
+                
+                # Combine words from both dictionaries
+                all_words = set(general_probs.keys()) | set(topic_probs.keys())
+                words = list(all_words)
+                
+                # Initialize probabilities array
+                probs = np.zeros(len(words))
+                
+                # Fill in probabilities, blending between general and topic-specific
+                for i, word_idx in enumerate(words):
+                    general_prob = general_probs.get(word_idx, 0)
+                    topic_prob = topic_probs.get(word_idx, 0)
+                    # Blend probabilities using topic_bias
+                    probs[i] = (1 - topic_bias) * general_prob + topic_bias * topic_prob
+            
+            # If we only have general transitions
+            elif has_general:
+                probs_dict = transition_dict[input_tuple]
+                words = list(probs_dict.keys())
+                probs = np.array(list(probs_dict.values()), dtype=float)
+            
+            # If we only have topic-specific transitions
+            elif has_topic:
+                probs_dict = topic_transition_dict[topic][input_tuple]
+                words = list(probs_dict.keys())
+                probs = np.array(list(probs_dict.values()), dtype=float)
             
             # Apply character ratio masking to probabilities
             for i, word_idx in enumerate(words):
@@ -123,7 +369,6 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max
                             probs[i] *= (1.0 + char_ratios[first_char])
             
             # Apply set theory modifiers to probabilities
-            # This is where z=∅∩∉ directly influences the generation
             probs = set_modifier.apply_set_theory_modifiers(probs, words, vocab_inv)
             
             # Continue with existing logic for recent transitions
@@ -135,7 +380,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max
                     try:
                         probs[words.index(past_transition)] *= char_ratios.get(next_word[0], 1)
                     except:
-                        False
+                        pass
             
             # Ensure probabilities are valid again after all modifications
             probs = np.maximum(probs, 0)
@@ -158,9 +403,37 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=3, max
     
     return generated_text
 
+# Create word category files if they don't exist
+def ensure_category_files_exist():
+    # Define categories and their example words
+    categories = {
+        "actions": ["create", "move", "add", "include", "insert", "join", "combine", "contain", "exist", "have", 
+                   "hold", "keep", "maintain", "possess", "retain", "sustain", "obtain", "acquire", "gain"],
+        "descriptions": ["empty", "void", "absent", "lacking", "missing", "without", "none", "nothing", "hollow", 
+                        "vacant", "barren", "bare", "blank", "desolate", "devoid", "exhausted", "gone", "vacuous"],
+        "common": ["the", "and", "of", "to", "a", "in", "that", "is", "was", "he", "for", "it", "with", "as", 
+                  "his", "on", "be", "at", "by", "had", "are", "but", "from", "they", "she", "this", "not"],
+        "diverse": ["unique", "distinct", "different", "varied", "assorted", "diverse", "eclectic", "heterogeneous", 
+                   "manifold", "miscellaneous", "mixed", "multifarious", "sundry", "unusual", "unlike", "rare"]
+    }
+    
+    # Create files if they don't exist
+    for category, words in categories.items():
+        filename = f"{category}.txt"
+        if not os.path.exists(filename):
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write("\n".join(words))
+            print(f"Created {filename} with default words")
+
 # Main function
 def main():
     try:
+        # Ensure category files exist
+        ensure_category_files_exist()
+        
+        # Initialize set theory modifier
+        set_modifier = SetTheoryModifier()
+        
         # Load text data and calculate character ratios
         with open("test.txt", "r", encoding="utf-8") as f:
             text = ' '.join(f.read().split()[:KB_LIMIT])
@@ -168,8 +441,9 @@ def main():
         pattern = r'^[a-zA-Z]{1,2}$'
 
         # List of exceptions (words we want to keep)
-        exceptions =  ['a', 'i', 'to', 'is', 'it', 'an', 'of', 'by', 'he', 'me', 'we', 'be', 'my', 'up', 'do', 'go', 'if', 'no', 'so', 'on', 'at', 'in', 'as', 'or', 'la', 'ah', 'uh', 'ye', 'ab', 'ad', 'ae', 'ba', 'bi', 'bo', 'da', 'ed', 'ef', 'eh', 'el', 'em', 'en', 'er', 'es', 'et', 'ex', 'fa', 'hi', 'ho', 'id', 'is', 'jo', 'ka', 'la', 'li', 'lo', 'ma', 'me', 'mi', 'mu', 'na', 'no', 'nu', 'od', 'oe', 'oi', 'om', 'op', 'os', 'ow', 'ox', 'oy', 'pa', 're', 'sh', 'si', 'ta', 'uh', 'um','un', 'up', 'us', 'ut', 'va', 'ye', 'yo']
-        # Filter out the short, potentially nonsensical terms, keeping 'a' and 'i'
+        exceptions = ['a', 'i', 'to', 'is', 'it', 'an', 'of', 'by', 'he', 'me', 'we', 'be', 'my', 'up', 'do', 'go', 'if', 'no', 'so', 'on', 'at', 'in', 'as', 'or', 'la', 'ah', 'uh', 'ye', 'ab', 'ad', 'ae', 'ba', 'bi', 'bo', 'da', 'ed', 'ef', 'eh', 'el', 'em', 'en', 'er', 'es', 'et', 'ex', 'fa', 'hi', 'ho', 'id', 'is', 'jo', 'ka', 'la', 'li', 'lo', 'ma', 'me', 'mi', 'mu', 'na', 'no', 'nu', 'od', 'oe', 'oi', 'om', 'op', 'os', 'ow', 'ox', 'oy', 'pa', 're', 'sh', 'si', 'ta', 'uh', 'um','un', 'up', 'us', 'ut', 'va', 'ye', 'yo']
+        
+        # Filter out the short, potentially nonsensical terms, keeping exceptions
         filtered_words = [word for word in text.split() if not re.match(pattern, word) or word in exceptions]
         char_ratios = calculate_character_ratios(filtered_words)
 
@@ -178,16 +452,156 @@ def main():
         word_counts = Counter(tokens)
         vocab = {word: idx for idx, (word, _) in enumerate(word_counts.items(), 1)}
         vocab['<PAD>'] = 0
+        
+        # Define topic keywords (customize these based on your text corpus)
+        topic_keywords = {
+            "science": ["science", "physics", "chemistry", "biology", "experiment", "theory", "research", "data"],
+            "history": ["history", "ancient", "medieval", "century", "war", "kingdom", "empire", "civilization"],
+            "technology": ["technology", "computer", "software", "hardware", "internet", "digital", "programming", "code"],
+            "art": ["art", "painting", "music", "literature", "poetry", "artist", "creative", "aesthetic"],
+            "philosophy": ["philosophy", "ethics", "moral", "existence", "consciousness", "metaphysics", "logic"],
+            "medicine": ["medicine", "health", "disease", "treatment", "doctor", "patient", "diagnosis", "symptom", "cure", "hospital"],
+            "psychology": ["psychology", "mind", "behavior", "cognitive", "emotion", "therapy", "mental", "personality", "trauma", "subconscious"],
+            "economics": ["economics", "market", "finance", "economy", "trade", "investment", "capital", "monetary", "fiscal", "inflation"],
+            "politics": ["politics", "government", "election", "policy", "democracy", "vote", "legislation", "parliament", "congress", "senator"],
+            "environment": ["environment", "climate", "ecology", "ecosystem", "sustainability", "conservation", "pollution", "biodiversity", "renewable", "habitat"],
+            "education": ["education", "learning", "teaching", "school", "university", "student", "classroom", "curriculum", "academic", "pedagogy"],
+            "architecture": ["architecture", "building", "design", "structure", "construction", "architect", "urban", "facade", "interior", "exterior"],
+            "sports": ["sports", "athlete", "competition", "team", "game", "championship", "tournament", "match", "stadium", "coach"],
+            "food": ["food", "cooking", "recipe", "cuisine", "ingredient", "dish", "flavor", "taste", "restaurant", "chef"],
+            "fashion": ["fashion", "clothing", "style", "design", "trend", "textile", "accessory", "runway", "designer", "collection"],
+            "astronomy": ["astronomy", "star", "planet", "galaxy", "universe", "cosmic", "telescope", "orbit", "celestial", "constellation"],
+            "religion": ["religion", "faith", "belief", "spiritual", "divine", "sacred", "worship", "ritual", "prayer", "deity"],
+            "linguistics": ["linguistics", "language", "grammar", "syntax", "semantic", "phonetic", "dialect", "vocabulary", "morphology", "etymology"],
+            "archaeology": ["archaeology", "excavation", "artifact", "ruin", "ancient", "fossil", "civilization", "preservation", "relic", "prehistoric"],
+            "engineering": ["engineering", "mechanical", "electrical", "civil", "design", "prototype", "manufacturing", "industrial", "aerospace", "chemical"],
+            "gardening": ["gardening", "plant", "flower", "soil", "seed", "grow", "prune", "cultivate", "landscape", "botanical"],
+            "travel": ["travel", "destination", "journey", "tourism", "vacation", "adventure", "tourist", "explore", "itinerary", "landmark"],
+            "film": ["film", "movie", "cinema", "director", "actor", "scene", "screenplay", "production", "cinematography", "studio"],
+            "photography": ["photography", "camera", "image", "photograph", "lens", "exposure", "composition", "portrait", "landscape", "aperture"],
+            "mythology": ["mythology", "legend", "myth", "folklore", "deity", "hero", "creature", "tale", "tradition", "epic"],
+            "anthropology": ["anthropology", "culture", "society", "tradition", "ritual", "custom", "ethnography", "indigenous", "social", "community"],
+            "oceanography": ["oceanography", "ocean", "marine", "sea", "underwater", "coastal", "current", "aquatic", "tide", "maritime"],
+            "business": ["business", "company", "corporate", "entrepreneur", "startup", "management", "strategy", "leadership", "marketing", "revenue"],
+            "mathematics": ["mathematics", "equation", "theorem", "calculation", "geometry", "algebra", "calculus", "formula", "numerical", "computation"],
+            "music": ["music", "song", "melody", "rhythm", "harmony", "instrument", "composer", "musician", "concert", "symphony"]
+        }
+        
+        # Create input sequences and transition matrices with normalized probabilities
+        transition_dict, topic_transition_dict = create_sequences(text, vocab, SEQUENCE_LENGTH, char_ratios, topic_keywords)
 
-        # Create input sequences and transition matrix with normalized probabilities
-        transition_dict = create_sequences(text, vocab, SEQUENCE_LENGTH, char_ratios)
-
-        # Interactive Text Generation with embedded set theory operations
-        print("Text generator running with embedded set theory operations (z=∅∩∉).")
+        # Interactive Text Generation with embedded set theory operations and topic selection
+        print("Enhanced Text Generator with Set Theory Categories")
+        print("Available topics:", list(topic_keywords.keys()) + ["general"])
+        print("Available commands:")
+        print("  /topic <topic>         - Set the current topic")
+        print("  /set list              - List active set theory operations")
+        print("  /set toggle <op>       - Toggle a set operation on/off")
+        print("  /set param <op> <p> <v> - Set parameter value for operation")
+        print("  /cat list              - List available word categories")
+        print("  /cat view <category>   - View words in a category")
+        print("  /cat add <cat> <word>  - Add word to a category")
+        print("  /exit                  - Exit the program")
+        
+        current_topic = None
+        
         while True:
             prompt = input("USER: ")
-            generated_text = generate_text(prompt, vocab, transition_dict, char_ratios, seq_length=SEQUENCE_LENGTH, max_length=250)
-            print("Generated text:\n", generated_text)
+            
+            # Check for commands
+            if prompt.startswith("/"):
+                cmd_parts = prompt.split()
+                cmd = cmd_parts[0].lower()
+                
+                # Topic command
+                if cmd == "/topic" and len(cmd_parts) > 1:
+                    requested_topic = cmd_parts[1].lower()
+                    if requested_topic in topic_keywords or requested_topic == "general":
+                        print(f"Topic set to: {requested_topic}")
+                        current_topic = requested_topic if requested_topic != "general" else None
+                    else:
+                        print(f"Unknown topic: {requested_topic}")
+                        print("Available topics:", list(topic_keywords.keys()) + ["general"])
+                
+                # Set theory commands
+                elif cmd == "/set":
+                    if len(cmd_parts) > 1:
+                        subcmd = cmd_parts[1].lower()
+                        
+                        if subcmd == "list":
+                            print(set_modifier.list_active_operations())
+                        
+                        elif subcmd == "toggle" and len(cmd_parts) > 2:
+                            op_key = cmd_parts[2].lower()
+                            print(set_modifier.toggle_operation(op_key))
+                        
+                        elif subcmd == "param" and len(cmd_parts) > 4:
+                            op_key = cmd_parts[2].lower()
+                            param = cmd_parts[3].lower()
+                            value = cmd_parts[4]
+                            print(set_modifier.set_operation_parameter(op_key, param, value))
+                        
+                        else:
+                            print("Invalid set command. Use: /set list, /set toggle <op>, or /set param <op> <param> <value>")
+                
+                # Category commands
+                elif cmd == "/cat":
+                    if len(cmd_parts) > 1:
+                        subcmd = cmd_parts[1].lower()
+                        
+                        if subcmd == "list":
+                            print("Available categories:")
+                            for filename in os.listdir():
+                                if filename.endswith(".txt") and not filename == "test.txt":
+                                    print(f"  - {filename[:-4]}")
+                        
+                        elif subcmd == "view" and len(cmd_parts) > 2:
+                            category = cmd_parts[2].lower()
+                            words = set_modifier.get_category_words(category)
+                            if words:
+                                print(f"Words in category '{category}':")
+                                print(", ".join(words))
+                            else:
+                                print(f"Category '{category}' not found or empty")
+                        
+                        elif subcmd == "add" and len(cmd_parts) > 3:
+                            category = cmd_parts[2].lower()
+                            word = cmd_parts[3].lower()
+                            filename = f"{category}.txt"
+                            
+                            try:
+                                with open(filename, "a", encoding="utf-8") as f:
+                                    f.write(f"\n{word}")
+                                print(f"Added '{word}' to category '{category}'")
+                            except:
+                                print(f"Failed to add word to category '{category}'")
+                        
+                        else:
+                            print("Invalid category command. Use: /cat list, /cat view <category>, or /cat add <category> <word>")
+                
+                # Exit command
+                elif cmd == "/exit":
+                    print("Exiting text generator.")
+                    break
+                
+                else:
+                    print("Unknown command.")
+            
+            # Generate text
+            else:
+                generated_text = generate_text(
+                    prompt, 
+                    vocab, 
+                    transition_dict, 
+                    char_ratios,
+                    set_modifier,
+                    topic_transition_dict=topic_transition_dict,
+                    topic=current_topic,
+                    seq_length=SEQUENCE_LENGTH, 
+                    max_length=250
+                )
+                
+                print("Generated text:\n", generated_text)
     
     except FileNotFoundError:
         print("Error: test.txt file not found. Please create this file with your training text data.")
