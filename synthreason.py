@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 KB_LIMIT = -1
 SEQUENCE_LENGTH = 2
 DECAY_FACTOR = 1.9  # Decay factor for stable diffusion
-WINDOW_SIZE = 15  # Size of the window to consider for adjustments
+WINDOW_SIZE = 15 # Size of the window to consider for adjustments
 
 # Enhanced Set Operations Integration with Categories
 class SetTheoryModifier:
@@ -331,8 +331,8 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
                 
                 # Fill in probabilities, blending between general and topic-specific
                 for i, word_idx in enumerate(words):
-                    general_prob = general_probs.get(word_idx, 0)
-                    topic_prob = topic_probs.get(word_idx, 0)
+                    general_prob = general_probs.get(word_idx, 1)
+                    topic_prob = topic_probs.get(word_idx, 1)
                     # Blend probabilities using topic_bias
                     probs[i] = (1 - topic_bias) * general_prob + topic_bias * topic_prob
             
