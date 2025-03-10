@@ -308,7 +308,8 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
     
     generated_text = prompt
     recent_transitions = []
-    
+    next_word = "a"
+
     for _ in range(max_length):
         input_tuple = tuple(input_indices[-seq_length:])
         
@@ -362,7 +363,6 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
             probs = set_modifier.apply_set_theory_modifiers(probs, words, vocab_inv)
             
             # Continue with existing logic for recent transitions
-            next_word = "a"
             for i in range(1, min(WINDOW_SIZE, len(recent_transitions)) + 1):
                 past_transition = recent_transitions[-i]
                 decay = DECAY_FACTOR ** char_ratios.get(next_word[0], 1)
@@ -950,7 +950,7 @@ def main():
         set_modifier = SetTheoryModifier()
         
         # Load text data and calculate character ratios
-        with open("kb.txt", "r", encoding="utf-8") as f:
+        with open("test.txt", "r", encoding="utf-8") as f:
             text = ' '.join(f.read().split()[:KB_LIMIT])
         text = re.sub(r'\d+', '', text)
         pattern = r'^[a-zA-Z]{1,2}$'
