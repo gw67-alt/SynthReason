@@ -11,7 +11,7 @@ import tqdm
 from collections import Counter
 
 # Parameters
-KB_LIMIT = 9999
+KB_LIMIT = 999
 SEQUENCE_LENGTH = 1
 EMBEDDING_DIM = 256
 HIDDEN_DIM = 256
@@ -37,8 +37,6 @@ class TextGeneratorNN(nn.Module):
         lstm_out = self.dropout(lstm_out)
         output = self.fc(lstm_out)
         return output, hidden
-    
-   
 
 # Enhanced Set Operations Integration with Categories
 class SetTheoryModifier:
@@ -167,93 +165,6 @@ def calculate_character_ratios(data):
     char_ratios = {char: count / total_items for char, count in char_count.items()}
     return char_ratios
 
-# Topic identification
-def identify_topic(sequence, vocab_inv, topic_keywords):
-    """
-    Identify the topic of a sequence based on keywords.
-    
-    Args:
-        sequence: Tensor of word indices
-        vocab_inv: Inverse vocabulary (index to word)
-        topic_keywords: Dictionary of topics and their associated keywords
-        
-    Returns:
-        str: The identified topic or 'general' if no specific topic is found
-    """
-    # Convert sequence indices to words
-    words = [vocab_inv.get(idx.item(), '') for idx in sequence]
-    
-    # Check for topic keywords in the sequence
-    for topic, keywords in topic_keywords.items():
-        if any(keyword in words for keyword in keywords):
-            return topic
-    
-    return 'general'  # Default topic if no specific topic is found
-
-# Topic detection
-def detect_topic(text, topic_keywords):
-    """
-    Automatically detect the most likely topic based on keyword frequency in the input text.
-    
-    Args:
-        text (str): The input text to analyze
-        topic_keywords (dict): Dictionary mapping topics to their related keywords
-        
-    Returns:
-        str: The most likely topic or None if no clear topic is detected
-        list: Matched keywords for the detected topic
-    """
-    # Convert input to lowercase and tokenize
-    text_lower = text.lower()
-    words = re.findall(r'\b\w+\b', text_lower)
-    
-    # Count keyword matches for each topic
-    topic_scores = {topic: 0 for topic in topic_keywords}
-    matched_keywords = {topic: [] for topic in topic_keywords}
-    
-    for word in words:
-        for topic, keywords in topic_keywords.items():
-            if word in keywords:
-                topic_scores[topic] += 1
-                matched_keywords[topic].append(word)
-    
-    # Find topic with highest score
-    max_score = 0
-    best_topic = None
-    
-    for topic, score in topic_scores.items():
-        if score > max_score:
-            max_score = score
-            best_topic = topic
-    
-    # Check for ties and resolve based on keyword specificity
-    if best_topic:
-        tied_topics = [t for t, s in topic_scores.items() if s == max_score]
-        if len(tied_topics) > 1:
-            # Resolve ties by checking keyword uniqueness
-            topic_uniqueness = {}
-            for topic in tied_topics:
-                # Count how many other topics contain each matched keyword
-                uniqueness_score = 0
-                for keyword in matched_keywords[topic]:
-                    other_topics_with_keyword = sum(1 for t in topic_keywords if t != topic and keyword in topic_keywords[t])
-                    uniqueness_score += 1 / (1 + other_topics_with_keyword)  # More unique keywords score higher
-                
-                if matched_keywords[topic]:  # Avoid division by zero
-                    topic_uniqueness[topic] = uniqueness_score / len(matched_keywords[topic])
-                else:
-                    topic_uniqueness[topic] = 0
-            
-            # Select the topic with the most unique keywords
-            best_topic = max(topic_uniqueness.items(), key=lambda x: x[1])[0]
-    
-    # Only return a topic if it has a minimum number of matches
-    min_matches = 1  # Adjust this threshold as needed
-    if max_score >= min_matches:
-        return best_topic, matched_keywords[best_topic] if best_topic else []
-    else:
-        return None, []
-
 # Training function
 def train_model(model, dataset, epochs, learning_rate, device):
     """Train the PyTorch model without using batches"""
@@ -294,11 +205,9 @@ def train_model(model, dataset, epochs, learning_rate, device):
 
 # Text generation function with PyTorch model
 def generate_text_nn(model, prompt, vocab, vocab_inv, char_ratios, set_modifier, device, 
-                     seq_length=SEQUENCE_LENGTH, max_length=250, temperature=1.0, topic_model=None, topic=None):
+                     seq_length, max_length, temperature):
     """Generate text using the trained PyTorch model with set theory modifications"""
     model.eval()
-    if topic_model:
-        topic_model.eval()
     
     # Process prompt
     words = prompt.lower().split()
@@ -341,15 +250,6 @@ def generate_text_nn(model, prompt, vocab, vocab_inv, char_ratios, set_modifier,
                     first_char = word[0].lower()
                     if first_char in char_ratios:
                         probs[i] *= (1.0 + char_ratios[first_char])
-        
-        # Apply topic bias if topic model and topic are provided
-        if topic_model and topic is not None:
-            with torch.no_grad():
-                topic_output, _ = topic_model(input_tensor)
-                topic_probs = torch.softmax(topic_output[-1, :] / temperature, dim=-1)
-                
-                # Blend probabilities (70% topic, 30% general)
-                probs = 0.3 * probs + 0.7 * topic_probs
         
         # Apply recency bias (avoid repeating recent words)
         for i in range(1, min(WINDOW_SIZE, len(recent_outputs)) + 1):
@@ -408,59 +308,6 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    # Define topic keywords
-    topic_keywords = {
-        "actions": [
-            # Creation
-            "create", "build", "develop", "generate", "produce", "construct", "design", "invent", "forge", "craft",
-            # Movement
-            "move", "transfer", "shift", "relocate", "transport", "displace", "advance", "proceed", "travel",
-            # Addition
-            "add", "append", "attach", "include", "insert", "incorporate", "supplement", "join", "combine", "merge",
-            # Possession
-            "have", "hold", "keep", "maintain", "possess", "retain", "sustain", "own", "contain", "preserve",
-            # Acquisition
-            "obtain", "acquire", "gain", "attain", "secure", "procure", "gather", "collect", "amass", "accumulate",
-            # Transformation
-            "change", "transform", "convert", "modify", "alter", "adjust", "adapt", "revise", "evolve", "transition"
-        ],
-        
-        "descriptions": [
-            # Emptiness/Absence
-            "empty", "void", "vacant", "hollow", "bare", "barren", "blank", "unfilled", "unoccupied", "deserted", 
-            # Lacking
-            "absent", "lacking", "missing", "without", "devoid", "deprived", "deficient", "insufficient", "inadequate",
-            # Nothingness
-            "none", "nothing", "zero", "nil", "nonexistent", "vanished", "gone", "exhausted", "depleted", "spent",
-            # Desolation
-            "desolate", "abandoned", "forsaken", "neglected", "uninhabited", "isolated", "secluded", "remote", "vacuous",
-            # Purity/Clearness
-            "pure", "clear", "pristine", "unsullied", "unblemished", "untainted", "clean", "spotless", "immaculate"
-        ],
-        
-        "diverse": [
-            # Uniqueness
-            "unique", "singular", "unparalleled", "unprecedented", "unmatched", "exclusive", "distinctive", "original",
-            # Difference
-            "different", "distinct", "unlike", "dissimilar", "contrasting", "divergent", "separate", "discrete",
-            # Variety
-            "varied", "diverse", "assorted", "miscellaneous", "heterogeneous", "eclectic", "multifarious", "manifold",
-            # Rarity
-            "rare", "uncommon", "unusual", "exceptional", "extraordinary", "scarce", "infrequent", "sporadic", "exotic",
-            # Complexity
-            "complex", "intricate", "elaborate", "sophisticated", "multifaceted", "nuanced", "layered", "convoluted"
-        ],
-        
-        "concepts": [
-            # Abstract ideas
-            "freedom", "justice", "truth", "beauty", "wisdom", "knowledge", "power", "harmony", "balance", "equality",
-            # Philosophical
-            "existence", "consciousness", "reality", "identity", "purpose", "meaning", "ethics", "morality", "virtue",
-            # Social
-            "community", "society", "culture", "tradition", "progress", "innovation", "cooperation", "competition"
-        ]
-    }
-    
     # Try to load existing model, otherwise train a new one
     try:
         print("Attempting to load existing model...")
@@ -468,16 +315,6 @@ def main():
         vocab_inv = {idx: word for word, idx in vocab.items()}
         print("Model loaded successfully.")
         
-        # Load topic-specific models if they exist
-        topic_models = {}
-        for topic in topic_keywords:
-            try:
-                topic_model, _, _ = load_model(f"{topic}_model.pt", device=device)
-                topic_models[topic] = topic_model
-                print(f"Loaded topic model for '{topic}'")
-            except:
-                print(f"No model found for topic '{topic}'")
-    
     except:
         print("No existing model found. Preparing to train a new model...")
         
@@ -516,32 +353,6 @@ def main():
             train_model(model, dataset, NUM_EPOCHS, LEARNING_RATE, device)
             save_model(model, vocab, char_ratios)
             
-            # Train topic-specific models
-            topic_models = {}
-            for topic, keywords in topic_keywords.items():
-                print(f"Filtering data for topic '{topic}'...")
-                # Create a corpus focused on this topic
-                topic_text = []
-                for word in filtered_words:
-                    if word in keywords:
-                        # Include context around the keyword
-                        idx = filtered_words.index(word)
-                        start = max(0, idx - 50)
-                        end = min(len(filtered_words), idx + 50)
-                        topic_text.extend(filtered_words[start:end])
-                
-                if len(topic_text) > 100:  # Only train if we have enough data
-                    topic_text = ' '.join(topic_text)
-                    topic_dataset = TextDataset(topic_text, vocab, SEQUENCE_LENGTH)
-                    
-                    print(f"Training model for topic '{topic}'...")
-                    topic_model = TextGeneratorNN(vocab_size, EMBEDDING_DIM, HIDDEN_DIM).to(device)
-                    train_model(topic_model, topic_dataset, NUM_EPOCHS, LEARNING_RATE, device)
-                    save_model(topic_model, vocab, char_ratios, f"{topic}_model.pt")
-                    topic_models[topic] = topic_model
-                else:
-                    print(f"Not enough data for topic '{topic}', skipping.")
-        
         except FileNotFoundError:
             print("Error: kb.txt file not found. Please ensure the knowledge base file exists.")
             return
@@ -550,14 +361,7 @@ def main():
     set_modifier = SetTheoryModifier()
     
     print("\nEnhanced Text Generator with PyTorch Neural Networks")
-    print("Available topics:", list(topic_keywords.keys()) + ["general"])
-    print("Available commands:")
-    print("  /topic <topic>         - Set the current topic")
-    print("  /topic auto            - Enable automatic topic detection")
-    print("  /topic manual          - Disable automatic topic detection")
-    print("  /temp <value>          - Set temperature (0.1-2.0)")
-    print("  /exit                  - Exit the program")
-    
+
     current_topic = None
     auto_topic_detection = False
     temperature = 1.0
@@ -566,86 +370,21 @@ def main():
         while True:
             try:
                 prompt = input("\nUSER: ")
+                                # Generate text
+                generated_text = generate_text_nn(
+                    model,
+                    prompt,
+                    vocab,
+                    vocab_inv,
+                    char_ratios,
+                    set_modifier,
+                    device,
+                    seq_length=SEQUENCE_LENGTH,
+                    max_length=250,
+                    temperature=temperature,
+                )
                 
-                # Check for commands
-                if prompt.startswith("/"):
-                    cmd_parts = prompt.split()
-                    cmd = cmd_parts[0].lower()
-                    
-                    # Topic command
-                    if cmd == "/topic" and len(cmd_parts) > 1:
-                        requested_topic = cmd_parts[1].lower()
-                        
-                        if requested_topic == "auto":
-                            auto_topic_detection = True
-                            print("Automatic topic detection enabled")
-                            
-                        elif requested_topic == "manual":
-                            auto_topic_detection = False
-                            print("Automatic topic detection disabled")
-                            
-                        elif requested_topic in topic_keywords or requested_topic == "general":
-                            print(f"Topic set to: {requested_topic}")
-                            current_topic = requested_topic if requested_topic != "general" else None
-                            auto_topic_detection = False
-                            
-                        else:
-                            print(f"Unknown topic: {requested_topic}")
-                            print("Available topics:", list(topic_keywords.keys()) + ["general"])
-                    
-                    # Temperature command
-                    elif cmd == "/temp" and len(cmd_parts) > 1:
-                        try:
-                            temp_value = float(cmd_parts[1])
-                            if 0.1 <= temp_value <= 2.0:
-                                temperature = temp_value
-                                print(f"Temperature set to: {temperature}")
-                            else:
-                                print("Temperature must be between 0.1 and 2.0")
-                        except ValueError:
-                            print("Invalid temperature value")
-                    
-                    # Exit command
-                    elif cmd == "/exit":
-                        print("Exiting program.")
-                        break
-                
-                # Generate text
-                else:
-                    active_topic = current_topic
-                    
-                    # Auto-detect topic if enabled
-                    if auto_topic_detection:
-                        detected_topic, matched_keywords = detect_topic(prompt, topic_keywords)
-                        
-                        if detected_topic:
-                            active_topic = detected_topic
-                            keyword_display = ", ".join(matched_keywords[:3])
-                            if len(matched_keywords) > 3:
-                                keyword_display += f" and {len(matched_keywords) - 3} more"
-                            print(f"[Auto-detected topic: {detected_topic} based on: {keyword_display}]")
-                    
-                    # Get the appropriate topic model
-                    topic_model = topic_models.get(active_topic) if active_topic else None
-                    
-                    # Generate text
-                    generated_text = generate_text_nn(
-                        model,
-                        prompt,
-                        vocab,
-                        vocab_inv,
-                        char_ratios,
-                        set_modifier,
-                        device,
-                        seq_length=SEQUENCE_LENGTH,
-                        max_length=250,
-                        temperature=temperature,
-                        topic_model=topic_model,
-                        topic=active_topic
-                    )
-                    
-                    print("\nAI: ", generated_text)
-            
+                print("\nAI: ", generated_text)
             except EOFError:
                 print("Input stream ended. Exiting...")
                 break
