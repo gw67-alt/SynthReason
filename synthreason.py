@@ -11,7 +11,7 @@ import tqdm
 from collections import Counter
 
 # Parameters
-KB_LIMIT = 999
+KB_LIMIT = 9999
 SEQUENCE_LENGTH = 1
 EMBEDDING_DIM = 256
 HIDDEN_DIM = 256
@@ -449,14 +449,6 @@ def main():
             "rare", "uncommon", "unusual", "exceptional", "extraordinary", "scarce", "infrequent", "sporadic", "exotic",
             # Complexity
             "complex", "intricate", "elaborate", "sophisticated", "multifaceted", "nuanced", "layered", "convoluted"
-        ],
-        "emotions": [
-            # Positive
-            "happy", "joyful", "elated", "excited", "content", "satisfied", "proud", "grateful", "hopeful", "optimistic",
-            # Negative
-            "sad", "angry", "frustrated", "disappointed", "anxious", "fearful", "depressed", "resentful", "bitter",
-            # Neutral/Complex
-            "curious", "surprised", "confused", "nostalgic", "contemplative", "ambivalent", "intrigued", "awestruck"
         ],
         
         "concepts": [
