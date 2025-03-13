@@ -11,12 +11,12 @@ import tqdm
 from collections import Counter
 
 # Parameters
-KB_LIMIT = 1399
+KB_LIMIT = 3399
 SEQUENCE_LENGTH = 1
 EMBEDDING_DIM = 256
 HIDDEN_DIM = 256
+magic = 3 #RuntimeError: Expected hidden[0] size (1, 3, 256), got [1, 6, 256]
 LEARNING_RATE = 0.001
-NUM_EPOCHS = 5
 NUM_EPOCHS = 5
 WINDOW_SIZE = 15
 
@@ -90,7 +90,7 @@ def train_model_manhattan(model, dataset, epochs, learning_rate, device):
         hidden = None
         
         # Create mini-batches for faster processing
-        batch_size = min(6, len(dataset) // 10)  # Dynamic batch sizing
+        batch_size = min(magic, len(dataset) // 10)  # Dynamic batch sizing
         indices = torch.randperm(len(dataset))
         batched_indices = [indices[i:i+batch_size] for i in range(0, len(indices), batch_size)]
         
