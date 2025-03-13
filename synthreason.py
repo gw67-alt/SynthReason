@@ -352,7 +352,7 @@ def main():
             print("Error: kb.txt file not found. Please ensure the knowledge base file exists.")
             return
     
-    print("\nEnhanced Text Generator with Bilinear Adversarial Character Ratios")
+    print("\nEnhanced Text Generator with reasoning")
 
     temperature = 1.0
     adversarial_strength = 0.6
