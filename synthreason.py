@@ -11,7 +11,7 @@ import tqdm
 from collections import Counter
 
 # Parameters
-KB_LIMIT = 399
+KB_LIMIT = 1399
 SEQUENCE_LENGTH = 1
 EMBEDDING_DIM = 256
 HIDDEN_DIM = 256
@@ -214,6 +214,8 @@ def generate_text_nn(model, prompt, vocab, vocab_inv, char_ratios, device,
         
         # Apply bilinear adversarial weights to word probabilities
         modified_probs = probs.clone()
+        if 1 in vocab_inv and vocab_inv[1] == '<UNK>':  # 1 is typically the UNK token index
+                modified_probs[0][1] *= 0.00001  # Multiply by a very small number
         for i in range(len(probs[-1])):
             if i in vocab_inv:
                 word = vocab_inv[i]
@@ -332,6 +334,7 @@ def main():
             # Build vocabulary
             word_counts = Counter(filtered_words)
             vocab = {'<PAD>': 0, '<UNK>': 1}
+            
             for idx, (word, _) in enumerate(word_counts.most_common(), 2):
                 vocab[word] = idx
             vocab_inv = {idx: word for word, idx in vocab.items()}
