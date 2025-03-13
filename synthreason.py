@@ -12,7 +12,7 @@ from collections import Counter
 
 # Parameters
 KB_LIMIT = 999
-SEQUENCE_LENGTH = 1
+SEQUENCE_LENGTH = 1  # Increased sequence length
 EMBEDDING_DIM = 256
 HIDDEN_DIM = 256
 LEARNING_RATE = 0.001
@@ -24,7 +24,7 @@ class TextGeneratorNN(nn.Module):
     def __init__(self, vocab_size, embedding_dim, hidden_dim):
         super(TextGeneratorNN, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim)
+        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
         self.dropout = nn.Dropout(0.2)
         self.fc = nn.Linear(hidden_dim, vocab_size)
         
@@ -36,93 +36,7 @@ class TextGeneratorNN(nn.Module):
             lstm_out, hidden = self.lstm(embedded, hidden)
         lstm_out = self.dropout(lstm_out)
         output = self.fc(lstm_out)
-        return output, hidden
-
-# Enhanced Set Operations Integration with Categories
-class SetTheoryModifier:
-    def __init__(self):
-        # Empty set implementation - used to represent ∅
-        self.empty_set = set()
-        
-        # Set theory operations categorized by concept
-        self.set_operations = {
-            'empty_not_in': {
-                'name': 'z=∅∩∉',
-                'description': 'Empty set and not-in operation',
-                'active': True,
-                'influence_factor': 0.15,
-                'empty_boost': 1.7,
-                'contradiction_penalty': 0.5
-            }
-        }
-    
-    def toggle_operation(self, operation_key):
-        """Toggle a specific set operation on/off"""
-        if operation_key in self.set_operations:
-            self.set_operations[operation_key]['active'] = not self.set_operations[operation_key]['active']
-            return f"{operation_key} ({self.set_operations[operation_key]['name']}) is now {'active' if self.set_operations[operation_key]['active'] else 'inactive'}"
-        return f"Unknown operation: {operation_key}"
-    
-    def set_operation_parameter(self, operation_key, param_name, value):
-        """Set a parameter value for a specific operation"""
-        if operation_key in self.set_operations and param_name in self.set_operations[operation_key]:
-            try:
-                self.set_operations[operation_key][param_name] = float(value)
-                return f"Set {param_name} to {value} for {operation_key}"
-            except ValueError:
-                return f"Invalid value: {value}. Must be a number."
-        return f"Unknown operation or parameter: {operation_key}.{param_name}"
-    
-    def list_active_operations(self):
-        """List all currently active set theory operations"""
-        active_ops = [f"{key} ({op['name']}): {op['description']}" 
-                     for key, op in self.set_operations.items() 
-                     if op['active']]
-        if active_ops:
-            return "Active set theory operations:\n" + "\n".join(active_ops)
-        else:
-            return "No set theory operations are currently active"
-    
-    def get_category_words(self, category):
-        """Get words associated with a specific category or set theory concept"""
-        try:
-            with open(f"{category}.txt", "r", encoding="utf-8") as f:
-                return [line.strip() for line in f.readlines()]
-        except FileNotFoundError:
-            return []
-    
-    def apply_set_theory_modifiers(self, probs, vocab_inv):
-        """Apply multiple set theory concepts to the probability distribution"""
-        modified_probs = probs.clone()
-        
-        # Get category word lists for different concepts
-        action_words = self.get_category_words("actions")
-        description_words = self.get_category_words("descriptions")
-        common_words = self.get_category_words("common")
-        diverse_words = self.get_category_words("diverse")
-        
-        # Apply each active set theory operation
-        for op_key, operation in self.set_operations.items():
-            if operation['active']:
-                # Apply operation-specific modifications
-                # ∅∩∉ operation: Boost emptiness, penalize presence
-                for i in range(len(modified_probs)):
-                    word = vocab_inv[i].lower() if i in vocab_inv else ""
-                    if word and any(empty_word not in word for empty_word in description_words):
-                        modified_probs[i] *= operation['empty_boost']
-                    if word and any(presence_word not in word for presence_word in action_words):
-                        modified_probs[i] *= operation['contradiction_penalty']
-        
-        # Ensure probabilities are valid
-        modified_probs = torch.maximum(modified_probs, torch.tensor(0.0))
-        sum_probs = modified_probs.sum()
-        if sum_probs > 0:
-            modified_probs = modified_probs / sum_probs
-        else:
-            # If all probabilities became zero, revert to original
-            modified_probs = probs.clone()
-            
-        return modified_probs
+        return output, hidden  
 
 # Dataset class for PyTorch
 class TextDataset(Dataset):
@@ -204,7 +118,7 @@ def train_model(model, dataset, epochs, learning_rate, device):
     return model
 
 # Text generation function with PyTorch model
-def generate_text_nn(model, prompt, vocab, vocab_inv, char_ratios, set_modifier, device, 
+def generate_text_nn(model, prompt, vocab, vocab_inv, char_ratios, device, 
                      seq_length, max_length, temperature):
     """Generate text using the trained PyTorch model with set theory modifications"""
     model.eval()
@@ -233,15 +147,16 @@ def generate_text_nn(model, prompt, vocab, vocab_inv, char_ratios, set_modifier,
             output, hidden = model(input_tensor, hidden)
             
         # Get probabilities for the next word
-        output = output[-1, :]  # Get the last timestep
+        output = output[:, -1, :]  # Get the last timestep
         
         # Apply temperature
         output = output / temperature
         
         # Apply set theory modifiers
         probs = torch.softmax(output, dim=-1)
-        probs = set_modifier.apply_set_theory_modifiers(probs, vocab_inv)
-        
+        probs *= 1.7
+        probs *= 0.5
+        probs = probs / probs.sum()
         # Apply character ratio adjustments
         for i in range(len(probs)):
             if i in vocab_inv:
@@ -262,14 +177,14 @@ def generate_text_nn(model, prompt, vocab, vocab_inv, char_ratios, set_modifier,
             probs = probs / probs.sum()
         
         # Sample from the probability distribution
-        next_idx = torch.multinomial(probs, 1).item()
+        next_idx = torch.multinomial(probs.squeeze(), 1).item()
         
         # Get the next word and add it to the generated text
         next_word = vocab_inv.get(next_idx, "<UNK>")
         generated_text += ' ' + next_word
         
         # Update input sequence for next iteration
-        input_tensor = torch.tensor([[next_idx]]).to(device)
+        input_tensor = torch.cat((input_tensor, torch.tensor([[next_idx]]).to(device)), dim=1)
         recent_outputs.append(next_idx)
         
         # Limit the size of recent_outputs
@@ -357,9 +272,6 @@ def main():
             print("Error: kb.txt file not found. Please ensure the knowledge base file exists.")
             return
     
-    # Initialize set theory modifier
-    set_modifier = SetTheoryModifier()
-    
     print("\nEnhanced Text Generator with PyTorch Neural Networks")
 
     current_topic = None
@@ -377,7 +289,6 @@ def main():
                     vocab,
                     vocab_inv,
                     char_ratios,
-                    set_modifier,
                     device,
                     seq_length=SEQUENCE_LENGTH,
                     max_length=250,
