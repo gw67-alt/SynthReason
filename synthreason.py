@@ -11,13 +11,13 @@ import tqdm
 from collections import Counter
 
 # Parameters
-KB_LIMIT = 999
-SEQUENCE_LENGTH = 1  # Increased sequence length
+KB_LIMIT = 399
+SEQUENCE_LENGTH = 1
 EMBEDDING_DIM = 256
 HIDDEN_DIM = 256
 LEARNING_RATE = 0.001
 NUM_EPOCHS = 5
-WINDOW_SIZE = 15  # Size of the window to consider for adjustments
+WINDOW_SIZE = 15
 
 # Neural Network Model for Text Generation
 class TextGeneratorNN(nn.Module):
@@ -66,18 +66,55 @@ class TextDataset(Dataset):
         seq, target = self.sequences[idx]
         return torch.tensor(seq), torch.tensor(target)
 
-# Function to calculate character ratios
-def calculate_character_ratios(data):
+# Function to calculate bilinear adversarial character ratios
+def calculate_bilinear_adversarial_char_ratios(data):
+    # Base character frequency calculation
     char_count = {letter: 0 for letter in string.ascii_lowercase}
+    total_chars = 0
+    
+    for item in data:
+        item = item.strip().lower()
+        if item:
+            for char in item:
+                try:
+                    for _ in char_count[char]:
+                        char_count[char] += _
+                        total_chars += 1
+                except:
+                    False
+    # Calculate primary character distribution
+    primary_ratios = {char: count / total_chars if total_chars > 0 else 0 
+                     for char, count in char_count.items()}
+    
+    # Calculate adversarial first-letter distribution
+    first_char_count = {letter: 0 for letter in string.ascii_lowercase}
+    total_items = 0
+    
     for item in data:
         item = item.strip()
-        if item:
-            first_letter = item[0].lower()
-            if first_letter in char_count:
-                char_count[first_letter] += 1
-    total_items = len(data)
-    char_ratios = {char: count / total_items for char, count in char_count.items()}
-    return char_ratios
+        if item and item[0].lower() in first_char_count:
+            first_char_count[item[0].lower()] += 1
+            total_items += 1
+    
+    first_char_ratios = {char: count / total_items if total_items > 0 else 0 
+                         for char, count in first_char_count.items()}
+    
+    # Create bilinear adversarial ratios
+    # This creates a tension between overall frequency and starting letter frequency
+    bilinear_ratios = {}
+    for char in string.ascii_lowercase:
+        # Calculate inverse ratio to create adversarial effect
+        inverse_ratio = 1.0 ** primary_ratios[char]
+        
+        # Blend the primary ratio with first character ratio using a bilinear function
+        # Higher weight to less common characters in general text but common as first letters
+        bilinear_ratios[char] = (0.1 * inverse_ratio - 0.3 * first_char_ratios[char])
+    
+    # Normalize ratios to prevent extreme values
+    max_ratio = max(bilinear_ratios.values()) if bilinear_ratios else 1.0
+    bilinear_ratios = {char: ratio/max_ratio for char, ratio in bilinear_ratios.items()}
+    
+    return bilinear_ratios
 
 # Training function
 def train_model(model, dataset, epochs, learning_rate, device):
@@ -117,10 +154,10 @@ def train_model(model, dataset, epochs, learning_rate, device):
             
     return model
 
-# Text generation function with PyTorch model
+# Text generation function with bilinear adversarial character adjustments
 def generate_text_nn(model, prompt, vocab, vocab_inv, char_ratios, device, 
-                     seq_length, max_length, temperature):
-    """Generate text using the trained PyTorch model with set theory modifications"""
+                     seq_length, max_length, temperature=0.7, adversarial_strength=0.1):
+    """Generate text using the trained PyTorch model with bilinear adversarial modifications"""
     model.eval()
     
     # Process prompt
@@ -141,6 +178,9 @@ def generate_text_nn(model, prompt, vocab, vocab_inv, char_ratios, device,
     hidden = None
     recent_outputs = []
     
+    # Track character usage for dynamic adjustment
+    recent_chars = []
+    
     for _ in range(max_length):
         # Forward pass through the model
         with torch.no_grad():
@@ -152,49 +192,80 @@ def generate_text_nn(model, prompt, vocab, vocab_inv, char_ratios, device,
         # Apply temperature
         output = output / temperature
         
-        # Apply set theory modifiers
+        # Apply bilinear adversarial modifiers
         probs = torch.softmax(output, dim=-1)
-        probs *= 1.7
-        probs *= 0.5
-        probs = probs / probs.sum()
-        # Apply character ratio adjustments
-        for i in range(len(probs)):
+        
+        # Count recent character usage for adaptive adversarial effects
+        char_usage = Counter(recent_chars)
+        total_recent = len(recent_chars) if recent_chars else 1
+        recent_char_ratios = {char: count/total_recent for char, count in char_usage.items()}
+        
+        # Create dynamic adversarial weights based on recent usage
+        dynamic_weights = {}
+        for char in string.ascii_lowercase:
+            # Base weight from pre-calculated bilinear ratios
+            base_weight = char_ratios[char]
+            
+            # Adjust based on recent usage (adversarial effect)
+            usage_penalty = recent_char_ratios.get(char, 0) * 0.5
+            
+            # Dynamic adversarial weight: boost uncommon characters, penalize frequent ones
+            dynamic_weights[char] = base_weight * (1.0 - usage_penalty)
+        
+        # Apply bilinear adversarial weights to word probabilities
+        modified_probs = probs.clone()
+        for i in range(len(probs[-1])):
             if i in vocab_inv:
                 word = vocab_inv[i]
                 if word and len(word) > 0:
-                    first_char = word[0].lower()
-                    if first_char in char_ratios:
-                        probs[i] *= (1.0 + char_ratios[first_char])
+                    first_char = word[-1].lower()
+                    if first_char in dynamic_weights:
+                        # Blend model probability with adversarial weight
+                        orig_prob = probs[0][i].item()
+                        adv_weight = dynamic_weights[first_char]
+                        
+                        # Bilinear interpolation with adjustable adversarial strength
+                        modified_probs[-1][i] = orig_prob *  adv_weight
         
         # Apply recency bias (avoid repeating recent words)
         for i in range(1, min(WINDOW_SIZE, len(recent_outputs)) + 1):
-            if recent_outputs[-i] < len(probs):
-                probs[recent_outputs[-i]] *= 0.5  # Reduce probability of recently used words
+            if recent_outputs[-i] < len(modified_probs[0]):
+                modified_probs[0][recent_outputs[-i]] *= 0.4
         
         # Ensure probabilities are valid
-        probs = torch.maximum(probs, torch.tensor(0.0))
-        if probs.sum() > 0:
-            probs = probs / probs.sum()
+        modified_probs = torch.maximum(modified_probs, torch.tensor(0.0))
+        if modified_probs.sum() > 0:
+            modified_probs = modified_probs / modified_probs.sum()
         
-        # Sample from the probability distribution
-        next_idx = torch.multinomial(probs.squeeze(), 1).item()
+        # Sample from the modified probability distribution
+        next_idx = torch.multinomial(modified_probs.squeeze(), 1).item()
         
         # Get the next word and add it to the generated text
         next_word = vocab_inv.get(next_idx, "<UNK>")
         generated_text += ' ' + next_word
         
-        # Update input sequence for next iteration
+        # Update tracking variables
         input_tensor = torch.cat((input_tensor, torch.tensor([[next_idx]]).to(device)), dim=1)
-        recent_outputs.append(next_idx)
+        input_tensor = input_tensor[:, -seq_length:]  # Keep sequence length fixed
         
-        # Limit the size of recent_outputs
+        recent_outputs.append(next_idx)
         if len(recent_outputs) > WINDOW_SIZE:
             recent_outputs.pop(0)
+        
+        # Update recent character usage for adaptive adversarial effects
+        if next_word and len(next_word) > 0:
+            for char in next_word.lower():
+                if char in string.ascii_lowercase:
+                    recent_chars.append(char)
+            
+            # Only keep track of the most recent characters
+            if len(recent_chars) > 50:
+                recent_chars = recent_chars[-50:]
     
     return generated_text
 
 # Save and load functions
-def save_model(model, vocab, char_ratios, filepath="text_model.pt"):
+def save_model(model, vocab, char_ratios, filepath="text_model_bilinear.pt"):
     """Save the model and necessary data"""
     checkpoint = {
         'model_state_dict': model.state_dict(),
@@ -204,7 +275,7 @@ def save_model(model, vocab, char_ratios, filepath="text_model.pt"):
     torch.save(checkpoint, filepath)
     print(f"Model saved to {filepath}")
 
-def load_model(filepath="text_model.pt", embedding_dim=EMBEDDING_DIM, hidden_dim=HIDDEN_DIM, device='cuda'):
+def load_model(filepath="text_model_bilinear.pt", embedding_dim=EMBEDDING_DIM, hidden_dim=HIDDEN_DIM, device='cuda'):
     """Load the model and necessary data"""
     checkpoint = torch.load(filepath, map_location=device)
     vocab = checkpoint['vocab']
@@ -227,6 +298,15 @@ def main():
     try:
         print("Attempting to load existing model...")
         model, vocab, char_ratios = load_model(device=device)
+        # Convert character ratios to bilinear adversarial format if needed
+        if not isinstance(next(iter(char_ratios.values())), dict):
+            print("Converting to bilinear adversarial character ratios...")
+            # We need text data to calculate bilinear ratios
+            # For demonstration, we'll use the vocabulary as a proxy
+            vocab_inv = {idx: word for word, idx in vocab.items()}
+            vocab_words = list(vocab.keys())
+            char_ratios = calculate_bilinear_adversarial_char_ratios(vocab_words)
+            save_model(model, vocab, char_ratios)
         vocab_inv = {idx: word for word, idx in vocab.items()}
         print("Model loaded successfully.")
         
@@ -246,8 +326,8 @@ def main():
             exceptions = ['a', 'i', 'to', 'is', 'it', 'an', 'of', 'by', 'he', 'me', 'we', 'be', 'my', 'up', 'do', 'go', 'if', 'no', 'so', 'on', 'at', 'in', 'as', 'or', 'la', 'ah', 'uh', 'ye', 'ab', 'ad', 'ae', 'ba', 'bi', 'bo', 'da', 'ed', 'ef', 'eh', 'el', 'em', 'en', 'er', 'es', 'ex', 'fa', 'hi', 'ho', 'id', 'is', 'jo', 'ka', 'la', 'li', 'lo', 'ma', 'me', 'mi', 'mu', 'na', 'no', 'nu', 'od', 'oe', 'oi', 'om', 'op', 'os', 'ow', 'ox', 'oy', 'pa', 're', 'sh', 'si', 'ta', 'uh', 'um','un', 'up', 'us', 'ut', 'va', 'ye', 'yo']
             filtered_words = [word for word in text.split() if not re.match(pattern, word) or word in exceptions]
             
-            # Calculate character ratios
-            char_ratios = calculate_character_ratios(filtered_words)
+            # Calculate bilinear adversarial character ratios
+            char_ratios = calculate_bilinear_adversarial_char_ratios(filtered_words)
             
             # Build vocabulary
             word_counts = Counter(filtered_words)
@@ -264,7 +344,7 @@ def main():
             # Initialize and train model
             print(f"Vocabulary size: {vocab_size}")
             model = TextGeneratorNN(vocab_size, EMBEDDING_DIM, HIDDEN_DIM).to(device)
-            print("Training general model...")
+            print("Training model with bilinear adversarial character ratios...")
             train_model(model, dataset, NUM_EPOCHS, LEARNING_RATE, device)
             save_model(model, vocab, char_ratios)
             
@@ -272,17 +352,16 @@ def main():
             print("Error: kb.txt file not found. Please ensure the knowledge base file exists.")
             return
     
-    print("\nEnhanced Text Generator with PyTorch Neural Networks")
+    print("\nEnhanced Text Generator with Bilinear Adversarial Character Ratios")
 
-    current_topic = None
-    auto_topic_detection = False
     temperature = 1.0
+    adversarial_strength = 0.6
     
     try:
         while True:
             try:
                 prompt = input("\nUSER: ")
-                                # Generate text
+                # Generate text with bilinear adversarial character adjustments
                 generated_text = generate_text_nn(
                     model,
                     prompt,
@@ -293,6 +372,7 @@ def main():
                     seq_length=SEQUENCE_LENGTH,
                     max_length=250,
                     temperature=temperature,
+                    adversarial_strength=adversarial_strength
                 )
                 
                 print("\nAI: ", generated_text)
