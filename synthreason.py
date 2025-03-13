@@ -13,6 +13,7 @@ from collections import Counter
 # Parameters
 KB_LIMIT = 3399
 SEQUENCE_LENGTH = 1
+SEQ = 3
 EMBEDDING_DIM = 256
 HIDDEN_DIM = 256
 magic = 3 #RuntimeError: Expected hidden[0] size (1, 3, 256), got [1, 6, 256]
@@ -89,36 +90,21 @@ def train_model_manhattan(model, dataset, epochs, learning_rate, device):
         total_loss = 0
         hidden = None
         
-        # Create mini-batches for faster processing
-        batch_size = min(magic, len(dataset) // 10)  # Dynamic batch sizing
-        indices = torch.randperm(len(dataset))
-        batched_indices = [indices[i:i+batch_size] for i in range(0, len(indices), batch_size)]
-        
-        progress_bar = tqdm.tqdm(batched_indices, desc=f'Epoch {epoch+1}/{epochs}')
-        for batch_idx in progress_bar:
-            # Initialize batch tensors
-            batch_inputs = []
-            batch_targets = []
-            
-            # Collect batch samples
-            for idx in batch_idx:
-                inputs, targets = dataset[idx.item()]
-                batch_inputs.append(inputs)
-                batch_targets.append(targets)
-            
-            # Convert to tensors and move to device
-            batch_inputs = torch.stack(batch_inputs).to(device)
-            batch_targets = torch.stack(batch_targets).to(device)
+        progress_bar = tqdm.tqdm(range(len(dataset)), desc=f'Epoch {epoch+1}/{epochs}')
+        for idx in progress_bar:
+            inputs, targets = dataset[idx]
+            inputs = inputs.unsqueeze(0).to(device)  # Single sample dimension
+            targets = targets.to(device)
             
             # Clear gradients
             optimizer.zero_grad()
             
             # Forward pass
-            output, hidden = model(batch_inputs, hidden)
+            output, hidden = model(inputs, hidden)
             hidden = tuple(h.detach() for h in hidden)  # Detach hidden state
             
             # Apply Manhattan implication by combining cross-entropy with L1 regularization
-            ce_loss = ce_criterion(output.reshape(-1, output.size(-1)), batch_targets)
+            ce_loss = ce_criterion(output.reshape(-1, output.size(-1)), targets.unsqueeze(0))
             
             # L1 regularization on the output logits (Manhattan component)
             l1_reg = sum(p.abs().sum() for p in model.parameters()) * 0.0001
@@ -136,11 +122,10 @@ def train_model_manhattan(model, dataset, epochs, learning_rate, device):
             
             # Track loss
             total_loss += loss.item()
-            avg_loss = total_loss / len(batch_idx)
-            progress_bar.set_postfix(loss=avg_loss, l1_component=l1_reg.item())
+            progress_bar.set_postfix(loss=total_loss/(idx+1))
             
         # Track convergence statistics
-        epoch_loss = total_loss / len(batched_indices)
+        epoch_loss = total_loss / len(dataset)
         convergence_stats.append(epoch_loss)
         
         # Manhattan-based early stopping
@@ -162,7 +147,6 @@ def train_model_manhattan(model, dataset, epochs, learning_rate, device):
             print(f"Adjusted learning rate to {learning_rate}")
     
     return model
-
 # Text generation function with bilinear adversarial character adjustments
 def generate_text_nn(model, prompt, vocab, vocab_inv, device, 
                      seq_length, max_length, temperature=0.9):
@@ -178,7 +162,7 @@ def generate_text_nn(model, prompt, vocab, vocab_inv, device,
         input_seq = [vocab['<PAD>']] + input_seq
     
     # Use only the last seq_length words as input
-    input_seq = input_seq[-seq_length:]
+    input_seq = input_seq[-SEQ:]
     
     # Convert to tensor
     input_tensor = torch.tensor(input_seq).unsqueeze(0).to(device)
@@ -202,7 +186,7 @@ def generate_text_nn(model, prompt, vocab, vocab_inv, device,
         output = output / temperature
         
         # Apply bilinear adversarial modifiers
-        probs = torch.softmax(output, dim=-1)
+        probs = torch.softmax(output, dim=1)
         
         # Apply bilinear adversarial weights to word probabilities
         modified_probs = probs.clone()
@@ -224,7 +208,7 @@ def generate_text_nn(model, prompt, vocab, vocab_inv, device,
         
         # Update tracking variables
         input_tensor = torch.cat((input_tensor, torch.tensor([[next_idx]]).to(device)), dim=1)
-        input_tensor = input_tensor[:, -seq_length:]  # Keep sequence length fixed
+        input_tensor = input_tensor[:, -SEQ:]  # Keep sequence length fixed
         
         recent_outputs.append(next_idx)
         if len(recent_outputs) > WINDOW_SIZE:
