@@ -17,6 +17,7 @@ EMBEDDING_DIM = 256
 HIDDEN_DIM = 256
 LEARNING_RATE = 0.001
 NUM_EPOCHS = 5
+NUM_EPOCHS = 5
 WINDOW_SIZE = 15
 
 # Neural Network Model for Text Generation
@@ -66,97 +67,105 @@ class TextDataset(Dataset):
         seq, target = self.sequences[idx]
         return torch.tensor(seq), torch.tensor(target)
 
-# Function to calculate bilinear adversarial character ratios
-def calculate_bilinear_adversarial_char_ratios(data):
-    # Base character frequency calculation
-    char_count = {letter: 0 for letter in string.ascii_lowercase}
-    total_chars = 0
-    
-    for item in data:
-        item = item.strip().lower()
-        if item:
-            for char in item:
-                try:
-                    for _ in char_count[char]:
-                        char_count[char] += _
-                        total_chars += 1
-                except:
-                    False
-    # Calculate primary character distribution
-    primary_ratios = {char: count / total_chars if total_chars > 0 else 0 
-                     for char, count in char_count.items()}
-    
-    # Calculate adversarial first-letter distribution
-    first_char_count = {letter: 0 for letter in string.ascii_lowercase}
-    total_items = 0
-    
-    for item in data:
-        item = item.strip()
-        if item and item[0].lower() in first_char_count:
-            first_char_count[item[0].lower()] += 1
-            total_items += 1
-    
-    first_char_ratios = {char: count / total_items if total_items > 0 else 0 
-                         for char, count in first_char_count.items()}
-    
-    # Create bilinear adversarial ratios
-    # This creates a tension between overall frequency and starting letter frequency
-    bilinear_ratios = {}
-    for char in string.ascii_lowercase:
-        # Calculate inverse ratio to create adversarial effect
-        inverse_ratio = 1.0 ** primary_ratios[char]
-        
-        # Blend the primary ratio with first character ratio using a bilinear function
-        # Higher weight to less common characters in general text but common as first letters
-        bilinear_ratios[char] = (0.1 * inverse_ratio - 0.3 * first_char_ratios[char])
-    
-    # Normalize ratios to prevent extreme values
-    max_ratio = max(bilinear_ratios.values()) if bilinear_ratios else 1.0
-    bilinear_ratios = {char: ratio/max_ratio for char, ratio in bilinear_ratios.items()}
-    
-    return bilinear_ratios
-
-# Training function
-def train_model(model, dataset, epochs, learning_rate, device):
-    """Train the PyTorch model without using batches"""
-    criterion = nn.CrossEntropyLoss()
+# Modified training function with Manhattan implication for acceleration
+def train_model_manhattan(model, dataset, epochs, learning_rate, device):
+    """Train the PyTorch model using Manhattan distance for faster convergence"""
+    # Use L1Loss (Manhattan distance) as part of the training objective
+    ce_criterion = nn.CrossEntropyLoss()
+    l1_criterion = nn.L1Loss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    
+    # Enable eager execution for faster iteration
+    torch.backends.cudnn.benchmark = True
+    
+    # Training statistics for Manhattan convergence tracking
+    convergence_stats = []
+    early_stop_patience = 3
+    best_loss = float('inf')
+    patience_counter = 0
     
     model.train()
     for epoch in range(epochs):
         total_loss = 0
         hidden = None
         
-        # Process samples one at a time
-        progress_bar = tqdm.tqdm(range(len(dataset)), desc=f'Epoch {epoch+1}/{epochs}')
-        for idx in progress_bar:
-            inputs, targets = dataset[idx]
-            inputs = inputs.unsqueeze(0).to(device)  # Single sample dimension
-            targets = targets.to(device)
+        # Create mini-batches for faster processing
+        batch_size = min(6, len(dataset) // 10)  # Dynamic batch sizing
+        indices = torch.randperm(len(dataset))
+        batched_indices = [indices[i:i+batch_size] for i in range(0, len(indices), batch_size)]
+        
+        progress_bar = tqdm.tqdm(batched_indices, desc=f'Epoch {epoch+1}/{epochs}')
+        for batch_idx in progress_bar:
+            # Initialize batch tensors
+            batch_inputs = []
+            batch_targets = []
+            
+            # Collect batch samples
+            for idx in batch_idx:
+                inputs, targets = dataset[idx.item()]
+                batch_inputs.append(inputs)
+                batch_targets.append(targets)
+            
+            # Convert to tensors and move to device
+            batch_inputs = torch.stack(batch_inputs).to(device)
+            batch_targets = torch.stack(batch_targets).to(device)
             
             # Clear gradients
             optimizer.zero_grad()
             
             # Forward pass
-            output, hidden = model(inputs, hidden)
+            output, hidden = model(batch_inputs, hidden)
             hidden = tuple(h.detach() for h in hidden)  # Detach hidden state
             
-            # Reshape output for loss calculation
-            output = output.squeeze(0)
-            loss = criterion(output, targets.unsqueeze(0))
+            # Apply Manhattan implication by combining cross-entropy with L1 regularization
+            ce_loss = ce_criterion(output.reshape(-1, output.size(-1)), batch_targets)
+            
+            # L1 regularization on the output logits (Manhattan component)
+            l1_reg = sum(p.abs().sum() for p in model.parameters()) * 0.0001
+            
+            # Combined loss with Manhattan implication
+            loss = ce_loss + l1_reg
             
             # Backward pass and optimize
             loss.backward()
+            
+            # Apply gradient clipping for stability
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             optimizer.step()
             
+            # Track loss
             total_loss += loss.item()
-            progress_bar.set_postfix(loss=total_loss/(idx+1))
+            avg_loss = total_loss / len(batch_idx)
+            progress_bar.set_postfix(loss=avg_loss, l1_component=l1_reg.item())
             
+        # Track convergence statistics
+        epoch_loss = total_loss / len(batched_indices)
+        convergence_stats.append(epoch_loss)
+        
+        # Manhattan-based early stopping
+        if epoch_loss < best_loss:
+            best_loss = epoch_loss
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            
+        if patience_counter >= early_stop_patience:
+            print(f"Early stopping at epoch {epoch+1} due to Manhattan convergence")
+            break
+            
+        # Dynamic learning rate adjustment based on Manhattan convergence
+        if epoch > 0 and convergence_stats[-1] < convergence_stats[-2]:
+            learning_rate *= 0.8
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = learning_rate
+            print(f"Adjusted learning rate to {learning_rate}")
+    
     return model
 
 # Text generation function with bilinear adversarial character adjustments
-def generate_text_nn(model, prompt, vocab, vocab_inv, char_ratios, device, 
-                     seq_length, max_length, temperature=0.7, adversarial_strength=0.1):
+def generate_text_nn(model, prompt, vocab, vocab_inv, device, 
+                     seq_length, max_length, temperature=0.9):
     """Generate text using the trained PyTorch model with bilinear adversarial modifications"""
     model.eval()
     
@@ -195,44 +204,11 @@ def generate_text_nn(model, prompt, vocab, vocab_inv, char_ratios, device,
         # Apply bilinear adversarial modifiers
         probs = torch.softmax(output, dim=-1)
         
-        # Count recent character usage for adaptive adversarial effects
-        char_usage = Counter(recent_chars)
-        total_recent = len(recent_chars) if recent_chars else 1
-        recent_char_ratios = {char: count/total_recent for char, count in char_usage.items()}
-        
-        # Create dynamic adversarial weights based on recent usage
-        dynamic_weights = {}
-        for char in string.ascii_lowercase:
-            # Base weight from pre-calculated bilinear ratios
-            base_weight = char_ratios[char]
-            
-            # Adjust based on recent usage (adversarial effect)
-            usage_penalty = recent_char_ratios.get(char, 0) * 0.5
-            
-            # Dynamic adversarial weight: boost uncommon characters, penalize frequent ones
-            dynamic_weights[char] = base_weight * (1.0 - usage_penalty)
-        
         # Apply bilinear adversarial weights to word probabilities
         modified_probs = probs.clone()
         if 1 in vocab_inv and vocab_inv[1] == '<UNK>':  # 1 is typically the UNK token index
                 modified_probs[0][1] *= 0.00001  # Multiply by a very small number
-        for i in range(len(probs[-1])):
-            if i in vocab_inv:
-                word = vocab_inv[i]
-                if word and len(word) > 0:
-                    first_char = word[-1].lower()
-                    if first_char in dynamic_weights:
-                        # Blend model probability with adversarial weight
-                        orig_prob = probs[0][i].item()
-                        adv_weight = dynamic_weights[first_char]
-                        
-                        # Bilinear interpolation with adjustable adversarial strength
-                        modified_probs[-1][i] = orig_prob *  adv_weight
-        
-        # Apply recency bias (avoid repeating recent words)
-        for i in range(1, min(WINDOW_SIZE, len(recent_outputs)) + 1):
-            if recent_outputs[-i] < len(modified_probs[0]):
-                modified_probs[0][recent_outputs[-i]] *= 0.4
+
         
         # Ensure probabilities are valid
         modified_probs = torch.maximum(modified_probs, torch.tensor(0.0))
@@ -267,7 +243,7 @@ def generate_text_nn(model, prompt, vocab, vocab_inv, char_ratios, device,
     return generated_text
 
 # Save and load functions
-def save_model(model, vocab, char_ratios, filepath="text_model_bilinear.pt"):
+def save_model(model, vocab, char_ratios, filepath="text_model_manhattan.pt"):
     """Save the model and necessary data"""
     checkpoint = {
         'model_state_dict': model.state_dict(),
@@ -277,7 +253,7 @@ def save_model(model, vocab, char_ratios, filepath="text_model_bilinear.pt"):
     torch.save(checkpoint, filepath)
     print(f"Model saved to {filepath}")
 
-def load_model(filepath="text_model_bilinear.pt", embedding_dim=EMBEDDING_DIM, hidden_dim=HIDDEN_DIM, device='cuda'):
+def load_model(filepath="text_model_manhattan.pt", embedding_dim=EMBEDDING_DIM, hidden_dim=HIDDEN_DIM, device='cuda'):
     """Load the model and necessary data"""
     checkpoint = torch.load(filepath, map_location=device)
     vocab = checkpoint['vocab']
@@ -307,7 +283,6 @@ def main():
             # For demonstration, we'll use the vocabulary as a proxy
             vocab_inv = {idx: word for word, idx in vocab.items()}
             vocab_words = list(vocab.keys())
-            char_ratios = calculate_bilinear_adversarial_char_ratios(vocab_words)
             save_model(model, vocab, char_ratios)
         vocab_inv = {idx: word for word, idx in vocab.items()}
         print("Model loaded successfully.")
@@ -327,10 +302,7 @@ def main():
             pattern = r'^[a-zA-Z]{1,2}$'
             exceptions = ['a', 'i', 'to', 'is', 'it', 'an', 'of', 'by', 'he', 'me', 'we', 'be', 'my', 'up', 'do', 'go', 'if', 'no', 'so', 'on', 'at', 'in', 'as', 'or', 'la', 'ah', 'uh', 'ye', 'ab', 'ad', 'ae', 'ba', 'bi', 'bo', 'da', 'ed', 'ef', 'eh', 'el', 'em', 'en', 'er', 'es', 'ex', 'fa', 'hi', 'ho', 'id', 'is', 'jo', 'ka', 'la', 'li', 'lo', 'ma', 'me', 'mi', 'mu', 'na', 'no', 'nu', 'od', 'oe', 'oi', 'om', 'op', 'os', 'ow', 'ox', 'oy', 'pa', 're', 'sh', 'si', 'ta', 'uh', 'um','un', 'up', 'us', 'ut', 'va', 'ye', 'yo']
             filtered_words = [word for word in text.split() if not re.match(pattern, word) or word in exceptions]
-            
-            # Calculate bilinear adversarial character ratios
-            char_ratios = calculate_bilinear_adversarial_char_ratios(filtered_words)
-            
+         
             # Build vocabulary
             word_counts = Counter(filtered_words)
             vocab = {'<PAD>': 0, '<UNK>': 1}
@@ -347,18 +319,17 @@ def main():
             # Initialize and train model
             print(f"Vocabulary size: {vocab_size}")
             model = TextGeneratorNN(vocab_size, EMBEDDING_DIM, HIDDEN_DIM).to(device)
-            print("Training model with bilinear adversarial character ratios...")
-            train_model(model, dataset, NUM_EPOCHS, LEARNING_RATE, device)
+            print("Training model with Manhattan implication acceleration...")
+            train_model_manhattan(model, dataset, NUM_EPOCHS, LEARNING_RATE, device)
             save_model(model, vocab, char_ratios)
             
         except FileNotFoundError:
             print("Error: kb.txt file not found. Please ensure the knowledge base file exists.")
             return
     
-    print("\nEnhanced Text Generator with reasoning")
+    print("\nEnhanced Text Generator with Manhattan implication")
 
     temperature = 1.0
-    adversarial_strength = 0.6
     
     try:
         while True:
@@ -370,12 +341,10 @@ def main():
                     prompt,
                     vocab,
                     vocab_inv,
-                    char_ratios,
                     device,
                     seq_length=SEQUENCE_LENGTH,
                     max_length=250,
-                    temperature=temperature,
-                    adversarial_strength=adversarial_strength
+                    temperature=temperature
                 )
                 
                 print("\nAI: ", generated_text)
