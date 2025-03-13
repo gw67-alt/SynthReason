@@ -1,274 +1,307 @@
+import string
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import Dataset
 import numpy as np
-import string
+import re
 import os
-import requests
-from io import BytesIO
+import pickle
+import tqdm
+from collections import Counter
 
-# Set random seed for reproducibility
-torch.manual_seed(42)
-KB_limit = 999
-# Character-level language model using LSTM
-class CharLM(nn.Module):
-    def __init__(self, input_size, embedding_size, hidden_size, num_layers, output_size, dropout=0.2):
-        super(CharLM, self).__init__()
-        self.embedding = nn.Embedding(input_size, embedding_size)
-        self.lstm = nn.LSTM(embedding_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
-        self.dropout = nn.Dropout(dropout)
-        self.fc = nn.Linear(hidden_size, output_size)
+# Parameters
+KB_LIMIT = 999
+SEQUENCE_LENGTH = 1  # Increased sequence length
+EMBEDDING_DIM = 256
+HIDDEN_DIM = 256
+LEARNING_RATE = 0.001
+NUM_EPOCHS = 5
+WINDOW_SIZE = 15  # Size of the window to consider for adjustments
+
+# Neural Network Model for Text Generation
+class TextGeneratorNN(nn.Module):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim):
+        super(TextGeneratorNN, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
+        self.dropout = nn.Dropout(0.2)
+        self.fc = nn.Linear(hidden_dim, vocab_size)
         
     def forward(self, x, hidden=None):
-        embeds = self.embedding(x)
-        lstm_out, hidden = self.lstm(embeds, hidden)
-        out = self.dropout(lstm_out)
-        out = self.fc(out)
-        return out, hidden
-    
-    def init_hidden(self, batch_size, device):
-        return (torch.zeros(self.lstm.num_layers, batch_size, self.lstm.hidden_size).to(device),
-                torch.zeros(self.lstm.num_layers, batch_size, self.lstm.hidden_size).to(device))
+        embedded = self.embedding(x)
+        if hidden is None:
+            lstm_out, hidden = self.lstm(embedded)
+        else:
+            lstm_out, hidden = self.lstm(embedded, hidden)
+        lstm_out = self.dropout(lstm_out)
+        output = self.fc(lstm_out)
+        return output, hidden  
 
-# Custom dataset for character sequences
+# Dataset class for PyTorch
 class TextDataset(Dataset):
-    def __init__(self, text, seq_length):
-        self.text = text
-        self.seq_length = seq_length
-        self.char_to_idx = {char: i for i, char in enumerate(sorted(set(text)))}
-        self.idx_to_char = {i: char for i, char in enumerate(sorted(set(text)))}
-        self.data = self.preprocess()
+    def __init__(self, text_data, vocab, sequence_length):
+        self.sequence_length = sequence_length
+        self.vocab = vocab
+        self.data = self.preprocess_text(text_data)
+        self.sequences = self.create_sequences()
         
-    def preprocess(self):
-        # Create input-output sequence pairs
-        input_seq = []
-        target_seq = []
-        
-        for i in range(len(self.text) - self.seq_length - 1):
-            # Input sequence (x)
-            inp = self.text[i:i+self.seq_length]
-            # Target sequence (y) - next character prediction
-            target = self.text[i+1:i+self.seq_length+1]
-            
-            # Convert characters to indices
-            input_seq.append([self.char_to_idx[char] for char in inp])
-            target_seq.append([self.char_to_idx[char] for char in target])
-            
-        return list(zip(input_seq, target_seq))
+    def preprocess_text(self, text):
+        text = re.sub(r'[^\w\s]', '', text.lower())
+        tokens = text.split()
+        return [self.vocab.get(word, self.vocab['<UNK>']) for word in tokens]
+    
+    def create_sequences(self):
+        sequences = []
+        for i in range(len(self.data) - self.sequence_length - 1):
+            seq = self.data[i:i + self.sequence_length]
+            target = self.data[i + self.sequence_length]
+            sequences.append((seq, target))
+        return sequences
     
     def __len__(self):
-        return len(self.data)
+        return len(self.sequences)
     
     def __getitem__(self, idx):
-        x, y = self.data[idx]
-        return torch.tensor(x), torch.tensor(y)
-    
-    def get_vocab_size(self):
-        return len(self.char_to_idx)
+        seq, target = self.sequences[idx]
+        return torch.tensor(seq), torch.tensor(target)
 
-# Function to download and read text data
-def get_text_data(source_type="sample"):
-        with open("test.txt", "r", encoding="utf-8") as f:
-            return ' '.join(f.read().split()[:KB_limit])
+# Function to calculate character ratios
+def calculate_character_ratios(data):
+    char_count = {letter: 0 for letter in string.ascii_lowercase}
+    for item in data:
+        item = item.strip()
+        if item:
+            first_letter = item[0].lower()
+            if first_letter in char_count:
+                char_count[first_letter] += 1
+    total_items = len(data)
+    char_ratios = {char: count / total_items for char, count in char_count.items()}
+    return char_ratios
 
 # Training function
-def train_model(model, dataloader, optimizer, criterion, device, clip=5):
+def train_model(model, dataset, epochs, learning_rate, device):
+    """Train the PyTorch model without using batches"""
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    
     model.train()
-    running_loss = 0.0
-    
-    for batch_idx, (inputs, targets) in enumerate(dataloader):
-        inputs, targets = inputs.to(device), targets.to(device)
+    for epoch in range(epochs):
+        total_loss = 0
+        hidden = None
         
-        # Initialize hidden state
-        hidden = model.init_hidden(inputs.size(0), device)
-        
-        # Zero the parameter gradients
-        optimizer.zero_grad()
-        
-        # Forward pass
-        outputs, hidden = model(inputs)
-        
-        # Reshape for loss calculation
-        outputs = outputs.reshape(-1, outputs.shape[-1])
-        targets = targets.reshape(-1)
-        
-        # Calculate loss
-        loss = criterion(outputs, targets)
-        
-        # Backward pass and optimize
-        loss.backward()
-        
-        # Clip gradients to prevent exploding gradient
-        nn.utils.clip_grad_norm_(model.parameters(), clip)
-        
-        optimizer.step()
-        
-        running_loss += loss.item()
-        
-    return running_loss / len(dataloader)
-
-# Evaluation function
-def validate_model(model, dataloader, criterion, device):
-    model.eval()
-    running_loss = 0.0
-    
-    with torch.no_grad():
-        for inputs, targets in dataloader:
-            inputs, targets = inputs.to(device), targets.to(device)
+        # Process samples one at a time
+        progress_bar = tqdm.tqdm(range(len(dataset)), desc=f'Epoch {epoch+1}/{epochs}')
+        for idx in progress_bar:
+            inputs, targets = dataset[idx]
+            inputs = inputs.unsqueeze(0).to(device)  # Single sample dimension
+            targets = targets.to(device)
             
-            # Initialize hidden state
-            hidden = model.init_hidden(inputs.size(0), device)
+            # Clear gradients
+            optimizer.zero_grad()
             
             # Forward pass
-            outputs, hidden = model(inputs)
+            output, hidden = model(inputs, hidden)
+            hidden = tuple(h.detach() for h in hidden)  # Detach hidden state
             
-            # Reshape for loss calculation
-            outputs = outputs.reshape(-1, outputs.shape[-1])
-            targets = targets.reshape(-1)
+            # Reshape output for loss calculation
+            output = output.squeeze(0)
+            loss = criterion(output, targets.unsqueeze(0))
             
-            # Calculate loss
-            loss = criterion(outputs, targets)
+            # Backward pass and optimize
+            loss.backward()
+            optimizer.step()
             
-            running_loss += loss.item()
+            total_loss += loss.item()
+            progress_bar.set_postfix(loss=total_loss/(idx+1))
             
-    return running_loss / len(dataloader)
+    return model
 
-def generate_text(model, char_to_idx, idx_to_char, seed_text, gen_length=200, temperature=0.7, device='cpu'):
+# Text generation function with PyTorch model
+def generate_text_nn(model, prompt, vocab, vocab_inv, char_ratios, device, 
+                     seq_length, max_length, temperature):
+    """Generate text using the trained PyTorch model with set theory modifications"""
     model.eval()
     
-    # NumPy operations as requested
-    identity = np.eye(5)
-    flattened = identity.flatten()
-    norm_value = np.linalg.norm(flattened)
-    dot_result = np.dot(norm_value, norm_value)
-    ones_array = np.ones(int(dot_result))
+    # Process prompt
+    words = prompt.lower().split()
+    input_seq = [vocab.get(word, vocab.get('<UNK>')) for word in words]
     
-    print(f"NumPy Operations:")
-    print(f"Identity matrix:\n{identity}")
-    print(f"Flattened array: {flattened}")
-    print(f"Norm of flattened array: {norm_value}")
-    print(f"Dot product result: {dot_result}")
-    print(f"Ones array shape: {ones_array.shape}")
+    # Pad sequence if needed
+    while len(input_seq) < seq_length:
+        input_seq = [vocab['<PAD>']] + input_seq
     
-    random_array = np.random.rand(int(norm_value))
+    # Use only the last seq_length words as input
+    input_seq = input_seq[-seq_length:]
     
-    # Handle unknown characters in the seed text
-    valid_seed_text = ""
-    for c in seed_text:
-        if c in char_to_idx:
-            valid_seed_text += c
-        else:
-            # Replace unknown characters with a space or another character that exists in your vocabulary
-            valid_seed_text += " "
-            print(f"Warning: Character '{c}' not in vocabulary, replacing with space")
+    # Convert to tensor
+    input_tensor = torch.tensor(input_seq).unsqueeze(0).to(device)
     
-    # If the entire seed text was invalid, use the first character in the vocabulary
-    if not valid_seed_text:
-        valid_seed_text = idx_to_char[0]
-        print(f"Warning: No valid characters in seed text, using '{valid_seed_text}' instead")
+    generated_text = prompt
+    hidden = None
+    recent_outputs = []
     
-    # Convert valid seed text to indices
-    current_seq = torch.tensor([[char_to_idx[c] for c in valid_seed_text]], dtype=torch.long).to(device)
-    hidden = model.init_hidden(1, device)
-    generated_text = valid_seed_text
-    
-    # Generate characters one by one
-    for _ in range(gen_length):
-        # Get model prediction
-        output, hidden = model(current_seq, hidden)
+    for _ in range(max_length):
+        # Forward pass through the model
+        with torch.no_grad():
+            output, hidden = model(input_tensor, hidden)
+            
+        # Get probabilities for the next word
+        output = output[:, -1, :]  # Get the last timestep
         
-        # Get probabilities for the last timestep
-        output = output[:, -1, :] / temperature
-        probs = F.softmax(output, dim=1).data.cpu().numpy().squeeze()
+        # Apply temperature
+        output = output / temperature
+        
+        # Apply set theory modifiers
+        probs = torch.softmax(output, dim=-1)
+        probs *= 1.7
+        probs *= 0.5
+        probs = probs / probs.sum()
+        # Apply character ratio adjustments
+        for i in range(len(probs)):
+            if i in vocab_inv:
+                word = vocab_inv[i]
+                if word and len(word) > 0:
+                    first_char = word[0].lower()
+                    if first_char in char_ratios:
+                        probs[i] *= (1.0 + char_ratios[first_char])
+        
+        # Apply recency bias (avoid repeating recent words)
+        for i in range(1, min(WINDOW_SIZE, len(recent_outputs)) + 1):
+            if recent_outputs[-i] < len(probs):
+                probs[recent_outputs[-i]] *= 0.5  # Reduce probability of recently used words
+        
+        # Ensure probabilities are valid
+        probs = torch.maximum(probs, torch.tensor(0.0))
+        if probs.sum() > 0:
+            probs = probs / probs.sum()
         
         # Sample from the probability distribution
-        char_idx = np.random.choice(len(probs), p=probs)
+        next_idx = torch.multinomial(probs.squeeze(), 1).item()
         
-        # Get the predicted character
-        char = idx_to_char[char_idx]
-        generated_text += char
+        # Get the next word and add it to the generated text
+        next_word = vocab_inv.get(next_idx, "<UNK>")
+        generated_text += ' ' + next_word
         
-        # Update current sequence
-        current_seq = torch.tensor([[char_idx]], dtype=torch.long).to(device)
+        # Update input sequence for next iteration
+        input_tensor = torch.cat((input_tensor, torch.tensor([[next_idx]]).to(device)), dim=1)
+        recent_outputs.append(next_idx)
+        
+        # Limit the size of recent_outputs
+        if len(recent_outputs) > WINDOW_SIZE:
+            recent_outputs.pop(0)
     
     return generated_text
 
-# Main function to run the model
-def main():
-    # Hyperparameters
-    SEQUENCE_LENGTH = 50
-    EMBEDDING_SIZE = 128
-    HIDDEN_SIZE = 256
-    NUM_LAYERS = 2
-    DROPOUT = 0.3
-    BATCH_SIZE = 64
-    NUM_EPOCHS = 20
-    LEARNING_RATE = 0.001
+# Save and load functions
+def save_model(model, vocab, char_ratios, filepath="text_model.pt"):
+    """Save the model and necessary data"""
+    checkpoint = {
+        'model_state_dict': model.state_dict(),
+        'vocab': vocab,
+        'char_ratios': char_ratios
+    }
+    torch.save(checkpoint, filepath)
+    print(f"Model saved to {filepath}")
+
+def load_model(filepath="text_model.pt", embedding_dim=EMBEDDING_DIM, hidden_dim=HIDDEN_DIM, device='cuda'):
+    """Load the model and necessary data"""
+    checkpoint = torch.load(filepath, map_location=device)
+    vocab = checkpoint['vocab']
+    vocab_size = len(vocab)
     
-    # Device configuration
+    model = TextGeneratorNN(vocab_size, embedding_dim, hidden_dim).to(device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    char_ratios = checkpoint['char_ratios']
+    
+    return model, vocab, char_ratios
+
+# Main function
+def main():
+    # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    # Get data
-    text_data = get_text_data(source_type="shakespeare")
-    print(f"Text length: {len(text_data)}")
-    print(f"First 100 characters: {text_data[:100]}")
-    
-    # Create dataset
-    dataset = TextDataset(text_data, SEQUENCE_LENGTH)
-    vocab_size = dataset.get_vocab_size()
-    print(f"Vocabulary size: {vocab_size}")
-    
-    # Split dataset
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-    
-    # Create dataloaders
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-    
-    # Initialize model
-    model = CharLM(vocab_size, EMBEDDING_SIZE, HIDDEN_SIZE, NUM_LAYERS, vocab_size, DROPOUT).to(device)
-    
-    # Loss function and optimizer
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    
-    # Training loop
-    train_losses = []
-    val_losses = []
-    best_val_loss = float('inf')
-    
-    for epoch in range(NUM_EPOCHS):
-        train_loss = train_model(model, train_loader, optimizer, criterion, device)
-        val_loss = validate_model(model, val_loader, criterion, device)
+    # Try to load existing model, otherwise train a new one
+    try:
+        print("Attempting to load existing model...")
+        model, vocab, char_ratios = load_model(device=device)
+        vocab_inv = {idx: word for word, idx in vocab.items()}
+        print("Model loaded successfully.")
         
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
+    except:
+        print("No existing model found. Preparing to train a new model...")
         
-        print(f'Epoch {epoch+1}/{NUM_EPOCHS}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}')
-        
-        # Save the best model
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save(model.state_dict(), 'best_model.pth')
+        # Load and preprocess data
+        try:
+            with open("kb.txt", "r", encoding="utf-8") as f:
+                text = ' '.join(f.read().split()[:KB_LIMIT])
             
-        # Generate sample text
-        if (epoch + 1) % 5 == 0 or epoch == NUM_EPOCHS - 1:
-            seed = text_data[:SEQUENCE_LENGTH]
-            generated = generate_text(model, dataset.char_to_idx, dataset.idx_to_char, 
-                                     seed, gen_length=200, device=device)
-            print(f"\nGenerated text (epoch {epoch+1}):\n{generated}\n")
+            # Clean text and calculate character ratios
+            text = re.sub(r'\d+', '', text)
+            
+            # Filter out short words but keep common exceptions
+            pattern = r'^[a-zA-Z]{1,2}$'
+            exceptions = ['a', 'i', 'to', 'is', 'it', 'an', 'of', 'by', 'he', 'me', 'we', 'be', 'my', 'up', 'do', 'go', 'if', 'no', 'so', 'on', 'at', 'in', 'as', 'or', 'la', 'ah', 'uh', 'ye', 'ab', 'ad', 'ae', 'ba', 'bi', 'bo', 'da', 'ed', 'ef', 'eh', 'el', 'em', 'en', 'er', 'es', 'ex', 'fa', 'hi', 'ho', 'id', 'is', 'jo', 'ka', 'la', 'li', 'lo', 'ma', 'me', 'mi', 'mu', 'na', 'no', 'nu', 'od', 'oe', 'oi', 'om', 'op', 'os', 'ow', 'ox', 'oy', 'pa', 're', 'sh', 'si', 'ta', 'uh', 'um','un', 'up', 'us', 'ut', 'va', 'ye', 'yo']
+            filtered_words = [word for word in text.split() if not re.match(pattern, word) or word in exceptions]
+            
+            # Calculate character ratios
+            char_ratios = calculate_character_ratios(filtered_words)
+            
+            # Build vocabulary
+            word_counts = Counter(filtered_words)
+            vocab = {'<PAD>': 0, '<UNK>': 1}
+            for idx, (word, _) in enumerate(word_counts.most_common(), 2):
+                vocab[word] = idx
+            vocab_inv = {idx: word for word, idx in vocab.items()}
+            vocab_size = len(vocab)
+            
+            # Create dataset
+            text = ' '.join(filtered_words)
+            dataset = TextDataset(text, vocab, SEQUENCE_LENGTH)
+            
+            # Initialize and train model
+            print(f"Vocabulary size: {vocab_size}")
+            model = TextGeneratorNN(vocab_size, EMBEDDING_DIM, HIDDEN_DIM).to(device)
+            print("Training general model...")
+            train_model(model, dataset, NUM_EPOCHS, LEARNING_RATE, device)
+            save_model(model, vocab, char_ratios)
+            
+        except FileNotFoundError:
+            print("Error: kb.txt file not found. Please ensure the knowledge base file exists.")
+            return
+    
+    print("\nEnhanced Text Generator with PyTorch Neural Networks")
 
-    # Load best model for final generation
-    model.load_state_dict(torch.load('best_model.pth'))
-    while True:
-        generated = generate_text(model, dataset.char_to_idx, dataset.idx_to_char, 
-                               input("USER: "), gen_length=3000, temperature=0.8, device=device)
-        print(f"\nSeed: {seed[:30]}...\n{generated}\n{'='*80}")
+    current_topic = None
+    auto_topic_detection = False
+    temperature = 1.0
+    
+    try:
+        while True:
+            try:
+                prompt = input("\nUSER: ")
+                                # Generate text
+                generated_text = generate_text_nn(
+                    model,
+                    prompt,
+                    vocab,
+                    vocab_inv,
+                    char_ratios,
+                    device,
+                    seq_length=SEQUENCE_LENGTH,
+                    max_length=250,
+                    temperature=temperature,
+                )
+                
+                print("\nAI: ", generated_text)
+            except EOFError:
+                print("Input stream ended. Exiting...")
+                break
+    
+    except KeyboardInterrupt:
+        print("\nProgram interrupted. Exiting...")
 
 if __name__ == "__main__":
     main()
