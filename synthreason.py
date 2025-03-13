@@ -243,12 +243,11 @@ def generate_text_nn(model, prompt, vocab, vocab_inv, device,
     return generated_text
 
 # Save and load functions
-def save_model(model, vocab, char_ratios, filepath="text_model_manhattan.pt"):
+def save_model(model, vocab, filepath="text_model_manhattan.pt"):
     """Save the model and necessary data"""
     checkpoint = {
         'model_state_dict': model.state_dict(),
-        'vocab': vocab,
-        'char_ratios': char_ratios
+        'vocab': vocab
     }
     torch.save(checkpoint, filepath)
     print(f"Model saved to {filepath}")
@@ -262,9 +261,7 @@ def load_model(filepath="text_model_manhattan.pt", embedding_dim=EMBEDDING_DIM, 
     model = TextGeneratorNN(vocab_size, embedding_dim, hidden_dim).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     
-    char_ratios = checkpoint['char_ratios']
-    
-    return model, vocab, char_ratios
+    return model, vocab
 
 # Main function
 def main():
@@ -283,7 +280,7 @@ def main():
             # For demonstration, we'll use the vocabulary as a proxy
             vocab_inv = {idx: word for word, idx in vocab.items()}
             vocab_words = list(vocab.keys())
-            save_model(model, vocab, char_ratios)
+            save_model(model, vocab)
         vocab_inv = {idx: word for word, idx in vocab.items()}
         print("Model loaded successfully.")
         
@@ -321,7 +318,7 @@ def main():
             model = TextGeneratorNN(vocab_size, EMBEDDING_DIM, HIDDEN_DIM).to(device)
             print("Training model with Manhattan implication acceleration...")
             train_model_manhattan(model, dataset, NUM_EPOCHS, LEARNING_RATE, device)
-            save_model(model, vocab, char_ratios)
+            save_model(model, vocab)
             
         except FileNotFoundError:
             print("Error: kb.txt file not found. Please ensure the knowledge base file exists.")
