@@ -443,7 +443,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
                 sorted_indices = np.argsort(-reshaped, axis=-1).flatten()
                 
                 # Get the sorted probabilities (keep as floats)
-                probs_sorted = probs[sorted_indices[:len(probs)]]
+                probs_sorted = probs[-sorted_indices[:len(probs)]]
                 
                 # Renormalize after sorting and decay
                 probs_sorted = np.maximum(probs_sorted, -probs_sorted)
