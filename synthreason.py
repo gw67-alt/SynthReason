@@ -323,6 +323,41 @@ def identify_topic(sequence, vocab_inv, topic_keywords):
     
     return 'general'  # Default topic if no specific topic is found
 
+
+class RandomChoiceBuffer:
+    def __init__(self, buffer_size):
+        self.buffer_size = buffer_size
+        self.buffer = np.array([])
+        self.weights = np.array([])
+
+    def add_to_buffer(self, array, weights):
+        if len(array) == 0 or len(weights) == 0:
+            raise ValueError("Array and weights must not be empty")
+
+        if self.buffer.size == 0:
+            self.buffer = np.array(array)
+            self.weights = np.array(weights)
+        else:
+            self.buffer = np.concatenate((self.buffer, array))
+            self.weights = np.concatenate((self.weights, weights))
+
+        # If the buffer exceeds the buffer size, trim it
+        if self.buffer.size > self.buffer_size:
+            excess = self.buffer.size - self.buffer_size
+            self.buffer = self.buffer[excess:]
+            self.weights = self.weights[excess:]
+
+    def random_choice(self):
+        if self.buffer.size == 0:
+            raise ValueError("Buffer is empty")
+
+        # Normalize weights to sum to 1
+        normalized_weights = self.weights / self.weights.sum()
+
+        # Perform weighted random choice
+        choice = np.random.choice(self.buffer, p=normalized_weights)
+        return choice
+
 # Generate text using Markov chain with set theory modifications and topic bias
 def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, topic_transition_dict=None, topic=None, topic_bias=0.7, seq_length=3, max_length=250):
     vocab_inv = {idx: word for word, idx in set(vocab.items())}
@@ -340,7 +375,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
         # Determine if we have transitions for this sequence
         has_general = input_tuple in transition_dict
         has_topic = topic and topic in topic_transition_dict and input_tuple in topic_transition_dict[topic]
-        
+        topic_prob = {}
         if has_general or has_topic:
             # If we have topic-specific transitions and general transitions, blend them
             if has_general and has_topic:
@@ -417,9 +452,18 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
                 
                 # Create a mapping from sorted indices back to original words
                 words_sorted = [words[i] for i in sorted_indices if i < len(words)]
-                
+                                
+                # Example usage
+                buffer = RandomChoiceBuffer(buffer_size=10000)
+                array = words_sorted
+                weights = probs_sorted
+                buffer.add_to_buffer(array, np.roll(weights,30))
+                array2 = words_sorted
+                weights2 = topic_prob
+                buffer.add_to_buffer(words_sorted, probs_sorted)  # Exceeding the buffer size, old values will be removed
                 # Select words based on the normalized probabilities
-                selected_word = words_sorted[np.random.choice(range(len(words_sorted)), p=probs_sorted)]
+                choice = buffer.random_choice()
+                selected_word = words_sorted[choice if choice < len(words_sorted) else 0]
                 
                 words = words_sorted
                 probs = probs_sorted
