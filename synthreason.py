@@ -7,7 +7,7 @@ import os
 import pickle
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+import tqdm
 # Parameters
 KB_LIMIT = -1
 SEQUENCE_LENGTH = 2
@@ -140,8 +140,7 @@ def calculate_character_ratios(data):
 def preprocess_text(text, vocab):
     # Create a translation table that only removes characters we don't want
     # This preserves punctuation while removing other unwanted characters
-    unwanted_chars = re.compile(r'[^\w\s' + re.escape(str_module.punctuation) + ']')
-    text = unwanted_chars.sub('', text.lower())
+    text = re.sub(r'[^\w\s]', '', text.lower())
     
     # Split by whitespace but keep punctuation attached to words
     tokens = text.split()
@@ -163,10 +162,6 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywo
     Returns:
         tuple: (transition_dict, topic_transition_dict)
     """
-    import threading
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from collections import Counter
-    import tqdm
     
     # Preprocess text data
     data = preprocess_text(text_data, vocab)
@@ -365,7 +360,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
                     topic_prob = topic_probs.get(word_idx, 1)
                     # Blend probabilities using topic_bias
                     probs[i] = (1 - topic_bias) * general_prob + topic_bias * topic_prob
-            
+                    probs = 0.5 * probs + topic_prob * np.ones(len(probs)) / len(probs)
             # If we only have general transitions
             elif has_general:
                 probs_dict = transition_dict[input_tuple]
@@ -376,7 +371,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
             elif has_topic:
                 probs_dict = topic_transition_dict[topic][input_tuple]
                 words = list(probs_dict.keys())
-                probs = np.array(list(probs_dict.values()), dtype=float)
+                probs = np.array(list(probs_dict.values()), dtype=float).T
             
             # Apply character ratio masking to probabilities
             for i, word_idx in enumerate(words):
@@ -416,7 +411,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
                 probs_sorted = probs[sorted_indices[:len(probs)]]
                 
                 # Renormalize after sorting and decay
-                probs_sorted = np.maximum(probs_sorted, 0)
+                probs_sorted = np.maximum(probs_sorted, -probs_sorted)
                 if probs_sorted.sum() > 0:
                     probs_sorted /= probs_sorted.sum()
                 
@@ -448,10 +443,6 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
             recent_transitions.pop(0)
     
     return generated_text
-
-# Main function
-import re
-from collections import Counter
 
 def detect_topic(text, topic_keywords):
     """
@@ -608,7 +599,7 @@ def main():
         set_modifier = SetTheoryModifier()
         
         # Load text data and calculate character ratios
-        with open("test.txt", "r", encoding="utf-8") as f:
+        with open("kb.txt", "r", encoding="utf-8") as f:
             text = ' '.join(f.read().split()[:KB_LIMIT])
         text = re.sub(r'\d+', '', text)
         pattern = r'^[a-zA-Z]{1,2}$'
