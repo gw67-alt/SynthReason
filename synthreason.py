@@ -407,23 +407,27 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
                     except:
                         pass
             
-            # NEW: Reshape and argsort operation
             if len(words) > 1:
-                # Reshape the original sequence and probabilities based on their values
-                sorted_indices = np.argsort(-probs)  # Negative for descending order
-                # Reorder words and probabilities
-                words = [words[i] for i in sorted_indices]
-                probs = probs[sorted_indices]
+                # Sort indices in descending order of probability
+                reshaped = probs.reshape(1, -1)
+                sorted_indices = np.argsort(-reshaped, axis=-1).flatten()
                 
-                # Optionally apply a decay to the sorted probabilities to add diversity
-                for i in range(1, len(probs)):
-                    probs[i] *= 0.9 ** i  # Decay factor
+                # Get the sorted probabilities (keep as floats)
+                probs_sorted = probs[sorted_indices[:len(probs)]]
                 
                 # Renormalize after sorting and decay
-                probs = np.maximum(probs, 0)
-                if probs.sum() > 0:
-                    probs /= probs.sum()
-            
+                probs_sorted = np.maximum(probs_sorted, 0)
+                if probs_sorted.sum() > 0:
+                    probs_sorted /= probs_sorted.sum()
+                
+                # Create a mapping from sorted indices back to original words
+                words_sorted = [words[i] for i in sorted_indices if i < len(words)]
+                
+                # Select words based on the normalized probabilities
+                selected_word = words_sorted[np.random.choice(range(len(words_sorted)), p=probs_sorted)]
+                
+                words = words_sorted
+                probs = probs_sorted
             # Ensure probabilities are valid again after all modifications
             probs = np.maximum(probs, 0)
             if probs.sum() > 0:
