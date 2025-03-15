@@ -368,6 +368,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
     generated_text = prompt
     recent_transitions = []
     next_word = "a"
+    buffer = RandomChoiceBuffer(buffer_size=10000)
 
     for _ in range(max_length):
         input_tuple = tuple(input_indices[-seq_length:])
@@ -393,6 +394,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
                 for i, word_idx in enumerate(words):
                     general_prob = general_probs.get(word_idx, 1)
                     topic_prob = topic_probs.get(word_idx, 1)
+                    
                     # Blend probabilities using topic_bias
                     probs[i] = (1 - topic_bias) * general_prob + topic_bias * topic_prob
                     probs = 0.5 * probs + topic_prob * np.ones(len(probs)) / len(probs)
@@ -454,7 +456,6 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, top
                 words_sorted = [words[i] for i in sorted_indices if i < len(words)]
                                 
                 # Example usage
-                buffer = RandomChoiceBuffer(buffer_size=10000)
                 array = words_sorted
                 weights = probs_sorted
                 buffer.add_to_buffer(array, np.roll(weights,30))
@@ -643,7 +644,7 @@ def main():
         set_modifier = SetTheoryModifier()
         
         # Load text data and calculate character ratios
-        with open("test.txt", "r", encoding="utf-8") as f:
+        with open("kb2.txt", "r", encoding="utf-8") as f:
             text = ' '.join(f.read().split()[:KB_LIMIT])
         text = re.sub(r'\d+', '', text)
         pattern = r'^[a-zA-Z]{1,2}$'
