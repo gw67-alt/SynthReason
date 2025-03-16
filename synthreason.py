@@ -4,7 +4,7 @@ import re
 from collections import defaultdict
 import random
 
-KB_limit = 99999
+KB_limit = 9999
 generate_length = 500
 # Step 1: Load unstructured text from a file
 with open('test.txt', 'r', encoding="utf-8") as file:
