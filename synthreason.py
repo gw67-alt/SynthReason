@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import tqdm
 
 # Parameters
-KB_LIMIT = -1
+KB_LIMIT = 99999
 SEQUENCE_LENGTH = 2
 DECAY_FACTOR = 1.9  # Decay factor for stable diffusion
 WINDOW_SIZE = 15  # Size of the window to consider for adjustments
@@ -128,12 +128,13 @@ def calculate_character_ratios(data):
     total_items = len(data)
 
     # Calculate ratios for letters
-    char_ratios = {char: count / total_items for char, count in char_count.items()}
-
-    # Calculate ratios for punctuation and add to the same dictionary
-    for punct, count in punct_count.items():
-        if count > 0:  # Only add punctuation that actually appears
-            char_ratios[punct] = count / total_items
+    char_ratios = {}
+    for char, count in char_count.items():
+        # Convert char to numeric value if needed
+        char_value = ord(char) if isinstance(char, str) else char
+        # Create diagonal matrix of appropriate size with the count
+        diag_matrix = np.diag([count] * len(char_count))
+        char_ratios[char] = np.sum(diag_matrix) / total_items
 
     return char_ratios
 
@@ -341,7 +342,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, seq
             # Continue with existing logic for recent transitions
             for i in range(1, min(WINDOW_SIZE, len(recent_transitions)) + 1):
                 past_transition = recent_transitions[-i]
-                decay = DECAY_FACTOR ** char_ratios.get(next_word[0], 1)
+                decay = DECAY_FACTOR ** np.sum([i for i in range(1, min(WINDOW_SIZE, len(recent_transitions)) + 1)])
                 if past_transition in words:
                     try:
                         probs[words.index(past_transition)] *= np.sum([i for i in range(1, min(WINDOW_SIZE, len(recent_transitions)) + 1)])
