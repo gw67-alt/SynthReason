@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import tqdm
 
 # Parameters
-KB_LIMIT = 100000
+KB_LIMIT = -1
 SEQUENCE_LENGTH = 2
 DECAY_FACTOR = 1.9  # Decay factor for stable diffusion
 WINDOW_SIZE = 15  # Size of the window to consider for adjustments
