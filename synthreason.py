@@ -1,3 +1,4 @@
+
 import string
 import torch
 from collections import Counter
@@ -9,7 +10,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import tqdm
 # Parameters
-KB_LIMIT = -1
+KB_LIMIT = 10000
 SEQUENCE_LENGTH = 2
 DECAY_FACTOR = 1.9  # Decay factor for stable diffusion
 WINDOW_SIZE = 15 # Size of the window to consider for adjustments
@@ -85,9 +86,9 @@ class SetTheoryModifier:
                         if word_idx in vocab_inv:
                             word = vocab_inv[word_idx].lower()
                             if any(empty_word not in word for empty_word in description_words):
-                                modified_probs[i] *= operation['empty_boost']
+                                modified_probs[i] *= [x for i, word_idx in enumerate(description_words)]
                             if any(presence_word not in word for presence_word in action_words):
-                                modified_probs[i] *= operation['contradiction_penalty']
+                                modified_probs[i] *= [x for i, word_idx in enumerate(action_words)]
         
         # Ensure probabilities are valid
         modified_probs = np.maximum(modified_probs, 0)
@@ -208,14 +209,14 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios, topic_keywo
             # Update local transition dictionary
             if input_seq not in local_transition_dict:
                 local_transition_dict[input_seq] = Counter()
-            local_transition_dict[input_seq][target_word] += char_ratios.get(data[i + sequence_length + 1], 1)
+            local_transition_dict[input_seq][target_word] += np.sum([i for i in range(start_idx, end_idx)])
             
             # Update local topic-specific transition dictionary
             if topic not in local_topic_dict:
                 local_topic_dict[topic] = {}
             if input_seq not in local_topic_dict[topic]:
                 local_topic_dict[topic][input_seq] = Counter()
-            local_topic_dict[topic][input_seq][target_word] += char_ratios.get(data[i + sequence_length + 1], 1)
+            local_topic_dict[topic][input_seq][target_word] += np.sum([i for i in range(start_idx, end_idx)])
             
             local_processed += 1
             
@@ -644,7 +645,7 @@ def main():
         set_modifier = SetTheoryModifier()
         
         # Load text data and calculate character ratios
-        with open("kb2.txt", "r", encoding="utf-8") as f:
+        with open("test.txt", "r", encoding="utf-8") as f:
             text = ' '.join(f.read().split()[:KB_LIMIT])
         text = re.sub(r'\d+', '', text)
         pattern = r'^[a-zA-Z]{1,2}$'
