@@ -203,7 +203,7 @@ def create_sequences(text_data, vocab, sequence_length, char_ratios, num_threads
             # Update local transition dictionary
             if input_seq not in local_transition_dict:
                 local_transition_dict[input_seq] = Counter()
-            local_transition_dict[input_seq][target_word] += char_ratios.get(data[i + sequence_length + 1], 1)
+            local_transition_dict[input_seq][target_word] += np.sum([i for i in range(start_idx, end_idx)])
 
             local_processed += 1
 
@@ -327,7 +327,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, seq
                         first_char = word[0].lower()
                         if first_char in char_ratios:
                             # Apply char ratio as a mask/modifier to the probability
-                            probs[i] *= (1.0 + char_ratios[first_char])
+                            probs[i] *= np.sum([word_idx for i, word_idx in enumerate(words)])
 
             # Apply punctuation influence
             for char in word:
@@ -344,7 +344,7 @@ def generate_text(prompt, vocab, transition_dict, char_ratios, set_modifier, seq
                 decay = DECAY_FACTOR ** char_ratios.get(next_word[0], 1)
                 if past_transition in words:
                     try:
-                        probs[words.index(past_transition)] *= char_ratios.get(next_word[0], 1)
+                        probs[words.index(past_transition)] *= np.sum([i for i in range(1, min(WINDOW_SIZE, len(recent_transitions)) + 1)])
                     except:
                         pass
 
