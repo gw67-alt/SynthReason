@@ -10,9 +10,10 @@ generate_length = 500
 with open('test.txt', 'r', encoding="utf-8") as file:
     text = ' '.join(file.read().split()[:KB_limit])
 
-# Step 2: Process the text and tokenize it into words
-# We will split the text by non-alphabetical characters (punctuation, whitespace)
 # Filter out numbers and single-character words except for 'a' and 'i'
+
+text = re.sub(r'\d+', '', text)  # Removes all numbers
+
 words = re.findall(r'\b\w+\b', text.lower())  # Convert to lowercase for case-insensitive matching
 
 # Filter out numbers and single-character words except 'a' and 'i'
@@ -39,7 +40,7 @@ for i in range(n-1):
         # Find intersection of sets of word_i and word_j
         # We treat each word as a "set" and check intersection of sets
         # Instead of creating sets of word indices, we directly check for word intersection
-        intersection_result = 1 if word_i == word_j else 0
+        intersection_result = 1 if word_i == word_j else i
         
         intersection_matrix[i][j] = intersection_result
 
