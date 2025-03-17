@@ -3,7 +3,7 @@ import re
 from collections import defaultdict
 import random
 
-KB_limit = 9999
+KB_limit = 99999
 generate_length = 500
 n_gram_size = 2  # n-gram size (for bigrams)
 
