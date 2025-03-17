@@ -29,8 +29,8 @@ index_to_word = {idx + 1: word for idx, word in enumerate(set(filtered_words))}
 
 # Step 3: Prepare sequences for training (input-output pairs)
 sequences = []
-for i in range(len(filtered_words) - n_gram_size):
-    sequences.append(filtered_words[i:i + n_gram_size + 1])
+for i in range(len(filtered_words) - n_gram_size-5):
+    sequences.append(filtered_words[i:i + n_gram_size + 1]+filtered_words[i+3:i])
 
 # Convert word sequences to index sequences
 sequences_idx = [[word_to_index[word] for word in sequence] for sequence in sequences]
