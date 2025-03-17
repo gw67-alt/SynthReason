@@ -1,9 +1,13 @@
 import numpy as np
 import re
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, Dataset
 from collections import defaultdict
 import random
 
-KB_limit = 9999
+KB_limit = 9999 # -1 for unlimited
 generate_length = 500
 n_gram_size = 2  # n-gram size (for bigrams)
 
@@ -19,92 +23,156 @@ words = re.findall(r'\b\w+\b', text.lower())  # Convert to lowercase for case-in
 # Filter out numbers and single-character words except 'a' and 'i'
 filtered_words = [word for word in words if len(word) > 1 or word in ['a', 'i'] and not word.isdigit()]
 
-# Step 2: Create a word-to-index mapping (using a dictionary)
+# Step 2: Tokenization (convert words to integer indices)
 word_to_index = {word: idx + 1 for idx, word in enumerate(set(filtered_words))}
+index_to_word = {idx + 1: word for idx, word in enumerate(set(filtered_words))}
 
-# Reverse the word-to-index for converting index back to word
-index_to_word = {v: k for k, v in word_to_index.items()}
+# Step 3: Prepare sequences for training (input-output pairs)
+sequences = []
+for i in range(len(filtered_words) - n_gram_size):
+    sequences.append(filtered_words[i:i + n_gram_size + 1])
 
-# Step 3: Generate n-grams (bigrams) from the filtered words
-n_grams = []
-for i in range(len(filtered_words) - n_gram_size + 1):
-    n_grams.append(tuple(filtered_words[i:i + n_gram_size]))
+# Convert word sequences to index sequences
+sequences_idx = [[word_to_index[word] for word in sequence] for sequence in sequences]
 
-# Step 4: Create a transition matrix based on the n-grams (counting transitions)
-transition_matrix = defaultdict(int)  # Using an int map to count occurrences
-word_counts = defaultdict(int)
+X = [seq[:-1] for seq in sequences_idx]  # Input: all but last word
+y = [seq[-1] for seq in sequences_idx]  # Output: last word
 
-for n_gram in n_grams:
-    word_counts[n_gram[0]] += 1
-    transition_matrix[n_gram] += 1
+X = torch.tensor(X)
+y = torch.tensor(y)
 
-# Step 5: Convert counts to probabilities
-transition_probabilities = defaultdict(lambda: defaultdict(float))
+# Step 4: Create a Dataset class for DataLoader
+class TextDataset(Dataset):
+    def __init__(self, X, y):
+        self.X = X
+        self.y = y
 
-for word in word_counts:
-    total_count = word_counts[word]
-    for next_word in transition_matrix:
-        if next_word[0] == word:
-            transition_probabilities[word][next_word[1]] = transition_matrix[(word, next_word[1])] / total_count
+    def __len__(self):
+        return len(self.X)
 
-# Step 6: Intergrade the probabilities with additional factors
-def intergrade_probabilities(word, transition_probabilities):
-    """
-    This function blends different probabilistic models, here we just use a simple blending approach.
-    You can modify this to incorporate other dynamic elements, e.g., external knowledge or semantic weighting.
-    """
-    probabilities = transition_probabilities[word]
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
+
+dataset = TextDataset(X, y)
+dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
+
+# Step 5: Define the LSTM model with Linear Include
+class TextGenerator(nn.Module):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, n_gram_size):
+        super(TextGenerator, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
+        
+        # Linear Include - applies on LSTM output, not embedding directly
+        self.linear_include = nn.Linear(hidden_dim, hidden_dim)
+        
+        self.fc = nn.Linear(hidden_dim, vocab_size)
     
-    # Adding some form of "external influence" (e.g., bias to favor certain words)
-    # For example, adding a factor that makes some words more likely:
-    for next_word in probabilities:
-        probabilities[next_word] *= 1.1  # Adding 10% bias to each transition
+    def forward(self, x):
+        batch_size = x.size(0)
+        
+        # Get embeddings
+        embedded = self.embedding(x)  # Shape: (batch_size, n_gram_size, embedding_dim)
+        
+        # Process with LSTM
+        lstm_out, _ = self.lstm(embedded)  # Shape: (batch_size, n_gram_size, hidden_dim)
+        
+        # Take the last output: (batch_size, hidden_dim)
+        lstm_out = lstm_out[:, -1, :]
+        
+        # Apply Linear Include to LSTM output
+        lstm_out = self.linear_include(lstm_out)  # Shape: (batch_size, hidden_dim)
+        
+        # Final prediction
+        output = self.fc(lstm_out)  # Shape: (batch_size, vocab_size)
+        return output
+
+# Step 6: Initialize the model, loss function, and optimizer
+vocab_size = len(word_to_index) + 1  # Including padding token (index 0)
+embedding_dim = 256
+hidden_dim = 512
+model = TextGenerator(vocab_size, embedding_dim, hidden_dim, n_gram_size)
+
+# Loss function and optimizer
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+# Step 7: Train the model
+epochs = 10
+for epoch in range(epochs):
+    model.train()
+    running_loss = 0.0
+    for inputs, labels in dataloader:
+        optimizer.zero_grad()
+        
+        # Forward pass
+        outputs = model(inputs)
+        
+        # Calculate loss
+        loss = criterion(outputs, labels)
+        loss.backward()
+        
+        # Update weights
+        optimizer.step()
+        
+        running_loss += loss.item()
     
-    # Normalize probabilities
-    total_prob = sum(probabilities.values())
-    for next_word in probabilities:
-        probabilities[next_word] /= total_prob
+    print(f'Epoch [{epoch+1}/{epochs}], Loss: {running_loss / len(dataloader)}')
 
-    return probabilities
-
-# Step 7: Generate text based on probabilistic transition model
-while True:
+# Step 8: Generate text based on the trained model and spatial vector
+def generate_text(seed_text, generate_length, model, word_to_index, index_to_word, n_gram_size):
+    model.eval()  # Set model to evaluation mode
     generated_text = []
-
-    # Step 8: Allow user input for seed text
-    seed_text = input("USER: ").lower().split()  # User-provided seed text (converted to lowercase)
-
-    # Ensure the seed text is in the filtered words list
-    valid_seed = [word for word in seed_text if word in filtered_words]
-
-    if valid_seed:
-        # Use the last n-gram size words from the seed text
-        current_sequence = valid_seed[-n_gram_size:]  # Take last n words of seed for n-gram size
-    else:
-        # If no valid seed word, use a random word from the filtered list
-        current_sequence = [random.choice(filtered_words)]
-
-    generated_text.extend(current_sequence)  # Add the seed text to the generated text
-
-    # Generate the next words based on the transition probabilities
-    for _ in range(generate_length - len(valid_seed)):  # Generate based on remaining length
-        if len(current_sequence) == n_gram_size:  # Ensure we have enough words for an n-gram
-            word = current_sequence[-1]
-            next_word_probs = intergrade_probabilities(word, transition_probabilities)
-
-            # Sample the next word based on the intergraded probabilities
-            next_word = random.choices(
-                list(next_word_probs.keys()), 
-                weights=next_word_probs.values(), 
-                k=1
-            )[0]
-
-            generated_text.append(next_word)
-            current_sequence.append(next_word)  # Add the new word to the sequence
+    
+    # Convert seed text to sequence of word indices
+    words = seed_text.lower().split()
+    current_sequence = []
+    for word in words:
+        if word in word_to_index:
+            current_sequence.append(word_to_index[word])
+        else:
+            # Handle unknown words
+            current_sequence.append(random.choice(list(word_to_index.values())))
+    
+    # Ensure we have exactly n_gram_size words in the sequence
+    while len(current_sequence) < n_gram_size:
+        current_sequence.append(random.choice(list(word_to_index.values())))
+    
+    # Keep only the last n_gram_size elements
+    current_sequence = current_sequence[-n_gram_size:]
+    
+    for _ in range(generate_length):
+        # Convert the current sequence to a tensor
+        input_seq = torch.tensor([current_sequence], dtype=torch.long)
+        
+        # Predict the next word
+        with torch.no_grad():
+            output = model(input_seq)
+        
+        # Apply softmax to get probabilities
+        probabilities = torch.nn.functional.softmax(output, dim=1)
+        
+        # Sample the next word index using torch.multinomial
+        predicted_word_idx = torch.multinomial(probabilities[0], 1).item()
+        
+        # Convert to word
+        if predicted_word_idx in index_to_word:
+            predicted_word = index_to_word[predicted_word_idx]
+            # Add the predicted word to the generated text
+            generated_text.append(predicted_word)
+            
+            # Update the current sequence (shift and add the new word)
+            current_sequence.append(predicted_word_idx)
             current_sequence = current_sequence[-n_gram_size:]  # Keep only the last n-gram_size words
         else:
-            break  # Stop if we don't have enough words to form a valid n-gram
+            # Handle unexpected index
+            continue
+    
+    return ' '.join(generated_text)
 
-    # Step 9: Output the generated text
+# Step 9: Get user input and generate text
+while True:
+    seed_text = input("USER: ")  # Get the seed text from the user
+    generated_text = generate_text(seed_text, generate_length, model, word_to_index, index_to_word, n_gram_size)
     print("Generated Text:")
-    print(' '.join(generated_text))
+    print(generated_text)
