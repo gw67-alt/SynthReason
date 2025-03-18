@@ -9,13 +9,27 @@ import random
 import os
 import json
 import pickle
+import mpmath
 
-KB_limit = 999 # -1 for unlimited
+KB_limit = 9999 # -1 for unlimited
 epochs = 10
 generate_length = 500
 n_gram_size = 2  # n-gram size (for bigrams)
 embedding_dim = 256
 hidden_dim = 512
+
+def generate_zeta_zeros(num_zeros=100):
+    """Generate the first n non-trivial zeros of the Riemann zeta function as numerical values"""
+    zeros = []
+    mpmath.mp.dps = 20  # Set precision
+    
+    print("Generating zeta zeros data...")
+    for i in range(1, num_zeros + 1):
+        # Get the imaginary part of the zero
+        imag_part = float(mpmath.zetazero(i).imag)
+        zeros.append(imag_part)
+    
+    return zeros
 
 class TextDataset(Dataset):
     def __init__(self, X, y):
@@ -29,13 +43,19 @@ class TextDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 class TextGenerator(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, hidden_dim, n_gram_size):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, n_gram_size, zeta_zeros=None):
         super(TextGenerator, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
         
         # Linear Include - applies on LSTM output, not embedding directly
         self.linear_include = nn.Linear(hidden_dim, hidden_dim)
+        
+        # Additional layer for zeta zeros influence
+        self.zeta_zeros = zeta_zeros
+        if zeta_zeros is not None:
+            self.zeta_layer = nn.Linear(len(zeta_zeros), hidden_dim)
+            self.zeta_influence = nn.Parameter(torch.tensor(0.1))  # Learnable parameter for zeta influence
         
         self.fc = nn.Linear(hidden_dim, vocab_size)
     
@@ -54,12 +74,21 @@ class TextGenerator(nn.Module):
         # Apply Linear Include to LSTM output
         lstm_out = self.linear_include(lstm_out)  # Shape: (batch_size, hidden_dim)
         
+        # Apply zeta zeros influence if available
+        if hasattr(self, 'zeta_layer'):
+            # Create a tensor with zeta zeros
+            zeta_tensor = torch.tensor(self.zeta_zeros, dtype=torch.float32).repeat(batch_size, 1)
+            
+            # Apply zeta influence
+            zeta_out = self.zeta_layer(zeta_tensor)
+            lstm_out = lstm_out + self.zeta_influence * zeta_out
+        
         # Final prediction
         output = self.fc(lstm_out)  # Shape: (batch_size, vocab_size)
         return output
 
 # Function to save model and variables
-def save_model(model, word_to_index, index_to_word, n_gram_size, embedding_dim, hidden_dim, filename="text_generator"):
+def save_model(model, word_to_index, index_to_word, n_gram_size, embedding_dim, hidden_dim, zeta_zeros=None, filename="text_generator"):
     # Create directory if it doesn't exist
     os.makedirs("saved_models", exist_ok=True)
     
@@ -73,7 +102,8 @@ def save_model(model, word_to_index, index_to_word, n_gram_size, embedding_dim, 
         "n_gram_size": n_gram_size,
         "embedding_dim": embedding_dim,
         "hidden_dim": hidden_dim,
-        "vocab_size": len(word_to_index) + 1
+        "vocab_size": len(word_to_index) + 1,
+        "zeta_zeros": zeta_zeros
     }
     
     # Save vocabulary and parameters using pickle
@@ -96,44 +126,59 @@ def load_model(filename="text_generator"):
         embedding_dim = model_data["embedding_dim"]
         hidden_dim = model_data["hidden_dim"]
         vocab_size = model_data["vocab_size"]
+        zeta_zeros = model_data.get("zeta_zeros", None)
         
         # Create model with loaded parameters
-        model = TextGenerator(vocab_size, embedding_dim, hidden_dim, n_gram_size)
+        model = TextGenerator(vocab_size, embedding_dim, hidden_dim, n_gram_size, zeta_zeros)
         
         # Load model state
         model.load_state_dict(torch.load(f"saved_models/{filename}_model.pth"))
         
         print(f"Model loaded from saved_models/{filename}_*")
-        return model, word_to_index, index_to_word, n_gram_size, embedding_dim, hidden_dim
+        return model, word_to_index, index_to_word, n_gram_size, embedding_dim, hidden_dim, zeta_zeros
     
     except FileNotFoundError:
         print(f"No saved model found at saved_models/{filename}_*")
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, None
 
 def train_new_model():
+    # Generate zeta zeros
+    zeta_zeros = generate_zeta_zeros(100)
+    
+    # Load regular text
     with open('test.txt', 'r', encoding="utf-8") as file:
         text = ' '.join(file.read().split()[:KB_limit])
+    
     text = re.sub(r'\d+', '', text)
     words = re.findall(r'\b\w+\b', text.lower())
     filtered_words = [word for word in words if len(word) > 1 or word in ['a', 'i'] and not word.isdigit()]
+    
     word_to_index = {word: idx + 1 for idx, word in enumerate(set(filtered_words))}
     index_to_word = {idx + 1: word for idx, word in enumerate(set(filtered_words))}
+    
     sequences = []
-    for i in range(len(filtered_words) - n_gram_size-5):
-        sequences.append(filtered_words[i:i + n_gram_size + 1]+filtered_words[i+3:i])
+    for i in range(len(filtered_words) - n_gram_size - 5):
+        sequences.append(filtered_words[i:i + n_gram_size + 1])
+    
     sequences_idx = [[word_to_index[word] for word in sequence] for sequence in sequences]
     X = [seq[:-1] for seq in sequences_idx]  # Input: all but last word
-    y = [seq[-1] for seq in sequences_idx]  # Output: last word
+    y = [seq[-1] for seq in sequences_idx]   # Output: last word
+    
     X = torch.tensor(X)
     y = torch.tensor(y)
+    
     dataset = TextDataset(X, y)
     dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
 
     vocab_size = len(word_to_index) + 1 
-    model = TextGenerator(vocab_size, embedding_dim, hidden_dim, n_gram_size)
+    model = TextGenerator(vocab_size, embedding_dim, hidden_dim, n_gram_size, zeta_zeros)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
+    
+    print(f"Training model with {len(filtered_words)} words, vocabulary size: {vocab_size}")
+    print(f"Incorporating {len(zeta_zeros)} zeta zeros into the model architecture")
+    
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
@@ -150,8 +195,12 @@ def train_new_model():
             running_loss += loss.item()
         
         print(f'Epoch [{epoch+1}/{epochs}], Loss: {running_loss / len(dataloader)}')
+        
+        # Print zeta influence parameter
+        if hasattr(model, 'zeta_influence'):
+            print(f'Zeta influence: {model.zeta_influence.item():.4f}')
     
-    return model, word_to_index, index_to_word
+    return model, word_to_index, index_to_word, zeta_zeros
 
 def generate_text(seed_text, generate_length, model, word_to_index, index_to_word, n_gram_size):
     model.eval()  
@@ -191,6 +240,18 @@ def generate_text(seed_text, generate_length, model, word_to_index, index_to_wor
     
     return ' '.join(generated_text)
 
+def adjust_zeta_influence(model, amount):
+    """Adjust the influence of zeta zeros on the model"""
+    if hasattr(model, 'zeta_influence'):
+        with torch.no_grad():
+            model.zeta_influence += amount
+            # Ensure it stays within a reasonable range
+            model.zeta_influence.clamp_(0.01, 2.0)
+        print(f"Zeta influence adjusted to: {model.zeta_influence.item():.4f}")
+    else:
+        print("This model doesn't have zeta influence parameter.")
+    return model
+
 def list_saved_models():
     if not os.path.exists("saved_models"):
         print("No saved models directory found.")
@@ -205,12 +266,12 @@ def list_saved_models():
 
 def main():
     # Try to load existing model
-    model, word_to_index, index_to_word, loaded_n_gram_size, loaded_embedding_dim, loaded_hidden_dim = load_model()
+    model, word_to_index, index_to_word, loaded_n_gram_size, loaded_embedding_dim, loaded_hidden_dim, zeta_zeros = load_model()
     
     # If no model loaded, train a new one
     if model is None:
         print("No saved model found. Training a new model...")
-        model, word_to_index, index_to_word = train_new_model()
+        model, word_to_index, index_to_word, zeta_zeros = train_new_model()
         # Use global variables for n_gram_size, embedding_dim, hidden_dim
         current_n_gram_size = n_gram_size
         current_embedding_dim = embedding_dim
@@ -233,17 +294,16 @@ def main():
         choice = input("Enter your choice (1-6): ")
         
         if choice == "1":
-            while True:
-                seed_text = input("Enter seed text: ")
-                generated_text = generate_text(seed_text, generate_length, model, word_to_index, index_to_word, current_n_gram_size)
-                print("\nGenerated Text:")
-                print(generated_text)
+            seed_text = input("Enter seed text: ")
+            generated_text = generate_text(seed_text, generate_length, model, word_to_index, index_to_word, current_n_gram_size)
+            print("\nGenerated Text:")
+            print(generated_text)
             
         elif choice == "2":
             filename = input("Enter filename to save model (default: text_generator): ")
             if not filename:
                 filename = "text_generator"
-            save_model(model, word_to_index, index_to_word, current_n_gram_size, current_embedding_dim, current_hidden_dim, filename)
+            save_model(model, word_to_index, index_to_word, current_n_gram_size, current_embedding_dim, current_hidden_dim, zeta_zeros, filename)
             
         elif choice == "3":
             available_models = list_saved_models()
@@ -258,7 +318,7 @@ def main():
                 else:
                     filename = "text_generator"
                 
-                model, word_to_index, index_to_word, current_n_gram_size, current_embedding_dim, current_hidden_dim = load_model(filename)
+                model, word_to_index, index_to_word, current_n_gram_size, current_embedding_dim, current_hidden_dim, zeta_zeros = load_model(filename)
                 if model is None:
                     print("Failed to load model. Using current model.")
             else:
@@ -267,11 +327,11 @@ def main():
         elif choice == "4":
             confirm = input("This will overwrite the current model. Continue? (y/n): ")
             if confirm.lower() == 'y':
-                model, word_to_index, index_to_word = train_new_model()
+                model, word_to_index, index_to_word, zeta_zeros = train_new_model()
                 current_n_gram_size = n_gram_size
                 current_embedding_dim = embedding_dim
                 current_hidden_dim = hidden_dim
-                print("New model trained successfully.")
+                print("New model trained successfully with zeta zeros influence.")
             
         elif choice == "5":
             available_models = list_saved_models()
@@ -281,7 +341,7 @@ def main():
                     print(f"- {model_name}")
             else:
                 print("No saved models found.")
-            
+        
         elif choice == "6":
             print("Exiting...")
             break
