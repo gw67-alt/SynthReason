@@ -12,7 +12,7 @@ import pickle
 import serial
 import time
 
-KB_limit = 999 # -1 for unlimited
+KB_limit = 99999 # -1 for unlimited
 epochs = 10
 generate_length = 500
 n_gram_size = 2  # n-gram size (for bigrams)
@@ -194,7 +194,7 @@ def generate_text_with_serial_rethrow(seed_text, generate_length, model, word_to
         if serial_port.in_waiting > 0:
             serial_data = serial_port.readline().decode('utf-8').strip()
             try:
-                if int(serial_data) == 1:
+                if int(serial_data) >= 1:
                     if not currently_rethrowing and last_word is not None:
                         # Start rethrowing/iterating
                         currently_rethrowing = True
