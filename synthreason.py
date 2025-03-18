@@ -14,7 +14,7 @@ import mpmath
 KB_limit = 9999 # -1 for unlimited
 epochs = 10
 generate_length = 500
-n_gram_size = 2  # n-gram size (for bigrams)
+n_gram_size = 3  # n-gram size (for bigrams)
 embedding_dim = 256
 hidden_dim = 512
 
@@ -77,7 +77,7 @@ class TextGenerator(nn.Module):
         # Apply zeta zeros influence if available
         if hasattr(self, 'zeta_layer'):
             # Create a tensor with zeta zeros
-            zeta_tensor = torch.tensor(self.zeta_zeros, dtype=torch.float32).repeat(batch_size, 1)
+            zeta_tensor = torch.tensor(self.zeta_zeros, dtype=torch.float32)
             
             # Apply zeta influence
             zeta_out = self.zeta_layer(zeta_tensor)
@@ -294,10 +294,11 @@ def main():
         choice = input("Enter your choice (1-6): ")
         
         if choice == "1":
-            seed_text = input("Enter seed text: ")
-            generated_text = generate_text(seed_text, generate_length, model, word_to_index, index_to_word, current_n_gram_size)
-            print("\nGenerated Text:")
-            print(generated_text)
+            while True:
+                seed_text = input("Enter seed text: ")
+                generated_text = generate_text(seed_text, generate_length, model, word_to_index, index_to_word, current_n_gram_size)
+                print("\nGenerated Text:")
+                print(generated_text)
             
         elif choice == "2":
             filename = input("Enter filename to save model (default: text_generator): ")
