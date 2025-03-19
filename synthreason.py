@@ -224,7 +224,7 @@ def train_new_model_with_zeta_zeros():
     sequences_idx = [[word_to_index[word] for word in sequence] for sequence in sequences]
     
     # Apply zeta zeros transformation to the sequences
-    n_zeros = 10  # Number of zeta zeros to use
+    n_zeros = 100  # Number of zeta zeros to use
     transformed_sequences_idx = [transform_sequence_with_zeta_zeros(seq, n_zeros) for seq in sequences_idx]
     
     X = [seq[:-1] for seq in transformed_sequences_idx]  # Input: all but last word
