@@ -199,9 +199,9 @@ def train_new_model():
     word_indices = list(range(1, vocab_size + 1))
     
     # If vocab is large, sample a subset to make combinations manageable
-    if vocab_size > 20:
+    if vocab_size > 120:
         import random
-        sample_size = min(20, vocab_size)
+        sample_size = min(120, vocab_size)
         word_indices_sample = random.sample(word_indices, sample_size)
         print(f"Vocabulary too large. Sampling {sample_size} words for combinations.")
         combinations = list(itertools.product(word_indices_sample, repeat=max_sequence_length))
@@ -360,7 +360,6 @@ def main():
         if choice == "1":
             while True:
                 seed_text = input("Enter seed text: ")        
-                length = input("Enter generation length (default: 500): ")
                 generate_length = 500
                 generated_text = generate_text(seed_text, generate_length, model, 
                                                          word_to_index, index_to_word, 
