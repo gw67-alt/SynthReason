@@ -358,7 +358,7 @@ def main():
                 
                 generated_text = generate_text(seed_text, generate_length, model, 
                                               word_to_index, index_to_word, 
-                                              current_n_gram_size)
+                                            current_n_gram_size)
         
             
         elif choice == "2":
