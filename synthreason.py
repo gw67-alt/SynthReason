@@ -10,7 +10,6 @@ import os
 import json
 import pickle
 import time
-import mpmath
 
 KB_limit = 9999 # -1 for unlimited
 epochs = 10
@@ -19,8 +18,6 @@ n_gram_size = 2  # n-gram size (for bigrams)
 embedding_dim = 256
 hidden_dim = 512
 
-# Set mpmath precision
-mpmath.mp.dps = 50  # Set precision for calculating zeta zeros
 
 class TextDataset(Dataset):
     def __init__(self, X, y):
@@ -63,57 +60,62 @@ class TextGenerator(nn.Module):
         output = self.fc(lstm_out)  # Shape: (batch_size, vocab_size)
         return output
 
-# Zeta zeros cache
-zeta_zeros_cache = {}
 
-def calculate_zeta_zeros(n):
-    """Calculate the first n non-trivial zeros of the Riemann zeta function"""
-    if n in zeta_zeros_cache:
-        return zeta_zeros_cache[n]
-    
-    print(f"Calculating the first {n} non-trivial zeros of the function...")
-    zeros = []
-    for i in range(1, n + 1):
-        # Calculate the imaginary part of the nth zero
-        t = mpmath.findroot(i).imag
-        zeros.append(float(t))
-    
-    zeta_zeros_cache[n] = zeros
-    return zeros
 
-def transform_sequence_with_zeta_zeros(sequence, n_zeros=10):
+def generate_text(seed_text, generate_length, model, word_to_index, index_to_word, n_gram_size):
     """
-    Transform a sequence using the first n non-trivial zeros of the Riemann zeta function.
-    
-    Args:
-        sequence: List of word indices
-        n_zeros: Number of zeta zeros to use
-        
-    Returns:
-        Transformed sequence of word indices
+    Generate text using zeta zeros transformation.
     """
-    if not sequence:
-        return sequence
+    model.eval()
+    generated_text = []
     
-    # Get the first n zeta zeros
-    zeta_zeros = calculate_zeta_zeros(n_zeros)
-    
-    # Create a new sequence by applying zeta zeros transformation
-    transformed_sequence = []
-    for i, word_idx in enumerate(sequence):
-        # Use modulo to cycle through the zeta zeros
-        zero_idx = i % len(zeta_zeros)
-        zero_value = zeta_zeros[zero_idx]
-        
-        # Apply transformation: scale the word index by the zeta zero value
-        # and take modulo to keep it within valid range
-        if word_idx > 0:  # Avoid zero index
-            transformed_idx = int((word_idx * zero_value) % word_idx) + 1
-            transformed_sequence.append(transformed_idx)
+    words = seed_text.lower().split()
+    current_sequence = []
+    for word in words:
+        if word in word_to_index:
+            current_sequence.append(word_to_index[word])
         else:
-            transformed_sequence.append(word_idx)
+            current_sequence.append(random.choice(list(word_to_index.values())))
     
-    return transformed_sequence
+    while len(current_sequence) < n_gram_size:
+        current_sequence.append(random.choice(list(word_to_index.values())))
+    
+    current_sequence = current_sequence[-n_gram_size:]
+    
+    # Print the seed text first
+    print(f"\nSeed text: {seed_text}")
+    print("\nGenerated text: ", end="", flush=True)
+    
+    for _ in range(generate_length):
+                
+        # Use the transformed sequence for prediction
+        input_seq = torch.tensor([transformed_sequence], dtype=torch.long)
+        
+        with torch.no_grad():
+            output = model(input_seq)
+        
+        probabilities = torch.nn.functional.softmax(output, dim=1)
+        
+        # Sample from the distribution
+        predicted_word_idx = torch.multinomial(probabilities[0], 1).item()
+        
+        if predicted_word_idx in index_to_word:
+            predicted_word = index_to_word[predicted_word_idx]
+            generated_text.append(predicted_word)
+            
+            # Print the word immediately and flush the output
+            print(predicted_word + " ", end="", flush=True)
+            
+
+            
+            # Update the current sequence
+            current_sequence.append(predicted_word_idx)
+            current_sequence = current_sequence[-n_gram_size:]
+        else:
+            continue
+    
+    print("\nGeneration complete.")
+    return ' '.join(generated_text)
 
 # Function to save model and variables
 def save_model(model, word_to_index, index_to_word, n_gram_size, embedding_dim, hidden_dim, filename="text_generator"):
@@ -173,64 +175,68 @@ def train_new_model():
     text = re.sub(r'\d+', '', text)
     words = re.findall(r'\b\w+\b', text.lower())
     filtered_words = [word for word in words if len(word) > 1 or word in ['a', 'i'] and not word.isdigit()]
-    word_to_index = {word: idx + 1 for idx, word in enumerate(set(filtered_words))}
-    index_to_word = {idx + 1: word for idx, word in enumerate(set(filtered_words))}
-    sequences = []
-    for i in range(len(filtered_words) - n_gram_size-5):
-        sequences.append(filtered_words[i:i + n_gram_size + 1]+filtered_words[i+3:i])
-    sequences_idx = [[word_to_index[word] for word in sequence] for sequence in sequences]
-    X = [seq[:-1] for seq in sequences_idx]  # Input: all but last word
-    y = [seq[-1] for seq in sequences_idx]  # Output: last word
-    X = torch.tensor(X)
-    y = torch.tensor(y)
-    dataset = TextDataset(X, y)
-    dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
-
-    vocab_size = len(word_to_index) + 1 
-    model = TextGenerator(vocab_size, embedding_dim, hidden_dim, n_gram_size)
-
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    for epoch in range(epochs):
-        model.train()
-        running_loss = 0.0
-        for inputs, labels in dataloader:
-            optimizer.zero_grad()
-            
-            outputs = model(inputs)
-            
-            loss = criterion(outputs, labels)
-            loss.backward()
-            
-            optimizer.step()
-            
-            running_loss += loss.item()
+    
+    # Create vocabulary
+    unique_words = list(set(filtered_words))
+    word_to_index = {word: idx + 1 for idx, word in enumerate(unique_words)}
+    index_to_word = {idx + 1: word for idx, word in enumerate(unique_words)}
+    
+    # Define parameters for sequence generation
+    vocab_size = len(word_to_index)
+    max_sequence_length = n_gram_size + 1  # Length of input + output
+    max_combinations = 1000  # Limit to avoid memory explosion
+    
+    print(f"Vocabulary size: {vocab_size}")
+    print(f"Generating combinations with sequence length {max_sequence_length}...")
+    
+    sequences_idx = []
+    
+    # Generate combinations using indices directly to save memory
+    import itertools
+    
+    # Generate all possible combinations of word indices
+    print("Generating combinations...")
+    word_indices = list(range(1, vocab_size + 1))
+    
+    # If vocab is large, sample a subset to make combinations manageable
+    if vocab_size > 20:
+        import random
+        sample_size = min(20, vocab_size)
+        word_indices_sample = random.sample(word_indices, sample_size)
+        print(f"Vocabulary too large. Sampling {sample_size} words for combinations.")
+        combinations = list(itertools.product(word_indices_sample, repeat=max_sequence_length))
+    else:
+        combinations = list(itertools.product(word_indices, repeat=max_sequence_length))
+    
+    # Limit the number of combinations to avoid memory issues
+    combinations = combinations[:max_combinations]
+    
+    # Add actual word sequences from the text
+    for i in range(len(filtered_words) - n_gram_size):
+        # Get n_gram_size + 1 consecutive words
+        word_sequence = filtered_words[i:i + n_gram_size + 1]
         
-        print(f'Epoch [{epoch+1}/{epochs}], Loss: {running_loss / len(dataloader)}')
+        # Convert words to their indices
+        try:
+            index_sequence = [word_to_index[word] for word in word_sequence]
+            combinations.append(index_sequence)
+        except KeyError:
+            # Skip if any word is not in our vocabulary
+            continue
     
-    return model, word_to_index, index_to_word
-
-def train_new_model_with_zeta_zeros():
-    with open('test.txt', 'r', encoding="utf-8") as file:
-        text = ' '.join(file.read().split()[:KB_limit])
-    text = re.sub(r'\d+', '', text)
-    words = re.findall(r'\b\w+\b', text.lower())
-    filtered_words = [word for word in words if len(word) > 1 or word in ['a', 'i'] and not word.isdigit()]
-    word_to_index = {word: idx + 1 for idx, word in enumerate(set(filtered_words))}
-    index_to_word = {idx + 1: word for idx, word in enumerate(set(filtered_words))}
-    sequences = []
-    for i in range(len(filtered_words) - n_gram_size-5):
-        sequences.append(filtered_words[i:i + n_gram_size + 1]+filtered_words[i+3:i])
-    sequences_idx = [[word_to_index[word] for word in sequence] for sequence in sequences]
+    # Convert to format needed for training
+    sequences_idx = [list(combo) for combo in combinations]
     
-    # Apply zeta zeros transformation to the sequences
-    n_zeros = 100  # Number of zeta zeros to use
-    transformed_sequences_idx = [transform_sequence_with_zeta_zeros(seq, n_zeros) for seq in sequences_idx]
+    # Split into input (X) and target (y)
+    X = [seq[:-1] for seq in sequences_idx]  # Input: all but last word
+    y = [seq[-1] for seq in sequences_idx]   # Output: last word
     
-    X = [seq[:-1] for seq in transformed_sequences_idx]  # Input: all but last word
-    y = [seq[-1] for seq in sequences_idx]  # Output: last word (original, not transformed)
-    X = torch.tensor(X)
-    y = torch.tensor(y)
+    print(f"Training with {len(X)} input-output pairs...")
+    
+    # Convert to PyTorch tensors
+    X = torch.tensor(X, dtype=torch.long)
+    y = torch.tensor(y, dtype=torch.long)
+    
     dataset = TextDataset(X, y)
     dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
 
@@ -239,6 +245,7 @@ def train_new_model_with_zeta_zeros():
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
+    
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
@@ -340,7 +347,7 @@ def main():
     
     while True:
         print("\nText Generation Interface")
-        print("1. Generate text using normal model")
+        print("1. Generate text")
         print("2. Train new model")
         print("3. Save model")
         print("4. Load model")
@@ -348,23 +355,21 @@ def main():
         print("6. List saved models")
         print("7. Exit")
         
-        choice = input("Enter your choice (1-8): ")
+        choice = input("Enter your choice (1-7): ")
         
         if choice == "1":
             while True:
-                seed_text = input("Enter seed text: ")
+                seed_text = input("Enter seed text: ")        
                 length = input("Enter generation length (default: 500): ")
                 generate_length = int(length) if length and length.isdigit() else 500
-                
                 generated_text = generate_text(seed_text, generate_length, model, 
-                                              word_to_index, index_to_word, 
-                                            current_n_gram_size)
-        
+                                                         word_to_index, index_to_word, 
+                                                         current_n_gram_size)
             
         elif choice == "2":
-            confirm = input("This will train a new model. Continue? (y/n): ")
+            confirm = input("This will train a new model Continue? (y/n): ")
             if confirm.lower() == 'y':
-                model, word_to_index, index_to_word = train_new_model_with_zeta_zeros()
+                model, word_to_index, index_to_word = train_new_model()
                 current_n_gram_size = n_gram_size
                 current_embedding_dim = embedding_dim
                 current_hidden_dim = hidden_dim
