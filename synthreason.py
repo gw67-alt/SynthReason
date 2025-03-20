@@ -234,7 +234,7 @@ class RemorphicLSTM(nn.Module):
             seq_dim = 0
             
         # Calculate transformation gate values
-        transform_values = torch.sigmoid(self.transform_gate(base_output))
+        transform_values = self.transform_gate(torch.sigmoid(base_output))
         
         # Create context-aware modulation
         context_mod = self.context_modulator(base_output)
