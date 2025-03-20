@@ -437,7 +437,7 @@ def train_new_model():
         
         # Use binomial distribution to get probabilities for each word
         # p=0.5 gives equal probability, n=1 for each trial
-        probabilities = np.random.binomial(n=1, p=0.5, size=vocab_size)
+        probabilities = np.random.binomial(n=1, p=0.1, size=vocab_size)
         word_indices_sample = [list(itertools.product(word_indices)) for i, p in enumerate(probabilities) if p == 1]
 
         # Select words based on binomial outcomes
