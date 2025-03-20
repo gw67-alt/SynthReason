@@ -11,7 +11,7 @@ import json
 import pickle
 import time
 
-KB_limit = 999 # -1 for unlimited
+KB_limit = 9999 # -1 for unlimited
 epochs = 10
 generate_length = 500
 n_gram_size = 2  # n-gram size (for bigrams)
@@ -234,7 +234,7 @@ class RemorphicLSTM(nn.Module):
             seq_dim = 0
             
         # Calculate transformation gate values
-        transform_values = self.transform_gate(torch.sigmoid(base_output))
+        transform_values = torch.sigmoid(self.transform_gate(base_output))
         
         # Create context-aware modulation
         context_mod = self.context_modulator(base_output)
@@ -439,7 +439,8 @@ def train_new_model():
         # Use binomial distribution to get probabilities for each word
         # p=0.5 gives equal probability, n=1 for each trial
         probabilities = np.random.binomial(n=1, p=0.5, size=vocab_size)
-        
+        word_indices_sample = [list(itertools.product(probabilities)) for i, p in enumerate(probabilities) if p == 1]
+
         # Select words based on binomial outcomes
         word_indices_sample = [word_indices[i] for i in range(len(word_indices)) 
                               if probabilities[i] == 1]
