@@ -203,18 +203,12 @@ def train_new_model():
     for seq in sequences_idx:
         modified_seq = []
         for word_idx in seq:
+            the_index = word_to_index['the']
             # Calculate distance from current index to the end of vocab
-            distance_to_end = vocab_size - word_idx
+            distance_to_end = vocab_size - the_index
             # Store the original index and the distance as a tuple
             modified_seq.append((word_idx, distance_to_end))
         modified_sequences.append(modified_seq)
-    
-    # Find distance for the word 'the'
-    if 'the' in word_to_index:
-        the_index = word_to_index['the']
-        the_distance = vocab_size - the_index
-        print(f"The word 'the' has index {the_index} and distance to end: {the_distance}")
-        
     
     # Add the distance information to the dataset (for reference during training)
     distance_info = {}
@@ -222,8 +216,8 @@ def train_new_model():
         distance_info[i] = [word_tuple[1] for word_tuple in seq]
     
     # Split into input (X) and target (y)
-    X = [seq[:-1] for seq in flattened_sequences]  # Input: all but last word
-    y = [seq[-1] for seq in flattened_sequences]   # Output: last word
+    X = [seq[:-1] for seq in sequences_idx]  # Input: all but last word
+    y = [seq[-1] for seq in sequences_idx]   # Output: last word
     
     print(f"Training with {len(X)} input-output pairs...")
     
