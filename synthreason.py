@@ -17,270 +17,7 @@ generate_length = 500
 n_gram_size = 2  # n-gram size (for bigrams)
 embedding_dim = 256
 hidden_dim = 512
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import math
 
-class CustomLSTMCell(nn.Module):
-    """
-    Custom implementation of a single LSTM cell
-    """
-    def __init__(self, input_size, hidden_size, bias=True):
-        super(CustomLSTMCell, self).__init__()
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        
-        # Combined gates parameters (input, forget, cell, output)
-        self.weight_ih = nn.Parameter(torch.Tensor(4 * hidden_size, input_size))
-        self.weight_hh = nn.Parameter(torch.Tensor(4 * hidden_size, hidden_size))
-        
-        if bias:
-            self.bias_ih = nn.Parameter(torch.Tensor(4 * hidden_size))
-            self.bias_hh = nn.Parameter(torch.Tensor(4 * hidden_size))
-        else:
-            self.register_parameter('bias_ih', None)
-            self.register_parameter('bias_hh', None)
-            
-        self.reset_parameters()
-        
-    def reset_parameters(self):
-        """Initialize parameters using Xavier uniform initialization"""
-        stdv = 1.0 / math.sqrt(self.hidden_size)
-        for weight in self.parameters():
-            weight.data.uniform_(-stdv, stdv)
-            
-    def forward(self, x, hidden):
-        """
-        Forward pass for a single LSTM cell
-        
-        Args:
-            x: Input tensor (batch_size, input_size)
-            hidden: Tuple of (h_0, c_0) where both are (batch_size, hidden_size)
-            
-        Returns:
-            h_1, c_1: Updated hidden and cell states
-        """
-        h_0, c_0 = hidden
-        
-        # Calculate gates - uses batch matrix multiplication
-        gates = F.linear(x, self.weight_ih, self.bias_ih) + F.linear(h_0, self.weight_hh, self.bias_hh)
-        
-        # Split into different gates
-        i, f, g, o = gates.chunk(4, 1)
-        
-        # Apply activations
-        i = torch.sigmoid(i)  # input gate
-        f = torch.sigmoid(f)  # forget gate
-        g = torch.tanh(g)     # cell gate
-        o = torch.sigmoid(o)  # output gate
-        
-        # Update cell state
-        c_1 = f * c_0 + i * g
-        
-        # Update hidden state
-        h_1 = o * torch.tanh(c_1)
-        
-        return h_1, c_1
-
-
-class CustomLSTM(nn.Module):
-    """
-    Custom LSTM layer that processes sequences using CustomLSTMCell
-    """
-    def __init__(self, input_size, hidden_size, num_layers=1, bias=True, batch_first=False, dropout=0.0):
-        super(CustomLSTM, self).__init__()
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.bias = bias
-        self.batch_first = batch_first
-        self.dropout = dropout
-        
-        # Create a list of LSTM cells for each layer
-        self.cells = nn.ModuleList()
-        for layer in range(num_layers):
-            layer_input_size = input_size if layer == 0 else hidden_size
-            cell = CustomLSTMCell(layer_input_size, hidden_size, bias)
-            self.cells.append(cell)
-            
-        self.dropout_layer = nn.Dropout(dropout) if dropout > 0 else None
-        
-    def forward(self, x, hidden=None):
-        """
-        Forward pass for the entire LSTM
-        
-        Args:
-            x: Input sequence (seq_len, batch_size, input_size) or 
-               (batch_size, seq_len, input_size) if batch_first=True
-            hidden: Initial hidden states (num_layers, batch_size, hidden_size) for h and c
-            
-        Returns:
-            output: Sequence of hidden states for each time step
-            (h_n, c_n): Final hidden states for each layer
-        """
-        if self.batch_first:
-            # Convert to (seq_len, batch_size, input_size) format
-            x = x.transpose(0, 1)
-            
-        seq_len, batch_size, _ = x.size()
-        
-        # Initialize hidden states if not provided
-        if hidden is None:
-            h_zeros = torch.zeros(self.num_layers, batch_size, self.hidden_size, 
-                                 device=x.device, dtype=x.dtype)
-            c_zeros = torch.zeros(self.num_layers, batch_size, self.hidden_size, 
-                                 device=x.device, dtype=x.dtype)
-            hidden = (h_zeros, c_zeros)
-            
-        h_0, c_0 = hidden
-        h_n, c_n = [], []
-        
-        # List to store output at each time step (for return)
-        outputs = []
-        
-        # Process one time step at a time
-        for t in range(seq_len):
-            x_t = x[t]  # (batch_size, input_size)
-            
-            # Process through each layer
-            for layer in range(self.num_layers):
-                # If first time step, use provided hidden state
-                if t == 0:
-                    h_prev, c_prev = h_0[layer], c_0[layer]
-                else:
-                    h_prev, c_prev = h_n[layer], c_n[layer]
-                    
-                # Forward through the cell
-                h_t, c_t = self.cells[layer](x_t, (h_prev, c_prev))
-                
-                # Store new hidden state
-                if t == 0:
-                    h_n.append(h_t)
-                    c_n.append(c_t)
-                else:
-                    h_n[layer] = h_t
-                    c_n[layer] = c_t
-                    
-                # Update input for next layer
-                x_t = h_t
-                
-                # Apply dropout between layers (but not on the output of the last layer)
-                if self.dropout_layer is not None and layer < self.num_layers - 1:
-                    x_t = self.dropout_layer(x_t)
-                    
-            # Store the output from the top layer
-            outputs.append(h_t)
-            
-        # Stack outputs into a tensor
-        outputs = torch.stack(outputs)  # (seq_len, batch_size, hidden_size)
-        
-        # Convert back to batch_first format if needed
-        if self.batch_first:
-            outputs = outputs.transpose(0, 1)  # (batch_size, seq_len, hidden_size)
-            
-        # Convert lists to tensors for h_n and c_n
-        h_n = torch.stack(h_n)  # (num_layers, batch_size, hidden_size)
-        c_n = torch.stack(c_n)  # (num_layers, batch_size, hidden_size)
-        
-        return outputs, (h_n, c_n)
-
-
-class RemorphicLSTM(nn.Module):
-    """
-    Advanced LSTM with remorphic capabilities for enhanced discretion and
-    adaptability in sequence modeling.
-    """
-    def __init__(self, input_size, hidden_size, num_layers=1, batch_first=False, remorphic_factor=0.3):
-        super(RemorphicLSTM, self).__init__()
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.batch_first = batch_first
-        self.remorphic_factor = remorphic_factor
-        
-        # Base LSTM implementation
-        self.lstm_base = CustomLSTM(input_size, hidden_size, num_layers, batch_first=batch_first)
-        
-        # Remorphic extension components
-        self.transform_gate = nn.Linear(hidden_size, hidden_size)
-        self.context_modulator = nn.Linear(hidden_size, hidden_size)
-        self.output_mixer = nn.Linear(hidden_size * 2, hidden_size)
-        
-    def forward(self, x, hidden=None, apply_remorphic=True):
-        """
-        Forward pass with optional remorphic transformation
-        
-        Args:
-            x: Input sequence
-            hidden: Initial hidden states
-            apply_remorphic: Whether to apply remorphic transformation
-            
-        Returns:
-            output: Transformed sequence
-            (h_n, c_n): Final hidden states
-        """
-        # Process through base LSTM
-        base_output, (h_n, c_n) = self.lstm_base(x, hidden)
-        
-        if not apply_remorphic:
-            return base_output, (h_n, c_n)
-        
-        # Apply remorphic transformation
-        if self.batch_first:
-            # Get sequence length dimension
-            seq_dim = 1
-        else:
-            seq_dim = 0
-            
-        # Calculate transformation gate values
-        transform_values = torch.sigmoid(self.transform_gate(base_output))
-        
-        # Create context-aware modulation
-        context_mod = self.context_modulator(base_output)
-        context_mod = torch.exp(context_mod-base_output*transform_values)
-        
-        # Mix original and transformed representations
-        blended_output = transform_values * base_output + (1 - transform_values) * context_mod
-        
-        # Apply final mixer with residual connection
-        concat_output = torch.cat([base_output, blended_output], dim=-1)
-        remorphic_output = self.output_mixer(concat_output) + base_output
-        
-        return remorphic_output, (h_n, c_n)
-
-
-# Example usage in TextGenerator class
-class TextGenerator(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, hidden_dim, n_gram_size):
-        super(TextGenerator, self).__init__()
-        self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        
-        # Replace standard LSTM with custom implementation
-        self.lstm = RemorphicLSTM(embedding_dim, hidden_dim, batch_first=True)
-        
-        # Linear transformation layers
-        self.linear_include = nn.Linear(hidden_dim, hidden_dim)
-        self.fc = nn.Linear(hidden_dim, vocab_size)
-    
-    def forward(self, x):
-        batch_size = x.size(0)
-        
-        # Get embeddings
-        embedded = self.embedding(x)  # Shape: (batch_size, n_gram_size, embedding_dim)
-        
-        # Process with custom LSTM
-        lstm_out, _ = self.lstm(embedded)  # Shape: (batch_size, n_gram_size, hidden_dim)
-        
-        # Take the last output: (batch_size, hidden_dim)
-        lstm_out = lstm_out[:, -1, :]
-        
-        # Apply Linear Include to LSTM output
-        lstm_out = self.linear_include(lstm_out)  # Shape: (batch_size, hidden_dim)
-        
-        # Final prediction
-        output = self.fc(lstm_out)  # Shape: (batch_size, vocab_size)
-        return output
 
 class TextDataset(Dataset):
     def __init__(self, X, y):
@@ -293,9 +30,39 @@ class TextDataset(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
 
+class TextGenerator(nn.Module):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, n_gram_size):
+        super(TextGenerator, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
+        
+        # Linear Include - applies on LSTM output, not embedding directly
+        self.linear_include = nn.Linear(hidden_dim, hidden_dim)
+        
+        self.fc = nn.Linear(hidden_dim, vocab_size)
+    
+    def forward(self, x):
+        batch_size = x.size(0)
+        
+        # Get embeddings
+        embedded = self.embedding(x)  # Shape: (batch_size, n_gram_size, embedding_dim)
+        
+        # Process with LSTM
+        lstm_out, _ = self.lstm(embedded)  # Shape: (batch_size, n_gram_size, hidden_dim)
+        
+        # Take the last output: (batch_size, hidden_dim)
+        lstm_out = lstm_out[:, -1, :]
+        
+        # Apply Linear Include to LSTM output
+        lstm_out = self.linear_include(lstm_out)  # Shape: (batch_size, hidden_dim)
+        
+        # Final prediction
+        output = self.fc(lstm_out)  # Shape: (batch_size, vocab_size)
+        return output
+
 def generate_text(seed_text, generate_length, model, word_to_index, index_to_word, n_gram_size):
     """
-    Generate text using zeta zeros transformation.
+    Generate text based on seed text.
     """
     model.eval()
     generated_text = []
@@ -318,9 +85,7 @@ def generate_text(seed_text, generate_length, model, word_to_index, index_to_wor
     print("\nGenerated text: ", end="", flush=True)
     
     for _ in range(generate_length):
-                
-        # Use the transformed sequence for prediction
-        input_seq = torch.tensor([transformed_sequence], dtype=torch.long)
+        input_seq = torch.tensor([current_sequence], dtype=torch.long)
         
         with torch.no_grad():
             output = model(input_seq)
@@ -336,8 +101,6 @@ def generate_text(seed_text, generate_length, model, word_to_index, index_to_wor
             
             # Print the word immediately and flush the output
             print(predicted_word + " ", end="", flush=True)
-            
-
             
             # Update the current sequence
             current_sequence.append(predicted_word_idx)
@@ -414,51 +177,11 @@ def train_new_model():
     
     # Define parameters for sequence generation
     vocab_size = len(word_to_index)
-    max_sequence_length = n_gram_size + 1  # Length of input + output
-    max_combinations = 10  # Limit to avoid memory explosion
     
     print(f"Vocabulary size: {vocab_size}")
-    print(f"Generating combinations with sequence length {max_sequence_length}...")
+    print(f"Creating sequences with n-gram size {n_gram_size}...")
     
     sequences_idx = []
-    
-    # Generate combinations using indices directly to save memory
-    import itertools
-    
-    # Generate all possible combinations of word indices
-    print("Generating combinations...")
-    word_indices = list(range(1, vocab_size + 1))
-    
-    # If vocab is large, sample a subset to make combinations manageable
-    # If vocab is large, use binomial distribution to determine sampling
-    if vocab_size > 20:
-        import numpy as np
-        
-        # Set sample size
-        sample_size = min(20, vocab_size)
-        
-        # Use binomial distribution to get probabilities for each word
-        # p=0.5 gives equal probability, n=1 for each trial
-        probabilities = np.random.binomial(n=1, p=0.5, size=vocab_size)
-        
-        # Select words based on binomial outcomes
-        word_indices_sample = [word_indices[i] for i in range(len(word_indices)) 
-                              if probabilities[i] == 1]
-        
-        # If we didn't get enough samples, supplement with random ones
-        if len(word_indices_sample) < sample_size:
-            remaining_indices = [idx for idx in word_indices if idx not in word_indices_sample]
-            additional_samples = random.sample(remaining_indices, 
-                                             sample_size - len(word_indices_sample))
-            word_indices_sample.extend(additional_samples)
-        
-        print(f"Vocabulary too large. Sampling {sample_size} words using binomial distribution.")
-        combinations = list(itertools.product(word_indices_sample, repeat=max_sequence_length))
-    else:
-        combinations = list(itertools.product(word_indices, repeat=max_sequence_length))
-    
-    # Limit the number of combinations to avoid memory issues
-    combinations = combinations[:max_combinations]
     
     # Add actual word sequences from the text
     for i in range(len(filtered_words) - n_gram_size):
@@ -468,21 +191,43 @@ def train_new_model():
         # Convert words to their indices
         try:
             index_sequence = [word_to_index[word] for word in word_sequence]
-            combinations.append(index_sequence)
+            sequences_idx.append(index_sequence)
         except KeyError:
             # Skip if any word is not in our vocabulary
             continue
     
-    # Convert to format needed for training
-    sequences_idx = [list(combo) for combo in combinations]
+    print(f"Created {len(sequences_idx)} sequences from the text.")
+    
+    # Calculate distance to end of vocabulary for each word in each sequence
+    modified_sequences = []
+    for seq in sequences_idx:
+        modified_seq = []
+        for word_idx in seq:
+            # Calculate distance from current index to the end of vocab
+            distance_to_end = vocab_size - word_idx
+            # Store the original index and the distance as a tuple
+            modified_seq.append((word_idx, distance_to_end))
+        modified_sequences.append(modified_seq)
+    
+    # Find distance for the word 'the'
+    if 'the' in word_to_index:
+        the_index = word_to_index['the']
+        the_distance = vocab_size - the_index
+        print(f"The word 'the' has index {the_index} and distance to end: {the_distance}")
+        
+    
+    # Add the distance information to the dataset (for reference during training)
+    distance_info = {}
+    for i, seq in enumerate(modified_sequences):
+        distance_info[i] = [word_tuple[1] for word_tuple in seq]
     
     # Split into input (X) and target (y)
-    X = [seq[:-1] for seq in sequences_idx]  # Input: all but last word
-    y = [seq[-1] for seq in sequences_idx]   # Output: last word
+    X = [seq[:-1] for seq in flattened_sequences]  # Input: all but last word
+    y = [seq[-1] for seq in flattened_sequences]   # Output: last word
     
     print(f"Training with {len(X)} input-output pairs...")
     
-    # Convert to PyTorch tensors
+    # Converting to PyTorch tensors
     X = torch.tensor(X, dtype=torch.long)
     y = torch.tensor(y, dtype=torch.long)
     
@@ -512,57 +257,10 @@ def train_new_model():
         
         print(f'Epoch [{epoch+1}/{epochs}], Loss: {running_loss / len(dataloader)}')
     
+    # Store the distance information in the model metadata
+    model.distance_info = distance_info
+    
     return model, word_to_index, index_to_word
-
-def generate_text(seed_text, generate_length, model, word_to_index, index_to_word, n_gram_size):
-    """
-    Generate text without any transformation or serial control.
-    """
-    model.eval()
-    generated_text = []
-    
-    words = seed_text.lower().split()
-    current_sequence = []
-    for word in words:
-        if word in word_to_index:
-            current_sequence.append(word_to_index[word])
-        else:
-            current_sequence.append(random.choice(list(word_to_index.values())))
-    
-    while len(current_sequence) < n_gram_size:
-        current_sequence.append(random.choice(list(word_to_index.values())))
-    
-    current_sequence = current_sequence[-n_gram_size:]
-    
-    # Print the seed text first
-    print(f"\nSeed text: {seed_text}")
-    print("\nGenerated text: ", end="", flush=True)
-    
-    for _ in range(generate_length):
-        input_seq = torch.tensor([current_sequence], dtype=torch.long)
-        
-        with torch.no_grad():
-            output = model(input_seq)
-        
-        probabilities = torch.nn.functional.softmax(output, dim=1)
-        
-        predicted_word_idx = torch.multinomial(probabilities[0], 1).item()
-        
-        if predicted_word_idx in index_to_word:
-            predicted_word = index_to_word[predicted_word_idx]
-            generated_text.append(predicted_word)
-            
-            # Print the word immediately and flush the output
-            print(predicted_word + " ", end="", flush=True)
-            
-            # Update the current sequence
-            current_sequence.append(predicted_word_idx)
-            current_sequence = current_sequence[-n_gram_size:]
-        else:
-            continue
-    
-    print("\nGeneration complete.")
-    return ' '.join(generated_text)
 
 def list_saved_models():
     if not os.path.exists("saved_models"):
@@ -607,21 +305,20 @@ def main():
         choice = input("Enter your choice (1-7): ")
         
         if choice == "1":
-            while True:
-                seed_text = input("Enter seed text: ")        
-                generate_length = 500
-                generated_text = generate_text(seed_text, generate_length, model, 
-                                                         word_to_index, index_to_word, 
-                                                         current_n_gram_size)
+            seed_text = input("Enter seed text: ")        
+            generate_length = 500
+            generated_text = generate_text(seed_text, generate_length, model, 
+                                                     word_to_index, index_to_word, 
+                                                     current_n_gram_size)
             
         elif choice == "2":
-            confirm = input("This will train a new model Continue? (y/n): ")
+            confirm = input("This will train a new model. Continue? (y/n): ")
             if confirm.lower() == 'y':
                 model, word_to_index, index_to_word = train_new_model()
                 current_n_gram_size = n_gram_size
                 current_embedding_dim = embedding_dim
                 current_hidden_dim = hidden_dim
-                print("New model trained with zeta zeros successfully.")
+                print("New model trained successfully.")
             
         elif choice == "3":
             filename = input("Enter filename to save model (default: text_generator): ")
