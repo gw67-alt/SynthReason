@@ -11,7 +11,7 @@ import json
 import pickle
 import time
 
-KB_limit = 9999 # -1 for unlimited
+KB_limit = 2999 # -1 for unlimited
 epochs = 10
 generate_length = 500
 n_gram_size = 2  # n-gram size (for bigrams)
