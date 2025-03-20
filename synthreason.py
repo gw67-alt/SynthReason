@@ -607,11 +607,12 @@ def main():
         choice = input("Enter your choice (1-6): ")
         
         if choice == "1":
-            seed_text = input("Enter seed text: ")
-            generate_length = 500
-            generated_text = generate_text(seed_text, generate_length, model, 
-                                           word_to_index, index_to_word, 
-                                           current_n_gram_size)
+            while True:
+                seed_text = input("Enter seed text: ")
+                generate_length = 500
+                generated_text = generate_text(seed_text, generate_length, model, 
+                                               word_to_index, index_to_word, 
+                                               current_n_gram_size)
         elif choice == "2":
             confirm = input("This will train a new model. Continue? (y/n): ")
             if confirm.lower() == 'y':
