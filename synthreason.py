@@ -23,9 +23,20 @@ class TextGenerator(nn.Module):
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
         self.fc = nn.Linear(hidden_dim, vocab_size)
+        
+        # Add support for Hamming weight input
+        self.hamming_fc = nn.Linear(1, embedding_dim)
 
-    def forward(self, x):
-        x = self.embedding(x)
+    def forward(self, x, hamming_weights=None):
+        if hamming_weights is not None:
+            # Process hamming weights - reshape to have proper dimensions
+            hamming_input = hamming_weights.view(-1, 1).float()
+            x = self.hamming_fc(hamming_input)
+            x = x.unsqueeze(1)  # Add sequence dimension
+        else:
+            # Normal embedding lookup
+            x = self.embedding(x)
+            
         x, _ = self.lstm(x)
         x = self.fc(x[:, -1, :])
         return x
@@ -38,10 +49,10 @@ def custom_loss_function(outputs, labels, model, word_occurrences, word_to_index
     indices = list(index_to_word.keys())
     gradient = {}
     for i, idx in enumerate(indices):
-        exp_word_occurrence = np.exp(word_occurrences[idx])
+        exp_word_occurrence = np.sqrt(word_occurrences[idx])
         if i < len(indices) - 1:
             next_idx = indices[i + 1]
-            next_exp_word_occurrence = np.exp(word_occurrences[next_idx])
+            next_exp_word_occurrence = np.sqrt(word_occurrences[next_idx])
             gradient[idx] = next_idx if exp_word_occurrence == word_occurrences[next_idx] else 0
 
     # Apply custom gradients to model parameters
@@ -53,7 +64,7 @@ def custom_loss_function(outputs, labels, model, word_occurrences, word_to_index
 
     return cross_entropy_loss
 
-def train_model(text_file='test.txt', limit=1500):
+def train_model(text_file='test.txt', limit=6500):
     with open(text_file, 'r', encoding="utf-8") as file:
         text = ' '.join(file.read().split()[:limit])
     
@@ -114,73 +125,87 @@ def train_model(text_file='test.txt', limit=1500):
     
     return model, word_to_index, index_to_word
 
-# To use this function within your generate_text function:
 def generate_text(seed_text, generate_length, model, word_to_index, index_to_word, n_gram_size, temperature=1.0):
     model.eval()
     generated_text = []
     
     words = seed_text.lower().split()
-    current_sequence = []
-    for word in words:
-        if word in word_to_index:
-            current_sequence.append(word_to_index[word])
-        else:
-            current_sequence.append(random.choice(list(word_to_index.values())))
+    current_sequence = [word_to_index[word] if word in word_to_index else random.choice(list(word_to_index.values())) for word in words]
     
     while len(current_sequence) < n_gram_size:
         current_sequence.append(random.choice(list(word_to_index.values())))
-    
+
     current_sequence = current_sequence[-n_gram_size:]
-    
-    # Track word occurrences for exponential probability calculation
-    word_occurrences = {idx: 1 for idx in index_to_word.keys()}
-    
+
     print(f"\nSeed text: {seed_text}")
     print("\nGenerated text: ", end="", flush=True)
-    
+
     for _ in range(generate_length):
         input_seq = torch.tensor([current_sequence], dtype=torch.long)
-        
-        with torch.no_grad():
-            output = model(input_seq)
-        
-        # Apply temperature to model output logits first
-        logits = output[0] / temperature
-        
-        # Then combine with exponential of word occurrences
-        word_probs = np.zeros(len(output[0]))
-        
-        # Calculate gradient based on exponential equality
-        gradient = np.zeros(len(output[0]))
-        
-        # Get all indices as a list for easier iteration
 
-        
-        # Convert to PyTorch tensor
-        word_probs = torch.tensor(word_probs, dtype=torch.float32)
-        
-        # Sample based on these probabilities
-        try:
-            predicted_word_idx = torch.multinomial(word_probs, 1).item()
-        except:
-            # Fallback if sampling fails
-            predicted_word_idx = random.choice(list(index_to_word.keys()))
-        
+        with torch.no_grad():
+            # First get normal output
+            output = model(input_seq)
+            logits = output[0] / temperature  # Apply temperature scaling
+            
+            # Compute Hamming weight of each index in vocabulary
+            hamming_weights = torch.tensor([bin(idx).count('1') for idx in range(len(logits))], dtype=torch.float32)
+            
+            # Compute the Hamming weight of the last generated word
+            last_word = current_sequence[-1]
+            last_hamming = bin(last_word).count('1')
+            
+            # Use model with Hamming weight to get additional output
+            hamming_output = model(None, torch.tensor([last_hamming]))
+            
+            # Combine both outputs - weight regular output with hamming-based output
+            combined_logits = logits * 0.7 + hamming_output[0] * 0.3
+            
+            # Compute similarity to the last word's Hamming weight
+            similarity_scores = torch.abs(-torch.abs(hamming_weights - np.exp(last_hamming)))  # Exponential similarity
+            
+            # Normalize probabilities using softmax with the similarity adjustment
+            word_probs = torch.softmax(combined_logits * similarity_scores, dim=0)
+
+        # Sample based on adjusted probabilities
+        predicted_word_idx = torch.multinomial(word_probs, 1).item()
+
         if predicted_word_idx in index_to_word:
             predicted_word = index_to_word[predicted_word_idx]
             generated_text.append(predicted_word)
             print(predicted_word + " ", end="", flush=True)
-            
-            # Update word occurrence count
-            word_occurrences[predicted_word_idx] += 1
-            
+
             current_sequence.append(predicted_word_idx)
             current_sequence = current_sequence[-n_gram_size:]
-        else:
-            continue
     
     print("\nGeneration complete.")
     return ' '.join(generated_text)
+
+def save_model(model, word_to_index, index_to_word, n_gram_size, name="model"):
+    model_data = {
+        'model_state': model.state_dict(),
+        'word_to_index': word_to_index,
+        'index_to_word': index_to_word,
+        'n_gram_size': n_gram_size
+    }
+    torch.save(model_data, f"{name}.pt")
+    print(f"Model saved as {name}.pt")
+
+def load_model(name="model"):
+    model_data = torch.load(f"{name}.pt")
+    word_to_index = model_data['word_to_index']
+    index_to_word = model_data['index_to_word']
+    n_gram_size = model_data['n_gram_size']
+    
+    vocab_size = len(word_to_index) + 1
+    EMBEDDING_DIM = 256
+    HIDDEN_DIM = 128
+    
+    model = TextGenerator(vocab_size, EMBEDDING_DIM, HIDDEN_DIM, n_gram_size)
+    model.load_state_dict(model_data['model_state'])
+    
+    print(f"Model {name}.pt loaded successfully")
+    return model, word_to_index, index_to_word, n_gram_size
 
 # Main function
 def main():
