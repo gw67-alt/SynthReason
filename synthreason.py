@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 import random
+
 class TextDataset(Dataset):
     def __init__(self, X, y):
         self.X = X
@@ -29,6 +30,29 @@ class TextGenerator(nn.Module):
         x = self.fc(x[:, -1, :])
         return x
 
+def custom_loss_function(outputs, labels, model, word_occurrences, word_to_index, index_to_word, words):
+    criterion = nn.CrossEntropyLoss()
+    cross_entropy_loss = criterion(outputs, labels)
+    
+    # Custom gradient calculation
+    indices = list(index_to_word.keys())
+    gradient = {}
+    for i, idx in enumerate(indices):
+        exp_word_occurrence = np.exp(word_occurrences[idx])
+        if i < len(indices) - 1:
+            next_idx = indices[i + 1]
+            next_exp_word_occurrence = np.exp(word_occurrences[next_idx])
+            gradient[idx] = next_idx if exp_word_occurrence == word_occurrences[next_idx] else 0
+
+    # Apply custom gradients to model parameters
+    for param in model.parameters():
+        if param.grad is not None:
+            custom_grad = param.grad.clone()
+            custom_grad *= torch.tensor([gradient.get(idx, 0) for idx in range(len(custom_grad))], dtype=torch.float32, device=custom_grad.device)
+            param.grad = custom_grad
+
+    return cross_entropy_loss
+
 def train_model(text_file='test.txt', limit=500):
     with open(text_file, 'r', encoding="utf-8") as file:
         text = ' '.join(file.read().split()[:limit])
@@ -44,7 +68,7 @@ def train_model(text_file='test.txt', limit=500):
     print(f"Vocabulary size: {vocab_size}")
     
     N_GRAM_SIZE = 3
-    EMBEDDING_DIM = 100
+    EMBEDDING_DIM = 256
     HIDDEN_DIM = 128
     EPOCHS = 10
     
@@ -64,13 +88,12 @@ def train_model(text_file='test.txt', limit=500):
     
     # Create dataset and dataloader
     dataset = TextDataset(X, y)
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
     
     # Initialize model
     model = TextGenerator(vocab_size, EMBEDDING_DIM, HIDDEN_DIM, N_GRAM_SIZE)
     
     # Training
-    criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     
     for epoch in range(EPOCHS):
@@ -79,41 +102,18 @@ def train_model(text_file='test.txt', limit=500):
         for inputs, labels in dataloader:
             optimizer.zero_grad()
             outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            
-            # Compute custom gradient
+            word_occurrences = {word_to_index[word]: words.count(word) for word in unique_words}
+
+            # Compute custom loss
+            loss = custom_loss_function(outputs, labels, model, word_occurrences, word_to_index, index_to_word, words)
             loss.backward()
-            with torch.no_grad():
-                indices = list(index_to_word.keys())
-                word_probs = {}
-                gradient = {}
-                word_occurrences = {word_to_index[word]: words.count(word) for word in unique_words}
-
-                # Calculate word probabilities and gradients
-                for i, idx in enumerate(indices):
-                    exp_word_occurrence = np.exp(word_occurrences[idx])
-                    word_probs[idx] = exp_word_occurrence
-                    
-                    if i < len(indices) - 1:
-                        next_idx = indices[i + 1]
-                        next_exp_word_occurrence = np.exp(word_occurrences[next_idx])
-                        gradient[idx] = 1 if exp_word_occurrence == next_exp_word_occurrence else 0
-
-                        # Apply custom gradients to model parameters
-                        for param in model.parameters():
-                            if param.grad is not None:
-                                custom_grad = param.grad.clone()
-                                custom_grad *= torch.tensor(gradient[idx], dtype=torch.float32, device=custom_grad.device)
-                                param.grad = custom_grad
-
             optimizer.step()
             total_loss += loss.item()
         
         print(f'Epoch {epoch+1}/{EPOCHS}, Loss: {total_loss/len(dataloader):.4f}')
     
     return model, word_to_index, index_to_word
-    
- 
+
 # To use this function within your generate_text function:
 def generate_text(seed_text, generate_length, model, word_to_index, index_to_word, n_gram_size, temperature=1.0):
     model.eval()
@@ -181,6 +181,7 @@ def generate_text(seed_text, generate_length, model, word_to_index, index_to_wor
     
     print("\nGeneration complete.")
     return ' '.join(generated_text)
+
 # Main function
 def main():
     print("Simple Text Generator")
