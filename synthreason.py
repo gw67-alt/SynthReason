@@ -53,7 +53,7 @@ def custom_loss_function(outputs, labels, model, word_occurrences, word_to_index
 
     return cross_entropy_loss
 
-def train_model(text_file='test.txt', limit=500):
+def train_model(text_file='test.txt', limit=1500):
     with open(text_file, 'r', encoding="utf-8") as file:
         text = ' '.join(file.read().split()[:limit])
     
@@ -206,11 +206,11 @@ def main():
             if 'model' not in locals():
                 print("No model available. Please train or load a model first.")
                 continue
-                
-            seed = input("Enter seed text: ")
-            length = int(input("Enter generation length (default: 250): ") or "250")
-            temperature = float(input("Enter temperature (default: 1.0): ") or "1.0")
-            generate_text(seed, length, model, word_to_index, index_to_word, 3, temperature)
+            while True:    
+                seed = input("Enter seed text: ")
+                length = 250
+                temperature = 0.7
+                generate_text(seed, length, model, word_to_index, index_to_word, 3, temperature)
             
         elif choice == "3":
             if 'model' not in locals():
