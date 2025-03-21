@@ -134,49 +134,41 @@ def generate_text(seed_text, generate_length, model, word_to_index, index_to_wor
     
     while len(current_sequence) < n_gram_size:
         current_sequence.append(random.choice(list(word_to_index.values())))
-
     current_sequence = current_sequence[-n_gram_size:]
-
+    
     print(f"\nSeed text: {seed_text}")
     print("\nGenerated text: ", end="", flush=True)
-
+    
     for _ in range(generate_length):
         input_seq = torch.tensor([current_sequence], dtype=torch.long)
-
         with torch.no_grad():
-            # First get normal output
+            # Get output from model
             output = model(input_seq)
-            logits = output[0] / temperature  # Apply temperature scaling
             
-            # Compute Hamming weight of each index in vocabulary
-            hamming_weights = torch.tensor([bin(idx).count('1') for idx in range(len(logits))], dtype=torch.float32)
+            # Check output dimensions and handle accordingly
+            if len(output.shape) == 2:
+                # If output shape is [batch_size, vocab_size]
+                logits = output[0] / temperature
+            elif len(output.shape) == 3:
+                # If output shape is [batch_size, sequence_length, vocab_size]
+                logits = output[0, -1, :] / temperature
+            else:
+                raise ValueError(f"Unexpected output shape: {output.shape}")
             
-            # Compute the Hamming weight of the last generated word
-            last_word = current_sequence[-1]
-            last_hamming = bin(last_word).count('1')
+            # Compute probabilities using softmax
+            word_probs = torch.softmax(logits, dim=0)
             
-            # Use model with Hamming weight to get additional output
-            hamming_output = model(None, torch.tensor([last_hamming]))
+            # Sample based on probabilities
+            predicted_word_idx = torch.multinomial(word_probs, 1).item()
             
-            # Combine both outputs - weight regular output with hamming-based output
-            combined_logits = logits * 0.7 + hamming_output[0] * 0.3
-            
-            # Compute similarity to the last word's Hamming weight
-            similarity_scores = torch.abs(-torch.abs(hamming_weights - np.exp(last_hamming)))  # Exponential similarity
-            
-            # Normalize probabilities using softmax with the similarity adjustment
-            word_probs = torch.softmax(combined_logits * similarity_scores, dim=0)
-
-        # Sample based on adjusted probabilities
-        predicted_word_idx = torch.multinomial(word_probs, 1).item()
-
-        if predicted_word_idx in index_to_word:
-            predicted_word = index_to_word[predicted_word_idx]
-            generated_text.append(predicted_word)
-            print(predicted_word + " ", end="", flush=True)
-
-            current_sequence.append(predicted_word_idx)
-            current_sequence = current_sequence[-n_gram_size:]
+            if predicted_word_idx in index_to_word:
+                predicted_word = index_to_word[predicted_word_idx]
+                generated_text.append(predicted_word)
+                print(predicted_word + " ", end="", flush=True)
+                
+                # Update sequence with the predicted word index
+                current_sequence.append(predicted_word_idx)
+                current_sequence = current_sequence[-n_gram_size:]
     
     print("\nGeneration complete.")
     return ' '.join(generated_text)
