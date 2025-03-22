@@ -227,3 +227,4 @@ if __name__ == "__main__":
         seed_text = input("USER: ")
         generated_text = dataset.generate_text(seed=seed_text, length=250, temperature=0.8)
         print(generated_text)
+        print()
