@@ -7,64 +7,58 @@ from torch.utils.data import DataLoader, Dataset
 import random
 
 class TextDataset(Dataset):
-    def __init__(self, X, y):
+    def __init__(self, X, positions, y):
         self.X = X
+        self.positions = positions  # New position information
         self.y = y
 
     def __len__(self):
         return len(self.X)
 
     def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
+        return self.X[idx], self.positions[idx], self.y[idx]
 
 class TextGenerator(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, hidden_dim, n_gram_size):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, n_gram_size, max_seq_length):
         super(TextGenerator, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
+        
+        # Position encoding
+        self.position_embedding = nn.Embedding(max_seq_length, embedding_dim)
+        
+        # Combined input size (word embedding + position embedding)
+        self.lstm = nn.LSTM(embedding_dim * 2, hidden_dim, batch_first=True)
         self.fc = nn.Linear(hidden_dim, vocab_size)
         
         # Add support for Hamming weight input
         self.hamming_fc = nn.Linear(1, embedding_dim)
 
-    def forward(self, x, hamming_weights=None):
+    def forward(self, x, positions=None, hamming_weights=None):
         if hamming_weights is not None:
             # Process hamming weights - reshape to have proper dimensions
             hamming_input = hamming_weights.view(-1, 1).float()
             x = self.hamming_fc(hamming_input)
             x = x.unsqueeze(1)  # Add sequence dimension
+            return self.fc(x.squeeze(1))
         else:
             # Normal embedding lookup
-            x = self.embedding(x)
+            word_embeddings = self.embedding(x)
             
-        x, _ = self.lstm(x)
-        x = self.fc(x[:, -1, :])
-        return x
+            # Add position embeddings if provided
+            if positions is not None:
+                pos_embeddings = self.position_embedding(positions)
+                # Concatenate word and position embeddings
+                combined_embeddings = torch.cat((word_embeddings, pos_embeddings), dim=2)
+            else:
+                # If no positions provided, duplicate word embeddings to maintain dimensions
+                combined_embeddings = torch.cat((word_embeddings, torch.zeros_like(word_embeddings)), dim=2)
+            
+            # Process through LSTM
+            lstm_out, _ = self.lstm(combined_embeddings)
+            output = self.fc(lstm_out[:, -1, :])
+            return output
 
-def custom_loss_function(outputs, labels, model, word_occurrences, word_to_index, index_to_word, words):
-    criterion = nn.CrossEntropyLoss()
-    cross_entropy_loss = criterion(outputs, labels)
-    
-    # Custom gradient calculation
-    indices = list(index_to_word.keys())
-    gradient = {}
-    for i, idx in enumerate(indices):
-        exp_word_occurrence = np.sqrt(word_occurrences[idx])
-        if i < len(indices) - 1:
-            next_idx = indices[i + 1]
-            next_exp_word_occurrence = np.sqrt(word_occurrences[next_idx])
-            gradient[idx] = next_idx if exp_word_occurrence == word_occurrences[next_idx] else 0
-
-    # Apply custom gradients to model parameters
-    for param in model.parameters():
-        if param.grad is not None:
-            custom_grad = param.grad.clone()
-            custom_grad *= torch.tensor([gradient.get(idx, 0) for idx in range(len(custom_grad))], dtype=torch.float32, device=custom_grad.device)
-            param.grad = custom_grad
-
-    return cross_entropy_loss
-
-def train_model(text_file='test.txt', limit=6500):
+def train_model(text_file='test.txt', limit=1500):
     with open(text_file, 'r', encoding="utf-8") as file:
         text = ' '.join(file.read().split()[:limit])
     
@@ -82,12 +76,16 @@ def train_model(text_file='test.txt', limit=6500):
     EMBEDDING_DIM = 256
     HIDDEN_DIM = 128
     EPOCHS = 10
+    MAX_SEQ_LENGTH = len(words)  # Maximum possible position
     
-    # Create training sequences
+    # Create training sequences with position information
     sequences = []
-    for i in range(len(words) - N_GRAM_SIZE):
-        seq = words[i:i + N_GRAM_SIZE + 1]
+    positions = []
+    for i, n in enumerate(range(len(words) - N_GRAM_SIZE)):
+        seq = [words[n]]+words[i:i + N_GRAM_SIZE]
         sequences.append([word_to_index[word] for word in seq])
+        # Store the position of each word in the sequence
+        positions.append([n + j for j in range(N_GRAM_SIZE)])
     
     # Split into input and target
     X = [seq[:-1] for seq in sequences]
@@ -95,37 +93,39 @@ def train_model(text_file='test.txt', limit=6500):
     
     # Convert to PyTorch tensors
     X = torch.tensor(X, dtype=torch.long)
+    positions = torch.tensor(positions, dtype=torch.long)
     y = torch.tensor(y, dtype=torch.long)
     
     # Create dataset and dataloader
-    dataset = TextDataset(X, y)
+    dataset = TextDataset(X, positions, y)
     dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
     
-    # Initialize model
-    model = TextGenerator(vocab_size, EMBEDDING_DIM, HIDDEN_DIM, N_GRAM_SIZE)
+    # Initialize model with position encoding
+    model = TextGenerator(vocab_size, EMBEDDING_DIM, HIDDEN_DIM, N_GRAM_SIZE, MAX_SEQ_LENGTH)
     
     # Training
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    
+    criterion = nn.CrossEntropyLoss()
+
     for epoch in range(EPOCHS):
         model.train()
         total_loss = 0
-        for inputs, labels in dataloader:
+        for inputs, pos, labels in dataloader:
             optimizer.zero_grad()
-            outputs = model(inputs)
+            outputs = model(inputs, pos)
             word_occurrences = {word_to_index[word]: words.count(word) for word in unique_words}
 
             # Compute custom loss
-            loss = custom_loss_function(outputs, labels, model, word_occurrences, word_to_index, index_to_word, words)
+            loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
         
         print(f'Epoch {epoch+1}/{EPOCHS}, Loss: {total_loss/len(dataloader):.4f}')
     
-    return model, word_to_index, index_to_word
+    return model, word_to_index, index_to_word, MAX_SEQ_LENGTH
 
-def generate_text(seed_text, generate_length, model, word_to_index, index_to_word, n_gram_size, temperature=1.0):
+def generate_text(seed_text, generate_length, model, word_to_index, index_to_word, n_gram_size, max_seq_length, temperature=1.0):
     model.eval()
     generated_text = []
     
@@ -136,14 +136,21 @@ def generate_text(seed_text, generate_length, model, word_to_index, index_to_wor
         current_sequence.append(random.choice(list(word_to_index.values())))
     current_sequence = current_sequence[-n_gram_size:]
     
+    # Starting positions (we'll use relative positions for generation)
+    current_positions = list(range(n_gram_size))
+    
     print(f"\nSeed text: {seed_text}")
     print("\nGenerated text: ", end="", flush=True)
     
+    position_counter = n_gram_size  # Start after the seed sequence
+    
     for _ in range(generate_length):
         input_seq = torch.tensor([current_sequence], dtype=torch.long)
+        input_pos = torch.tensor([current_positions], dtype=torch.long)
+        
         with torch.no_grad():
             # Get output from model
-            output = model(input_seq)
+            output = model(input_seq, input_pos)
             
             # Check output dimensions and handle accordingly
             if len(output.shape) == 2:
@@ -169,16 +176,23 @@ def generate_text(seed_text, generate_length, model, word_to_index, index_to_wor
                 # Update sequence with the predicted word index
                 current_sequence.append(predicted_word_idx)
                 current_sequence = current_sequence[-n_gram_size:]
+                
+                # Update position information
+                position_counter += 1
+                # Ensure we don't exceed max sequence length by using modulo
+                current_positions.append(position_counter % max_seq_length)
+                current_positions = current_positions[-n_gram_size:]
     
     print("\nGeneration complete.")
     return ' '.join(generated_text)
 
-def save_model(model, word_to_index, index_to_word, n_gram_size, name="model"):
+def save_model(model, word_to_index, index_to_word, n_gram_size, max_seq_length, name="model"):
     model_data = {
         'model_state': model.state_dict(),
         'word_to_index': word_to_index,
         'index_to_word': index_to_word,
-        'n_gram_size': n_gram_size
+        'n_gram_size': n_gram_size,
+        'max_seq_length': max_seq_length
     }
     torch.save(model_data, f"{name}.pt")
     print(f"Model saved as {name}.pt")
@@ -188,20 +202,21 @@ def load_model(name="model"):
     word_to_index = model_data['word_to_index']
     index_to_word = model_data['index_to_word']
     n_gram_size = model_data['n_gram_size']
+    max_seq_length = model_data.get('max_seq_length', 10000)  # Default value for compatibility
     
     vocab_size = len(word_to_index) + 1
     EMBEDDING_DIM = 256
     HIDDEN_DIM = 128
     
-    model = TextGenerator(vocab_size, EMBEDDING_DIM, HIDDEN_DIM, n_gram_size)
+    model = TextGenerator(vocab_size, EMBEDDING_DIM, HIDDEN_DIM, n_gram_size, max_seq_length)
     model.load_state_dict(model_data['model_state'])
     
     print(f"Model {name}.pt loaded successfully")
-    return model, word_to_index, index_to_word, n_gram_size
+    return model, word_to_index, index_to_word, n_gram_size, max_seq_length
 
 # Main function
 def main():
-    print("Simple Text Generator")
+    print("Position-Enhanced Text Generator")
     
     while True:
         print("\nMenu:")
@@ -216,7 +231,7 @@ def main():
         if choice == "1":
             file_name = input("Enter text file name (default: test.txt): ") or "test.txt"
 
-            model, word_to_index, index_to_word = train_model(file_name)
+            model, word_to_index, index_to_word, max_seq_length = train_model(file_name)
             print("Model trained successfully")
            
         elif choice == "2":
@@ -225,9 +240,9 @@ def main():
                 continue
             while True:    
                 seed = input("Enter seed text: ")
-                length = 250
-                temperature = 0.7
-                generate_text(seed, length, model, word_to_index, index_to_word, 3, temperature)
+                length = int(input("Enter length to generate (default: 250): ") or "250")
+                temperature = float(input("Enter temperature (default: 0.7): ") or "0.7")
+                generate_text(seed, length, model, word_to_index, index_to_word, 3, max_seq_length, temperature)
             
         elif choice == "3":
             if 'model' not in locals():
@@ -235,11 +250,11 @@ def main():
                 continue
                 
             name = input("Enter model name (default: model): ") or "model"
-            save_model(model, word_to_index, index_to_word, 3, name)
+            save_model(model, word_to_index, index_to_word, 3, max_seq_length, name)
             
         elif choice == "4":
             name = input("Enter model name to load (default: model): ") or "model"
-            model, word_to_index, index_to_word, N_GRAM_SIZE = load_model(name)
+            model, word_to_index, index_to_word, N_GRAM_SIZE, max_seq_length = load_model(name)
             
         elif choice == "5":
             print("Goodbye!")
