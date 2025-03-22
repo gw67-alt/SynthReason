@@ -380,6 +380,6 @@ if __name__ == "__main__":
     # Generate text using the built-in bigram model
     print("\nText generation with bigram model:")
     while True:
-        seed_text = input("USER:")
+        seed_text = input("USER: ")
         generated_text = dataset.generate_text(seed=seed_text, length=250, temperature=0.8)
         print(generated_text)
