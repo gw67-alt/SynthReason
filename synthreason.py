@@ -252,15 +252,16 @@ class TextDataset(Dataset):
         
         return bigram_probs, word_counts
     
-    def generate_text(self, model=None, seed_word=None, length=50, temperature=1.0):
+    def generate_text(self, model=None, seed=None, length=50, temperature=1.0):
         """
         Generate text using a bigram model or a custom model.
         
         Args:
             model: A custom model function that takes the current word index and returns the next word index.
                   If None, a bigram model will be built and used.
-            seed_word (str, optional): The first word to start generation with. If None, a random word is selected.
-            length (int): Number of words to generate
+            seed (str, optional): The seed text to start generation with. Can be a single word or multiple words.
+                                 If None, a random word is selected.
+            length (int): Number of words to generate (including seed words if provided)
             temperature (float): Controls randomness (higher = more random, lower = more deterministic)
                                Only used with the built-in bigram model.
         
@@ -277,24 +278,46 @@ class TextDataset(Dataset):
         if not valid_indices:
             raise ValueError("No valid words in vocabulary")
         
-        # If seed_word is provided, use it; otherwise, select a random starting word
-        if seed_word:
-            current_idx = self.word_to_index.get(seed_word.lower(), None)
-            if current_idx is None:
-                print(f"Warning: Seed word '{seed_word}' not in vocabulary. Selecting random word.")
-                current_idx = random.choice(valid_indices)
-        else:
-            current_idx = random.choice(valid_indices)
+        # Initialize generated_indices
+        generated_indices = []
         
-        # Initialize with the first word
-        generated_indices = [current_idx]
+        # Process seed text if provided
+        if seed:
+            # Tokenize seed text
+            seed_words = self._tokenize(seed)
+            
+            # Convert seed words to indices
+            seed_indices = []
+            unknown_words = []
+            
+            for word in seed_words:
+                word_idx = self.word_to_index.get(word.lower(), None)
+                if word_idx is None:
+                    unknown_words.append(word)
+                    word_idx = self.word_to_index.get("<UNK>", 0)
+                seed_indices.append(word_idx)
+            
+            if unknown_words:
+                unknown_str = ", ".join(f"'{word}'" for word in unknown_words)
+                print(f"Warning: The following seed words are not in vocabulary: {unknown_str}")
+            
+            # Use seed indices as the beginning of our generated text
+            generated_indices = seed_indices
+            
+            # Set the last seed word as our current index
+            current_idx = seed_indices[-1]
+        else:
+            # If no seed is provided, select a random starting word
+            current_idx = random.choice(valid_indices)
+            generated_indices = [current_idx]
         
         # If no model is provided, build a bigram model
         if model is None:
             bigram_probs, word_counts = self.build_bigram_model()
             
             # Generate the sequence
-            for _ in range(length - 1):
+            remaining_length = max(1, length - len(generated_indices))
+            for _ in range(remaining_length):
                 if current_idx not in bigram_probs:
                     # If current word has no observed transitions, pick a random word
                     next_idx = random.choice(valid_indices)
@@ -318,7 +341,8 @@ class TextDataset(Dataset):
                 current_idx = next_idx
         else:
             # Use the provided custom model for generation
-            for _ in range(length - 1):
+            remaining_length = max(1, length - len(generated_indices))
+            for _ in range(remaining_length):
                 next_idx = model(current_idx)
                 generated_indices.append(next_idx)
                 current_idx = next_idx
@@ -334,8 +358,6 @@ if __name__ == "__main__":
     # Example data
     with open("test.txt", 'r', encoding="utf-8") as file:
         words = file.read().split()[:9999]
-    positions = [[0, 1, 2], [1, 2, 3], [2, 3, 4]]
-    y = [1, 2, 3]
     
     # Create vocabulary
     unique_words = list(set(words))
@@ -358,6 +380,6 @@ if __name__ == "__main__":
     # Generate text using the built-in bigram model
     print("\nText generation with bigram model:")
     while True:
-        generated_text = dataset.generate_text(seed_word=input("Seed word: "), length=250, temperature=0.8)
+        seed_text = input("USER:")
+        generated_text = dataset.generate_text(seed=seed_text, length=250, temperature=0.8)
         print(generated_text)
-   
