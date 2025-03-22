@@ -3,7 +3,7 @@ import torch
 import re
 import os
 import random
-
+KB_limit = -1
 class TextDataset(Dataset):
     def __init__(self, X=None, positions=None, y=None, word_to_index=None, index_to_word=None, max_seq_length=100):
         self.X = X
@@ -357,7 +357,7 @@ class TextDataset(Dataset):
 if __name__ == "__main__":
     # Example data
     with open("test.txt", 'r', encoding="utf-8") as file:
-        words = file.read().split()[:9999]
+        words = file.read().lower().split()[:KB_limit]
     
     # Create vocabulary
     unique_words = list(set(words))
