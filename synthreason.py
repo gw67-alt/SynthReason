@@ -96,9 +96,9 @@ class TextDataset(Dataset):
         
         return bigram_probs, word_counts
     
-    def generate_text(self, model=None, seed=None, length=50, temperature=1.0):
+    def generate_text(self, model=None, seed=None, length=50, temperature=1.0, elasticity_factor=1.5):
         """
-        Generate text using a bigram model or a custom model.
+        Generate text using a bigram model or a custom model with elasticity towards smaller words.
         
         Args:
             model: A custom model function that takes the current word index and returns the next word index.
@@ -108,6 +108,8 @@ class TextDataset(Dataset):
             length (int): Number of words to generate (including seed words if provided)
             temperature (float): Controls randomness (higher = more random, lower = more deterministic)
                                Only used with the built-in bigram model.
+            elasticity_factor (float): Factor to increase probability of smaller words.
+                                     Higher values create stronger bias toward short words.
         
         Returns:
             str: The generated text
@@ -159,6 +161,9 @@ class TextDataset(Dataset):
         if model is None:
             bigram_probs, word_counts = self.build_bigram_model()
             
+            # Find the max word length in vocabulary to calculate elasticity ratios
+            max_word_length = max(len(word) for word in self.index_to_word.values() if word not in ["<PAD>", "<UNK>"])
+            
             # Generate the sequence
             remaining_length = max(1, length - len(generated_indices))
             for _ in range(remaining_length):
@@ -166,20 +171,51 @@ class TextDataset(Dataset):
                     # If current word has no observed transitions, pick a random word
                     next_idx = random.choice(valid_indices)
                 else:
-                    # Apply temperature to the probability distribution
+                    # Apply temperature and elasticity (for word length) to the probability distribution
                     next_word_probs = []
                     candidates = []
                     
                     for next_idx, prob in bigram_probs[current_idx].items():
-                        next_word_probs.append(prob ** (1 / max(0.1, temperature)))
+                        # Get the word for this index
+                        word = self.index_to_word.get(next_idx, "")
+                        
+                        # Calculate elasticity boost based on word length
+                        # Shorter words get higher elasticity (higher probability)
+                        if word not in ["<PAD>", "<UNK>"] and len(word) > 0:
+                            # Inverse length ratio (1.0 for shortest words, approaching 0 for longest)
+                            length_ratio = 1.0 - ((len(word) - 1) / max_word_length)
+                            
+                            # Apply elasticity factor to the length ratio and multiply with base probability
+                            elasticity_boost = (1.0 + (length_ratio * elasticity_factor))
+                            adjusted_prob = prob * elasticity_boost
+                        else:
+                            adjusted_prob = prob
+                        
+                        # Apply temperature
+                        next_word_probs.append(adjusted_prob ** (1 / max(0.1, temperature)))
                         candidates.append(next_idx)
                     
                     # Normalize probabilities
-                    total = sum(next_word_probs)
-                    next_word_probs = [p / total for p in next_word_probs]
-                    
-                    # Sample based on probabilities
-                    next_idx = random.choices(candidates, weights=next_word_probs, k=1)[0]
+                    if candidates:
+                        total = sum(next_word_probs)
+                        if total > 0:
+                            next_word_probs = [p / total for p in next_word_probs]
+                            
+                            # Convert to numpy arrays
+                            import numpy as np
+                            candidates_array = np.array(candidates)
+                            probs_array = np.array(next_word_probs)
+                            
+                            # Handle edge case where probabilities might result in a single candidate
+                            if len(candidates_array) == 1:
+                                next_idx = candidates_array[0]
+                            else:
+                                # Sample based on probabilities
+                                next_idx = np.random.choice(candidates_array, p=probs_array)
+                        else:
+                            next_idx = random.choice(candidates)
+                    else:
+                        next_idx = random.choice(valid_indices)
                 
                 generated_indices.append(next_idx)
                 current_idx = next_idx
