@@ -5,7 +5,7 @@ import os
 import random
 import numpy as np
 
-KB_limit = -1 
+KB_limit = 10000
 
 class TextDataset(Dataset):
     def __init__(self, X=None, positions=None, y=None, word_to_index=None, index_to_word=None):
@@ -200,7 +200,7 @@ class TextDataset(Dataset):
                             next_whole_idx = self.precomputed_positions.get(next_idx, 1.0)
                             
                             # Inverse length ratio (1.0 for shortest words, approaching 0 for longest)
-                            length_ratio = next_whole_idx - ((len(word) - 1) / max_word_length)
+                            length_ratio = next_whole_idx - ((self.precomputed_positions.get(next_idx, 1.0)- 1) / max_word_length)
                             
                             # Apply elasticity factor to the length ratio and multiply with base probability
                             elasticity_boost = (1.0 + (length_ratio * elasticity_factor))
