@@ -1,7 +1,11 @@
 import random
 import numpy as np
-from collections import defaultdict
+from collections import defaultdict, Counter
 from typing import List, Tuple, Dict, Optional, Union, Set, Any
+import random
+import numpy as np
+from collections import defaultdict, Counter
+from typing import List, Tuple, Dict, Optional, Union, Set, Any, Callable
 
 class NGramTextGenerator:
     def __init__(self, n=3):
@@ -160,7 +164,7 @@ class NGramTextGenerator:
                 for next_word, count in next_words.items()
             }
     
-    def generate_text(self, seed=None, length=50, temperature=1.0, elasticity_factor=1.5):
+    def generate_text(self, seed=None, length=50, temperature=1.0):
         """
         Generate text using the n-gram model with temperature control.
         Stops generation when <END> token is encountered.
@@ -169,7 +173,6 @@ class NGramTextGenerator:
             seed (str, optional): The seed text to start generation.
             length (int): Maximum number of words to generate.
             temperature (float): Controls randomness (higher = more random).
-            elasticity_factor (float): Bias towards shorter words.
         
         Returns:
             str: The generated text.
@@ -298,25 +301,161 @@ class NGramTextGenerator:
             
         return " ".join(generated_words)
 
-# Example usage with end token stopping
+class SelfMeasuredNGramTextGenerator(NGramTextGenerator):
+    def __init__(self, n=3):
+        """
+        Initialize the Self-Measured N-gram text generator.
+        
+        Args:
+            n (int): Order of the n-gram model (default is trigram).
+        """
+        super().__init__(n)
+        
+        # Self-measurement attributes
+        self.generation_history = []
+        self.self_measure_functions = {
+            'entropy': self._entropy_self_measure,
+            'uniqueness': self._uniqueness_self_measure,
+            'repetitiveness': self._repetitiveness_self_measure
+        }
+    
+    def c(self, measure_type: str = 'entropy') -> float:
+        """
+        Self-measurement function c(x)
+        
+        Args:
+            measure_type (str): Type of self-measurement to perform
+        
+        Returns:
+            float: Measurement value representing the current self
+        """
+        if not self.generation_history:
+            return 0.0
+        
+        # Select the appropriate measurement function
+        measure_func = self.self_measure_functions.get(measure_type)
+        
+        if measure_func is None:
+            raise ValueError(f"Unknown self-measurement type: {measure_type}")
+        
+        return measure_func()
+    
+    def _entropy_self_measure(self) -> float:
+        """
+        Calculate entropy of generated text as a self-measurement.
+        
+        Returns:
+            float: Entropy value representing text diversity
+        """
+        # Flatten the generation history
+        all_words = [word for text in self.generation_history for word in self._tokenize(text)]
+        
+        # Count word frequencies
+        word_counts = Counter(all_words)
+        total_words = len(all_words)
+        
+        # Calculate entropy
+        entropy = 0.0
+        for count in word_counts.values():
+            prob = count / total_words
+            entropy -= prob * np.log2(prob)
+        
+        return entropy
+    
+    def _uniqueness_self_measure(self) -> float:
+        """
+        Measure the uniqueness of generated text.
+        
+        Returns:
+            float: Uniqueness score (ratio of unique words to total words)
+        """
+        # Flatten the generation history
+        all_words = [word for text in self.generation_history for word in self._tokenize(text)]
+        
+        # Calculate uniqueness
+        unique_words = len(set(all_words))
+        total_words = len(all_words)
+        
+        return unique_words / total_words if total_words > 0 else 0.0
+    
+    def _repetitiveness_self_measure(self) -> float:
+        """
+        Measure the repetitiveness of generated text.
+        
+        Returns:
+            float: Repetitiveness score (ratio of repeated words)
+        """
+        # Flatten the generation history
+        all_words = [word for text in self.generation_history for word in self._tokenize(text)]
+        
+        # Count word frequencies
+        word_counts = Counter(all_words)
+        
+        # Calculate repetitiveness (proportion of words appearing more than once)
+        repeated_words = sum(1 for count in word_counts.values() if count > 1)
+        total_unique_words = len(word_counts)
+        
+        return repeated_words / total_unique_words if total_unique_words > 0 else 0.0
+    
+    def generate_text(self, seed=None, length=50, temperature=1.0, 
+                      self_measure_type: Optional[str] = None) -> str:
+        """
+        Generate text with optional self-measurement.
+        
+        Args:
+            seed (str, optional): The seed text to start generation.
+            length (int): Maximum number of words to generate.
+            temperature (float): Controls randomness.
+            self_measure_type (str, optional): Type of self-measurement to apply.
+        
+        Returns:
+            str: The generated text.
+        """
+        # Generate text using the parent class method
+        generated_text = super().generate_text(seed, length, temperature)
+        
+        # Record generated text in history
+        self.generation_history.append(generated_text)
+        
+        # Apply self-measurement if specified
+        if self_measure_type:
+            # Modify generation based on self-measurement
+            current_self = self.c(self_measure_type)
+            
+            # Example modification: adjust temperature based on self-measurement
+            # 1 - c(x) to invert the measure
+            adjusted_temperature = temperature * (1 - current_self)
+            
+            # Regenerate with adjusted temperature
+            generated_text = super().generate_text(seed, length, adjusted_temperature)
+            
+            # Update generation history with modified text
+            self.generation_history[-1] = generated_text
+        
+        return generated_text
+    
+    def reset_self_measurement(self):
+        """
+        Reset the generation history and self-measurement state.
+        """
+        self.generation_history = []
+
+# Example usage
 if __name__ == "__main__":
+    # Read corpus from file
     with open("test.txt", 'r', encoding="utf-8") as file:
         corpus = file.read().lower().split(".")
-        
-    gen = NGramTextGenerator(n=3)
+    
+    # Initialize and train generator
+    gen = SelfMeasuredNGramTextGenerator(n=3)
     gen.build_vocabulary(corpus)
     gen.build_ngram_model(corpus)
     
-    print("\nDemonstration of formal function f :⊆ (σ∗)n → r")
-    print("-------------------------------------------------")
-            
     while True:
-        try:
-            user_input = input("\nEnter seed text (or 'q' to quit): ")
-            if user_input.lower() == 'q':
-                break
-                
-            generated_text = gen.generate_text(seed=user_input, length=50, temperature=0.8)
-            print(generated_text)
-        except ValueError as e:
-            print(f"Error: {e}. Please try again with different input.")
+        generated_text = gen.generate_text(
+        seed=input("USER: "), 
+        length=50, 
+        temperature=0.8, 
+        self_measure_type='uniqueness'
+        )
+        print(f"{generated_text}")
