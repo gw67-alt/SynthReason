@@ -30,9 +30,8 @@ class NGramTextGenerator:
         for sentence in corpus:
             unique_words.update(self._tokenize(sentence))
         
-        # Assign indices to words
+        # Assign indices to words (no <UNK>)
         self.word_to_index = {word: idx for idx, word in enumerate(unique_words, start=1)}
-        self.word_to_index["<UNK>"] = 0  # Unknown token
         self.index_to_word = {idx: word for word, idx in self.word_to_index.items()}
     
     def build_bigram_model(self, corpus):
@@ -47,13 +46,14 @@ class NGramTextGenerator:
         for sentence in corpus:
             words = ["<START>"] + self._tokenize(sentence) + ["<END>"]
             for i in range(len(words) - 1):
-                word_counts[words[i]][words[i + 1]] += 1
+                if words[i] in self.word_to_index and words[i+1] in self.word_to_index:
+                    word_counts[words[i]][words[i + 1]] += 1
         
         # Convert counts to probabilities
         for word, next_words in word_counts.items():
             total_count = sum(next_words.values())
-            self.ngram_probs[self.word_to_index.get(word, 0)] = {
-                self.word_to_index.get(next_word, 0): count / total_count
+            self.ngram_probs[self.word_to_index[word]] = {
+                self.word_to_index[next_word]: count / total_count
                 for next_word, count in next_words.items()
             }
 
@@ -73,7 +73,7 @@ class NGramTextGenerator:
         if not self.word_to_index:
             raise ValueError("Vocabulary is empty, cannot generate text.")
         
-        valid_indices = [idx for idx in self.index_to_word if idx > 0]
+        valid_indices = list(self.index_to_word.keys())
         if not valid_indices:
             raise ValueError("No valid words in vocabulary.")
 
@@ -83,8 +83,11 @@ class NGramTextGenerator:
         if seed:
             seed_words = self._tokenize(seed)
             seed_indices = [
-                self.word_to_index.get(word, self.word_to_index["<UNK>"]) for word in seed_words
+                self.word_to_index[word] for word in seed_words if word in self.word_to_index
             ]
+            if not seed_indices:
+                raise ValueError("No valid words from the seed exist in the vocabulary.")
+            
             generated_indices = seed_indices
             current_idx = seed_indices[-1]
         else:
@@ -122,4 +125,8 @@ gen.build_bigram_model(corpus)
 
 # Generate text
 while True:
-    print(gen.generate_text(seed=input("USER: "), length=250, temperature=0.8))
+    try:
+        user_input = input("USER: ")
+        print(gen.generate_text(seed=user_input, length=250, temperature=0.8))
+    except ValueError as e:
+        print(f"Error: {e}. Please try again with different input.")
