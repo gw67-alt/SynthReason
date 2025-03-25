@@ -122,4 +122,4 @@ gen.build_bigram_model(corpus)
 
 # Generate text
 while True:
-    print(gen.generate_text(seed=input("USER: "), length=10, temperature=0.8))
+    print(gen.generate_text(seed=input("USER: "), length=250, temperature=0.8))
