@@ -3,15 +3,18 @@ import torch
 import re
 import os
 import random
-KB_limit = -1
+import numpy as np
+
+KB_limit = -1 
+
 class TextDataset(Dataset):
-    def __init__(self, X=None, positions=None, y=None, word_to_index=None, index_to_word=None, max_seq_length=100):
+    def __init__(self, X=None, positions=None, y=None, word_to_index=None, index_to_word=None):
         self.X = X
         self.positions = positions
         self.y = y
         self.word_to_index = word_to_index or {}
         self.index_to_word = index_to_word or {}
-        self.max_seq_length = max_seq_length
+        self.precomputed_positions = self._precompute_positions()
         
     def __len__(self):
         return len(self.X) if self.X is not None else 0
@@ -51,6 +54,18 @@ class TextDataset(Dataset):
         
         index_to_word = {idx: word for word, idx in word_to_index.items()}
         return word_to_index, index_to_word
+    
+    def _precompute_positions(self):
+        """Precompute the positions of each word index in the dataset"""
+        precomputed_positions = {}
+        
+        if self.X is not None and self.positions is not None:
+            for seq, pos in zip(self.X, self.positions):
+                for idx, p in zip(seq.tolist(), pos.tolist()):
+                    if idx != self.word_to_index.get("<PAD>", 0):
+                        precomputed_positions[idx] = p
+        
+        return precomputed_positions
     
     def build_bigram_model(self):
         """
@@ -179,11 +194,13 @@ class TextDataset(Dataset):
                         # Get the word for this index
                         word = self.index_to_word.get(next_idx, "")
                         
-                        # Calculate elasticity boost based on word length
+                        # Calculate elasticity boost based on precomputed position
                         # Shorter words get higher elasticity (higher probability)
                         if word not in ["<PAD>", "<UNK>"] and len(word) > 0:
+                            next_whole_idx = self.precomputed_positions.get(next_idx, 1.0)
+                            
                             # Inverse length ratio (1.0 for shortest words, approaching 0 for longest)
-                            length_ratio = 1.0 - ((len(word) - 1) / max_word_length)
+                            length_ratio = next_whole_idx - ((len(word) - 1) / max_word_length)
                             
                             # Apply elasticity factor to the length ratio and multiply with base probability
                             elasticity_boost = (1.0 + (length_ratio * elasticity_factor))
@@ -201,8 +218,6 @@ class TextDataset(Dataset):
                         if total > 0:
                             next_word_probs = [p / total for p in next_word_probs]
                             
-                            # Convert to numpy arrays
-                            import numpy as np
                             candidates_array = np.array(candidates)
                             probs_array = np.array(next_word_probs)
                             
