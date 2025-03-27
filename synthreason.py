@@ -1,461 +1,282 @@
+from torch.utils.data import Dataset
+import torch
+import re
+import os
 import random
 import numpy as np
-from collections import defaultdict, Counter
-from typing import List, Tuple, Dict, Optional, Union, Set, Any
-import random
-import numpy as np
-from collections import defaultdict, Counter
-from typing import List, Tuple, Dict, Optional, Union, Set, Any, Callable
 
-class NGramTextGenerator:
-    def __init__(self, n=3):
-        """
-        Initialize the N-gram text generator.
-        
-        Args:
-            n (int): Order of the n-gram model (default is trigram).
-        """
-        self.n = n
-        self.word_to_index = {}
-        self.index_to_word = {}
-        self.ngram_probs = defaultdict(lambda: defaultdict(float))
-    
-    def _tokenize(self, text):
-        """ Tokenizes text into words and lowercases them. """
-        return text.lower().split()
-    
-    def build_vocabulary(self, corpus):
-        """
-        Builds the vocabulary from a given corpus.
-        
-        Args:
-            corpus (list of str): List of sentences to process.
-        """
-        unique_words = set()
-        for sentence in corpus:
-            unique_words.update(self._tokenize(sentence))
-        
-        # Add special tokens to vocabulary
-        special_tokens = ["<START>", "<END>"]
-        for token in special_tokens:
-            if token not in unique_words:
-                unique_words.add(token)
-        
-        # Assign indices to words
-        self.word_to_index = {word: idx for idx, word in enumerate(unique_words, start=1)}
-        self.index_to_word = {idx: word for word, idx in self.word_to_index.items()}
-    
-    def f(self, *words: str) -> Optional[str]:
-        """
-        Formal function f :⊆ (σ∗)n → r
-        
-        This is a partial function that maps from n strings (words) to a result string,
-        representing the most likely next word given the input context.
-        
-        Args:
-            *words: Variable number of input strings (words) representing the context
-            
-        Returns:
-            Optional[str]: The most likely next word, or None if no prediction can be made
-        """
-        # Check if we have enough context words based on n-gram order
-        if len(words) < self.n - 1:
-            return None  # Not enough context for prediction (partial function)
-        
-        # Get the relevant context (last n-1 words)
-        context_words = words[-(self.n-1):]
-        
-        # Check if all context words are in vocabulary
-        for word in context_words:
-            if word not in self.word_to_index:
-                return None  # Word not in vocabulary (partial function)
-        
-        # Convert words to indices
-        if self.n == 2:  # Bigram case
-            context_idx = self.word_to_index[context_words[0]]
-            if context_idx not in self.ngram_probs:
-                return None  # Context not found in training data (partial function)
-                
-            # Find most likely next word
-            next_word_idx = max(self.ngram_probs[context_idx].items(), 
-                              key=lambda x: x[1])[0]
-        else:  # Trigram or higher order
-            # Create context tuple from indices
-            context_indices = tuple(self.word_to_index[w] for w in context_words)
-            
-            if context_indices not in self.ngram_probs:
-                return None  # Context not found in training data (partial function)
-                
-            # Find most likely next word
-            next_word_idx = max(self.ngram_probs[context_indices].items(), 
-                              key=lambda x: x[1])[0]
-        
-        # Convert back to word
-        return self.index_to_word[next_word_idx]
-    
-    def build_ngram_model(self, corpus):
-        """
-        Builds an n-gram probability model from the given corpus.
-        
-        Args:
-            corpus (list of str): List of sentences.
-        """
-        if self.n == 2:
-            self._build_bigram_model(corpus)
-        elif self.n == 3:
-            self._build_trigram_model(corpus)
-        else:
-            raise ValueError(f"N-gram order {self.n} not supported. Use 2 or 3.")
-    
-    def _build_bigram_model(self, corpus):
-        """
-        Builds a bigram probability model from the given corpus.
-        
-        Args:
-            corpus (list of str): List of sentences.
-        """
-        word_counts = defaultdict(lambda: defaultdict(int))
+KB_limit = 10000
 
-        for sentence in corpus:
-            words = ["<START>"] + self._tokenize(sentence) + ["<END>"]
-            for i in range(len(words) - 1):
-                if words[i] in self.word_to_index and words[i+1] in self.word_to_index:
-                    word_counts[words[i]][words[i + 1]] += 1
+class TextDataset(Dataset):
+    def __init__(self, X=None, positions=None, y=None, word_to_index=None, index_to_word=None):
+        self.X = X
+        self.positions = positions
+        self.y = y
+        self.word_to_index = word_to_index or {}
+        self.index_to_word = index_to_word or {}
+        self.precomputed_positions = self._precompute_positions()
+        
+    def __len__(self):
+        return len(self.X) if self.X is not None else 0
+        
+    def __getitem__(self, idx):
+        return self.X[idx], self.positions[idx], self.y[idx]
+    
+    def words_to_indices(self, words):
+        return [self.word_to_index.get(word, self.word_to_index.get("<UNK>", 0)) for word in words]
+    
+    def indices_to_words(self, indices):
+        return [self.index_to_word.get(idx, "<UNK>") for idx in indices]
+    
+    @staticmethod
+    def _tokenize(text):
+        """Simple tokenization function without NLTK dependency"""
+        # Convert to lowercase and remove punctuation
+        text = text.lower()
+        text = re.sub(r'[^\w\s]', '', text)
+        # Split on whitespace
+        return text.split()
+    
+    def save_vocabulary(self, path):
+        """Save the vocabulary to a file"""
+        with open(path, 'w', encoding='utf-8') as f:
+            for word, idx in self.word_to_index.items():
+                f.write(f"{word}\t{idx}\n")
+    
+    @classmethod
+    def load_vocabulary(cls, path):
+        """Load vocabulary from a file"""
+        word_to_index = {}
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                word, idx = line.strip().split('\t')
+                word_to_index[word] = int(idx)
+        
+        index_to_word = {idx: word for word, idx in word_to_index.items()}
+        return word_to_index, index_to_word
+    
+    def _precompute_positions(self):
+        """Precompute the positions of each word index in the dataset"""
+        precomputed_positions = {}
+        
+        if self.X is not None and self.positions is not None:
+            for seq, pos in zip(self.X, self.positions):
+                for idx, p in zip(seq.tolist(), pos.tolist()):
+                    if idx != self.word_to_index.get("<PAD>", 0):
+                        precomputed_positions[idx] = p
+        
+        return precomputed_positions
+    
+    def build_bigram_model(self):
+        """
+        Build a simple bigram model from the dataset for text generation.
+        """
+        if self.X is None:
+            raise ValueError("Dataset is empty, cannot build bigram model")
+        
+        # Create bigram transition probabilities
+        bigram_counts = {}
+        word_counts = {}
+        
+        # Process all sequences
+        for seq in self.X:
+            # Convert tensor to list of indices
+            indices = seq.tolist()
+            
+            # Skip padding tokens
+            indices = [idx for idx in indices if idx != self.word_to_index.get("<PAD>", 0)]
+            
+            # Count occurrences of each word
+            for idx in indices:
+                word_counts[idx] = word_counts.get(idx, 0) + 1
+            
+            # Count bigram transitions
+            for i in range(len(indices) - 1):
+                current = indices[i]
+                next_word = indices[i + 1]
+                
+                if current not in bigram_counts:
+                    bigram_counts[current] = {}
+                
+                bigram_counts[current][next_word] = bigram_counts[current].get(next_word, 0) + 1
         
         # Convert counts to probabilities
-        for word, next_words in word_counts.items():
-            total_count = sum(next_words.values())
-            self.ngram_probs[self.word_to_index[word]] = {
-                self.word_to_index[next_word]: count / total_count
-                for next_word, count in next_words.items()
-            }
-    
-    def _build_trigram_model(self, corpus):
-        """
-        Builds a trigram probability model from the given corpus.
-        
-        Args:
-            corpus (list of str): List of sentences.
-        """
-        # For trigrams, we count sequences of three words
-        trigram_counts = defaultdict(lambda: defaultdict(int))
-
-        for sentence in corpus:
-            words = ["<START>", "<START>"] + self._tokenize(sentence) + ["<END>"]
+        bigram_probs = {}
+        for current, next_words in bigram_counts.items():
+            bigram_probs[current] = {}
+            total = sum(next_words.values())
             
-            # Process trigrams
-            for i in range(len(words) - 2):
-                if (words[i] in self.word_to_index and 
-                    words[i+1] in self.word_to_index and 
-                    words[i+2] in self.word_to_index):
-                    
-                    # Create a context key from the first two words
-                    context = (self.word_to_index[words[i]], self.word_to_index[words[i+1]])
-                    next_word = self.word_to_index[words[i+2]]
-                    
-                    # Count this trigram
-                    trigram_counts[context][next_word] += 1
+            for next_word, count in next_words.items():
+                bigram_probs[current][next_word] = count / total
         
-        # Convert counts to probabilities
-        for context, next_words in trigram_counts.items():
-            total_count = sum(next_words.values())
-            self.ngram_probs[context] = {
-                next_word: count / total_count
-                for next_word, count in next_words.items()
-            }
+        return bigram_probs, word_counts
     
-    def generate_text(self, seed=None, length=50, temperature=1.0):
+    def generate_text(self, model=None, seed=None, length=50, temperature=1.0, elasticity_factor=1.5):
         """
-        Generate text using the n-gram model with temperature control.
-        Stops generation when <END> token is encountered.
+        Generate text using a bigram model or a custom model with elasticity towards smaller words.
         
         Args:
-            seed (str, optional): The seed text to start generation.
-            length (int): Maximum number of words to generate.
-            temperature (float): Controls randomness (higher = more random).
+            model: A custom model function that takes the current word index and returns the next word index.
+                  If None, a bigram model will be built and used.
+            seed (str, optional): The seed text to start generation with. Can be a single word or multiple words.
+                                 If None, a random word is selected.
+            length (int): Number of words to generate (including seed words if provided)
+            temperature (float): Controls randomness (higher = more random, lower = more deterministic)
+                               Only used with the built-in bigram model.
+            elasticity_factor (float): Factor to increase probability of smaller words.
+                                     Higher values create stronger bias toward short words.
         
         Returns:
-            str: The generated text.
+            str: The generated text
         """
-        if not self.word_to_index:
-            raise ValueError("Vocabulary is empty, cannot generate text.")
+        if len(self.word_to_index) == 0:
+            raise ValueError("Vocabulary is empty, cannot generate text")
         
-        valid_indices = list(self.index_to_word.keys())
+        # Filter out special tokens for seed selection
+        valid_indices = [idx for idx, word in self.index_to_word.items() 
+                         if word not in ["<PAD>", "<UNK>"]]
+        
         if not valid_indices:
-            raise ValueError("No valid words in vocabulary.")
-            
-        # Get END token index if it exists
-        end_token_idx = self.word_to_index.get("<END>")
-
+            raise ValueError("No valid words in vocabulary")
+        
+        # Initialize generated_indices
         generated_indices = []
-
+        
         # Process seed text if provided
         if seed:
+            # Tokenize seed text
             seed_words = self._tokenize(seed)
+            
+            # Convert seed words to indices
             seed_indices = []
             unknown_words = []
             
             for word in seed_words:
-                if word in self.word_to_index:
-                    seed_indices.append(self.word_to_index[word])
-                else:
+                word_idx = self.word_to_index.get(word.lower(), None)
+                if word_idx is None:
                     unknown_words.append(word)
+                    word_idx = self.word_to_index.get("<UNK>", 0)
+                seed_indices.append(word_idx)
             
             if unknown_words:
                 unknown_str = ", ".join(f"'{word}'" for word in unknown_words)
                 print(f"Warning: The following seed words are not in vocabulary: {unknown_str}")
             
-            if not seed_indices:
-                raise ValueError("No valid words from the seed exist in the vocabulary.")
-            
+            # Use seed indices as the beginning of our generated text
             generated_indices = seed_indices
             
-            # Set up the context based on n-gram order
-            if self.n == 2:
-                current_idx = seed_indices[-1]
-            else:  # For trigram or higher
-                # We need at least n-1 words for context
-                if len(seed_indices) < self.n - 1:
-                    # If not enough words in seed, prepend with START
-                    num_pad = self.n - 1 - len(seed_indices)
-                    start_idx = self.word_to_index.get("<START>", random.choice(valid_indices))
-                    context = tuple([start_idx] * num_pad + seed_indices)
-                else:
-                    # Use the last n-1 words as context
-                    context = tuple(seed_indices[-(self.n-1):])
+            # Set the last seed word as our current index
+            current_idx = seed_indices[-1]
         else:
-            # No seed provided
-            if self.n == 2:
-                # For bigram, just pick a random starting word
-                current_idx = random.choice(valid_indices)
-                generated_indices = [current_idx]
-            else:
-                # For trigram or higher, initialize with START tokens or random words
-                start_idx = self.word_to_index.get("<START>", random.choice(valid_indices))
-                context = tuple([start_idx] * (self.n - 1))
-                generated_indices = list(context)
-
-        # Generate the text sequence
-        remaining_length = max(0, length - len(generated_indices))
+            # If no seed is provided, select a random starting word
+            current_idx = random.choice(valid_indices)
+            generated_indices = [current_idx]
         
-        for _ in range(remaining_length):
-            # Different handling based on n-gram order
-            if self.n == 2:
-                # Bigram generation
-                if current_idx not in self.ngram_probs:
+        # If no model is provided, build a bigram model
+        if model is None:
+            bigram_probs, word_counts = self.build_bigram_model()
+            
+            # Find the max word length in vocabulary to calculate elasticity ratios
+            max_word_length = max(len(word) for word in self.index_to_word.values() if word not in ["<PAD>", "<UNK>"])
+            
+            # Generate the sequence
+            remaining_length = max(1, length - len(generated_indices))
+            for _ in range(remaining_length):
+                if current_idx not in bigram_probs:
+                    # If current word has no observed transitions, pick a random word
                     next_idx = random.choice(valid_indices)
                 else:
-                    candidates = list(self.ngram_probs[current_idx].keys())
-                    probabilities = np.array(list(self.ngram_probs[current_idx].values()))
+                    # Apply temperature and elasticity (for word length) to the probability distribution
+                    next_word_probs = []
+                    candidates = []
                     
-                    # Apply temperature
-                    adjusted_probs = probabilities ** (1 / max(0.1, temperature))
-                    total = adjusted_probs.sum()
+                    for next_idx, prob in bigram_probs[current_idx].items():
+                        # Get the word for this index
+                        word = self.index_to_word.get(next_idx, "")
+                        
+                        # Calculate elasticity boost based on precomputed position
+                        # Shorter words get higher elasticity (higher probability)
+                        if word not in ["<PAD>", "<UNK>"] and len(word) > 0:
+                            next_whole_idx = self.precomputed_positions.get(next_idx, 1.0)
+                            
+                            # Inverse length ratio (1.0 for shortest words, approaching 0 for longest)
+                            length_ratio = next_whole_idx - ((self.precomputed_positions.get(next_idx, 1.0)- 1) / max_word_length)
+                            
+                            # Apply elasticity factor to the length ratio and multiply with base probability
+                            elasticity_boost = (1.0 + (length_ratio * elasticity_factor))
+                            adjusted_prob = prob * elasticity_boost
+                        else:
+                            adjusted_prob = prob
+                        
+                        # Apply temperature
+                        next_word_probs.append(adjusted_prob ** (1 / max(0.1, temperature)))
+                        candidates.append(next_idx)
                     
-                    if total > 0:
-                        adjusted_probs = adjusted_probs / total
-                        next_idx = np.random.choice(candidates, p=adjusted_probs)
+                    # Normalize probabilities
+                    if candidates:
+                        total = sum(next_word_probs)
+                        if total > 0:
+                            next_word_probs = [abs(np.cumsum(-p / total)[-1]) for p in next_word_probs]
+                            total = sum(next_word_probs)
+                            next_word_probs = [p / total for p in next_word_probs]
+                            candidates_array = np.array(candidates)
+                            probs_array = np.array(next_word_probs)
+                            
+                            # Handle edge case where probabilities might result in a single candidate
+                            if len(candidates_array) == 1:
+                                next_idx = candidates_array[0]
+                            else:
+                                # Sample based on probabilities
+                                next_idx = np.random.choice(candidates_array, p=probs_array)
+                        else:
+                            next_idx = random.choice(candidates)
                     else:
-                        next_idx = random.choice(candidates)
+                        next_idx = random.choice(valid_indices)
                 
                 generated_indices.append(next_idx)
-                
-                # Stop if END token is generated
-                if end_token_idx and next_idx == end_token_idx:
-                    break
-                    
                 current_idx = next_idx
-            else:
-                # Trigram or higher generation
-                if context not in self.ngram_probs:
-                    next_idx = random.choice(valid_indices)
-                else:
-                    candidates = list(self.ngram_probs[context].keys())
-                    probabilities = np.array(list(self.ngram_probs[context].values()))
-                    
-                    # Apply temperature
-                    adjusted_probs = probabilities ** (1 / max(0.1, temperature))
-                    total = adjusted_probs.sum()
-                    
-                    if total > 0:
-                        adjusted_probs = adjusted_probs / total
-                        next_idx = np.random.choice(candidates, p=adjusted_probs)
-                    else:
-                        next_idx = random.choice(candidates)
-                
+        else:
+            # Use the provided custom model for generation
+            remaining_length = max(1, length - len(generated_indices))
+            for _ in range(remaining_length):
+                next_idx = model(current_idx)
                 generated_indices.append(next_idx)
-                
-                # Stop if END token is generated
-                if end_token_idx and next_idx == end_token_idx:
-                    break
-                    
-                # Slide the context window forward
-                context = tuple(list(context)[1:] + [next_idx])
-
-        # Convert indices back to words
-        generated_words = [self.index_to_word[idx] for idx in generated_indices]
+                current_idx = next_idx
         
-        # Remove START tokens from output but keep the END token (since we want to show where it ended)
-        if "<START>" in self.word_to_index:
-            generated_words = [w for w in generated_words if w != "<START>"]
-            
-        return " ".join(generated_words)
-
-class SelfMeasuredNGramTextGenerator(NGramTextGenerator):
-    def __init__(self, n=3):
-        """
-        Initialize the Self-Measured N-gram text generator.
+        # Convert indices to words
+        generated_words = self.indices_to_words(generated_indices)
         
-        Args:
-            n (int): Order of the n-gram model (default is trigram).
-        """
-        super().__init__(n)
-        
-        # Self-measurement attributes
-        self.generation_history = []
-        self.self_measure_functions = {
-            'entropy': self._entropy_self_measure,
-            'uniqueness': self._uniqueness_self_measure,
-            'repetitiveness': self._repetitiveness_self_measure
-        }
+        # Join words into text
+        return " ".join(list(reversed(generated_words)))
     
-    def c(self, measure_type: str = 'entropy') -> float:
-        """
-        Self-measurement function c(x)
-        
-        Args:
-            measure_type (str): Type of self-measurement to perform
-        
-        Returns:
-            float: Measurement value representing the current self
-        """
-        if not self.generation_history:
-            return 0.0
-        
-        # Select the appropriate measurement function
-        measure_func = self.self_measure_functions.get(measure_type)
-        
-        if measure_func is None:
-            raise ValueError(f"Unknown self-measurement type: {measure_type}")
-        
-        return measure_func()
-    
-    def _entropy_self_measure(self) -> float:
-        """
-        Calculate entropy of generated text as a self-measurement.
-        
-        Returns:
-            float: Entropy value representing text diversity
-        """
-        # Flatten the generation history
-        all_words = [word for text in self.generation_history for word in self._tokenize(text)]
-        
-        # Count word frequencies
-        word_counts = Counter(all_words)
-        total_words = len(all_words)
-        
-        # Calculate entropy
-        entropy = 0.0
-        for count in word_counts.values():
-            prob = count / total_words
-            entropy -= prob * np.log2(prob)
-        
-        return entropy
-    
-    def _uniqueness_self_measure(self) -> float:
-        """
-        Measure the uniqueness of generated text.
-        
-        Returns:
-            float: Uniqueness score (ratio of unique words to total words)
-        """
-        # Flatten the generation history
-        all_words = [word for text in self.generation_history for word in self._tokenize(text)]
-        
-        # Calculate uniqueness
-        unique_words = len(set(all_words))
-        total_words = len(all_words)
-        
-        return unique_words / total_words if total_words > 0 else 0.0
-    
-    def _repetitiveness_self_measure(self) -> float:
-        """
-        Measure the repetitiveness of generated text.
-        
-        Returns:
-            float: Repetitiveness score (ratio of repeated words)
-        """
-        # Flatten the generation history
-        all_words = [word for text in self.generation_history for word in self._tokenize(text)]
-        
-        # Count word frequencies
-        word_counts = Counter(all_words)
-        
-        # Calculate repetitiveness (proportion of words appearing more than once)
-        repeated_words = sum(1 for count in word_counts.values() if count > 1)
-        total_unique_words = len(word_counts)
-        
-        return repeated_words / total_unique_words if total_unique_words > 0 else 0.0
-    
-    def generate_text(self, seed=None, length=50, temperature=1.0, 
-                      self_measure_type: Optional[str] = None) -> str:
-        """
-        Generate text with optional self-measurement.
-        
-        Args:
-            seed (str, optional): The seed text to start generation.
-            length (int): Maximum number of words to generate.
-            temperature (float): Controls randomness.
-            self_measure_type (str, optional): Type of self-measurement to apply.
-        
-        Returns:
-            str: The generated text.
-        """
-        # Generate text using the parent class method
-        generated_text = super().generate_text(seed, length, temperature)
-        
-        # Record generated text in history
-        self.generation_history.append(generated_text)
-        
-        # Apply self-measurement if specified
-        if self_measure_type:
-            # Modify generation based on self-measurement
-            current_self = self.c(self_measure_type)
-            
-            # Example modification: adjust temperature based on self-measurement
-            # 1 - c(x) to invert the measure
-            adjusted_temperature = temperature * (1 - current_self)
-            
-            # Regenerate with adjusted temperature
-            generated_text = super().generate_text(seed, length, adjusted_temperature)
-            
-            # Update generation history with modified text
-            self.generation_history[-1] = generated_text
-        
-        return generated_text
-    
-    def reset_self_measurement(self):
-        """
-        Reset the generation history and self-measurement state.
-        """
-        self.generation_history = []
-
 # Example usage
 if __name__ == "__main__":
-    # Read corpus from file
+    # Example data
     with open("test.txt", 'r', encoding="utf-8") as file:
-        corpus = file.read().lower().split(".")
+        words = list(reversed(file.read().lower().split()[:KB_limit]))
     
-    # Initialize and train generator
-    gen = SelfMeasuredNGramTextGenerator(n=3)
-    gen.build_vocabulary(corpus)
-    gen.build_ngram_model(corpus)
+    # Create vocabulary
+    unique_words = list(set(words))
+    word_to_index = {word: idx + 1 for idx, word in enumerate(unique_words)}
+    index_to_word = {idx + 1: word for idx, word in enumerate(unique_words)}
     
+    # Create sequences for model training
+    X_data = []
+    for i in range(len(words) - 2):
+        X_data.append([word_to_index[words[i]], word_to_index[words[i+1]], word_to_index[words[i+2]]])
+    
+    # Convert to PyTorch tensors
+    X = torch.tensor(X_data, dtype=torch.long)
+    positions = torch.tensor([[0, 1, 2] for _ in range(len(X_data))], dtype=torch.long)
+    y = torch.tensor([word_to_index[words[i+2]] for i in range(len(words) - 2)], dtype=torch.long)
+    
+    # Create dataset
+    dataset = TextDataset(X, positions, y, word_to_index, index_to_word)
+    
+    # Generate text using the built-in bigram model
+    print("\nText generation with bigram model:")
     while True:
-        generated_text = gen.generate_text(
-        seed=input("USER: "), 
-        length=50, 
-        temperature=0.8, 
-        self_measure_type='uniqueness'
-        )
-        print(f"{generated_text}")
+        seed_text = input("USER: ")
+        generated_text = dataset.generate_text(seed=seed_text, length=250, temperature=0.8)
+        print(generated_text)
+        print()
