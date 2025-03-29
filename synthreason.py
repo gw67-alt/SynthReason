@@ -151,7 +151,7 @@ class TextDataset(Dataset):
             max_word_length = max(len(word) for word in self.index_to_word.values() if word not in ["<PAD>", "<UNK>"])
 
             # Generate initial sequence for reverse sigma
-            current_idx = random.choice(valid_indices)
+            current_idx = random.choice(word_counts)
             reverse_sigma_generated_indices = [current_idx]
             for _ in range(reverse_sigma_length - 1):
                 if current_idx not in bigram_probs:
