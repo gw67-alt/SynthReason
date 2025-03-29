@@ -5,7 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import re
 import random
 from tqdm import tqdm
-KB_limit = 99999
+KB_limit = 9999
 
 # Define the TextDataset class directly in this file
 class TextDataset(Dataset):
