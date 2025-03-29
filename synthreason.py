@@ -5,7 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import re
 import random
 from tqdm import tqdm
-KB_limit = 9999
+KB_limit = 99999
 
 # Define the TextDataset class directly in this file
 class TextDataset(Dataset):
@@ -63,7 +63,7 @@ class TextDataset(Dataset):
         if self.X is not None and self.positions is not None:
             for seq, pos in zip(self.X, self.positions):
                 for idx, p in zip(seq.tolist(), pos.tolist()):
-                    if idx != self.word_to_index.get("<PAD>", 0):
+                    if idx != seq[-1]:
                         precomputed_positions[idx] = p
 
         return precomputed_positions
@@ -492,7 +492,8 @@ def main():
     X = torch.tensor(X_data, dtype=torch.long)
     positions = torch.tensor([[0, 1, 2] for _ in range(len(X_data))], dtype=torch.long)
 
-    positions = torch.tensor([[0, 1, 2]*_ for _ in range(len(X_data))], dtype=torch.long)
+    positions = torch.tensor([[np.sum([positions])] for _ in range(len(X_data))], dtype=torch.long)
+
     y = torch.tensor([word_to_index.get(words[i+2], word_to_index["<UNK>"]) for i in range(len(words) - 2)], dtype=torch.long)
     
     # Create dataset
