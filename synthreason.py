@@ -1,12 +1,13 @@
-from torch.utils.data import Dataset
 import torch
-import re
-import os
-import random
 import numpy as np
+import os
+from torch.utils.data import Dataset, DataLoader
+import re
+import random
+from tqdm import tqdm
+KB_limit = 99999
 
-KB_limit = 10000
-
+# Define the TextDataset class directly in this file
 class TextDataset(Dataset):
     def __init__(self, X=None, positions=None, y=None, word_to_index=None, index_to_word=None):
         self.X = X
@@ -111,7 +112,157 @@ class TextDataset(Dataset):
 
         return bigram_probs, word_counts
 
-    def generate_text(self, model=None, seed=None, length=50, temperature=1.0, elasticity_factor=1.5, reverse_sigma_length=5):
+    def _sample_next_word_euclidean(self, bigram_probs, current_idx, valid_indices, index_to_word, precomputed_positions, max_word_length, temperature, elasticity_factor):
+        """
+        Sample the next word using a constant flow rate based on Euclidean distance.
+        This implementation uses a more consistent probability distribution.
+        """
+        if current_idx not in bigram_probs:
+            return random.choice(valid_indices)
+        else:
+            next_word_probs = []
+            candidates = []
+            
+            # Calculate Euclidean distances for normalization
+            distances = []
+            for next_idx, prob in bigram_probs[current_idx].items():
+                word = index_to_word.get(next_idx, "")
+                if word not in ["<PAD>", "<UNK>"] and len(word) > 0:
+                    # Get positional value
+                    next_position = precomputed_positions.get(next_idx, 1.0)
+                    current_position = precomputed_positions.get(current_idx, 1.0)
+                    
+                    # Calculate Euclidean distance between positions
+                    euclidean_distance = np.sqrt((next_position - current_position) ** 2)
+                    distances.append((next_idx, euclidean_distance, prob))
+
+            # Sort by distance for constant flow
+            if distances:
+                # Normalize distances to create constant flow rate
+                sorted_distances = sorted(distances, key=lambda x: x[1])
+                total_distance = sum(d[1] for d in sorted_distances) or 1.0
+                
+                # Apply constant flow rate adjustment
+                for next_idx, distance, prob in sorted_distances:
+                    # Normalize distance to [0,1] range
+                    normalized_distance = distance / total_distance
+                    
+                    # Apply constant flow rate formula
+                    # Lower distances get higher probabilities, creating a constant flow
+                    flow_rate = 1.0 - normalized_distance
+                    flow_adjusted_prob = prob * (1.0 + (flow_rate * elasticity_factor))
+                    
+                    # Apply temperature
+                    adjusted_prob = flow_adjusted_prob ** (1 / max(0.1, temperature))
+                    
+                    next_word_probs.append(adjusted_prob)
+                    candidates.append(next_idx)
+                    
+                if candidates:
+                    total = sum(next_word_probs)
+                    if total > 0:
+                        next_word_probs = [p / total for p in next_word_probs]
+                        return np.random.choice(candidates, p=next_word_probs)
+                    else:
+                        return random.choice(candidates)
+            
+            # Fallback to random choice if no valid candidates
+            return random.choice(valid_indices)
+
+    def _sample_next_word(self, bigram_probs, current_idx, valid_indices, index_to_word, precomputed_positions, max_word_length, temperature, elasticity_factor):
+        if current_idx not in bigram_probs:
+            return random.choice(valid_indices)
+        else:
+            next_word_probs = []
+            candidates = []
+
+            for next_idx, prob in bigram_probs[current_idx].items():
+                word = index_to_word.get(next_idx, "")
+                if word not in ["<PAD>", "<UNK>"] and len(word) > 0:
+                    next_whole_idx = precomputed_positions.get(next_idx, 1.0)
+                    length_ratio = next_whole_idx - ((precomputed_positions.get(next_idx, 1.0)- 1) / max_word_length)
+                    elasticity_boost = (1.0 + (length_ratio * elasticity_factor))
+                    adjusted_prob = prob * elasticity_boost
+                else:
+                    adjusted_prob = prob
+
+                next_word_probs.append(adjusted_prob ** (1 / max(0.1, temperature)))
+                candidates.append(next_idx)
+
+            if candidates:
+                total = sum(next_word_probs)
+                if total > 0:
+                    next_word_probs = [p / total for p in next_word_probs]
+                    return np.random.choice(candidates, p=next_word_probs)
+                else:
+                    return random.choice(candidates)
+            else:
+                return random.choice(valid_indices)
+
+    def generate_text_with_constant_flow(self, seed=None, length=50, temperature=1.0, elasticity_factor=1.5, reverse_sigma_length=1.5):
+        """
+        Generate text using a bigram model with constant flow rate based on Euclidean distances.
+        
+        Args:
+            seed (str, optional): The seed text to start generation with.
+            length (int): Number of words to generate (including seed words if provided)
+            temperature (float): Controls randomness (higher = more random, lower = more deterministic)
+            elasticity_factor (float): Factor to adjust the constant flow rate effect
+            reverse_sigma_length (int): The length of the initial "reverse sigma" sequence to generate
+                                      when no seed is provided.
+        
+        Returns:
+            str: The generated text
+        """
+        if len(self.word_to_index) == 0:
+            raise ValueError("Vocabulary is empty, cannot generate text")
+
+        # Filter out special tokens for seed selection
+        valid_indices = [idx for idx, word in self.index_to_word.items()
+                        if word not in ["<PAD>", "<UNK>"]]
+
+        if not valid_indices:
+            raise ValueError("No valid words in vocabulary")
+
+        generated_indices = []
+        
+        # Process seed if provided
+        if seed and self._tokenize(seed):
+            seed_words = self._tokenize(seed)
+            for word in seed_words:
+                word_idx = self.word_to_index.get(word.lower(), self.word_to_index.get("<UNK>", 0))
+                generated_indices.append(word_idx)
+        else:
+            # Start with a random word
+            generated_indices.append(random.choice(valid_indices))
+        
+        # Build the bigram model
+        bigram_probs, word_counts = self.build_bigram_model()
+        max_word_length = max(len(word) for word in self.index_to_word.values() if word not in ["<PAD>", "<UNK>"])
+        
+        # Generate text with constant flow rate
+        remaining_length = max(1, length - len(generated_indices))
+        for _ in range(remaining_length):
+            current_idx = generated_indices[-1]
+            next_idx = self._sample_next_word_euclidean(
+                bigram_probs, 
+                current_idx, 
+                valid_indices, 
+                self.index_to_word, 
+                self.precomputed_positions, 
+                max_word_length, 
+                temperature, 
+                elasticity_factor
+            )
+            generated_indices.append(next_idx)
+        
+        # Convert indices to words
+        generated_words = self.indices_to_words(generated_indices)
+        
+        # Join words into text
+        return " ".join(generated_words)
+
+    def generate_text(self, model=None, seed=None, length=50, temperature=0.7, elasticity_factor=0.5, reverse_sigma_length=1.5):
         """
         Generate text using a bigram model or a custom model with elasticity towards smaller words.
 
@@ -151,11 +302,11 @@ class TextDataset(Dataset):
             max_word_length = max(len(word) for word in self.index_to_word.values() if word not in ["<PAD>", "<UNK>"])
 
             # Generate initial sequence for reverse sigma
-            current_idx = random.choice(word_counts)
+            current_idx = random.choice(list(word_counts.keys()))
             reverse_sigma_generated_indices = [current_idx]
             for _ in range(reverse_sigma_length - 1):
                 if current_idx not in bigram_probs:
-                    next_idx = random.choice(valid_indices)
+                    next_idx = random.choice(reverse_sigma_generated_indices)
                 else:
                     next_word_probs = []
                     candidates = []
@@ -163,7 +314,7 @@ class TextDataset(Dataset):
                         word = self.index_to_word.get(next_idx, "")
                         if word not in ["<PAD>", "<UNK>"] and len(word) > 0:
                             next_whole_idx = self.precomputed_positions.get(next_idx, 1.0)
-                            length_ratio = next_whole_idx - ((self.precomputed_positions.get(next_idx, 1.0)- 1) / max_word_length)
+                            length_ratio = current_idx * ((self.precomputed_positions.get(next_idx, 1.0)- 1) / max_word_length)
                             elasticity_boost = (1.0 + (length_ratio * elasticity_factor))
                             adjusted_prob = prob * elasticity_boost
                         else:
@@ -285,285 +436,37 @@ class TextDataset(Dataset):
         # Join words into text
         return " ".join(generated_words)
 
-    def _sample_next_word(self, bigram_probs, current_idx, valid_indices, index_to_word, precomputed_positions, max_word_length, temperature, elasticity_factor):
-        if current_idx not in bigram_probs:
-            return random.choice(valid_indices)
-        else:
-            next_word_probs = []
-            candidates = []
+   
 
-            for next_idx, prob in bigram_probs[current_idx].items():
-                word = index_to_word.get(next_idx, "")
-                if word not in ["<PAD>", "<UNK>"] and len(word) > 0:
-                    next_whole_idx = precomputed_positions.get(next_idx, 1.0)
-                    length_ratio = next_whole_idx - ((precomputed_positions.get(next_idx, 1.0)- 1) / max_word_length)
-                    elasticity_boost = (1.0 + (length_ratio * elasticity_factor))
-                    adjusted_prob = prob * elasticity_boost
-                else:
-                    adjusted_prob = prob
-
-                next_word_probs.append(adjusted_prob ** (1 / max(0.1, temperature)))
-                candidates.append(next_idx)
-
-            if candidates:
-                total = sum(next_word_probs)
-                if total > 0:
-                    next_word_probs = [p / total for p in next_word_probs]
-                    return np.random.choice(candidates, p=next_word_probs)
-                else:
-                    return random.choice(candidates)
-            else:
-                return random.choice(valid_indices)
-
-    def apply_pointwise_transform(self, transform_fn, apply_to=None):
-        """
-        Apply a pointwise transformation function to dataset elements.
-        
-        Args:
-            transform_fn (callable): A function that takes an input value and returns a transformed value.
-                                   The function should handle the specific data type (tensor, list, etc.) correctly.
-            apply_to (str or list, optional): Specifies which dataset attribute(s) to transform.
-                                             Can be 'X', 'y', 'positions', or a list containing these strings.
-                                             If None, applies to all three attributes. Default is None.
-        
-        Returns:
-            TextDataset: A new dataset with transformed values.
-        
-        Example:
-            # Double all values in X
-            new_dataset = dataset.apply_pointwise_transform(lambda x: x * 2, apply_to='X')
-            
-            # Apply custom normalization to all attributes
-            def normalize(x):
-                if torch.is_tensor(x) and x.dtype.is_floating_point:
-                    return (x - x.mean()) / (x.std() + 1e-8)
-                return x
-            new_dataset = dataset.apply_pointwise_transform(normalize)
-        """
-        # Validate the apply_to parameter
-        valid_attributes = ['X', 'y', 'positions']
-        if apply_to is None:
-            apply_to = valid_attributes
-        elif isinstance(apply_to, str):
-            if apply_to not in valid_attributes:
-                raise ValueError(f"apply_to must be one of {valid_attributes}, got '{apply_to}'")
-            apply_to = [apply_to]
-        elif not all(attr in valid_attributes for attr in apply_to):
-            invalid = [attr for attr in apply_to if attr not in valid_attributes]
-            raise ValueError(f"Invalid attribute(s) in apply_to: {invalid}")
-        
-        # Create a new dataset with the transformed data
-        new_X = self.X
-        new_positions = self.positions
-        new_y = self.y
-        
-        if 'X' in apply_to and self.X is not None:
-            if torch.is_tensor(self.X):
-                # Element-wise transform for tensor
-                new_X = torch.stack([transform_fn(x) for x in self.X])
-            else:
-                # For non-tensor data types
-                new_X = [transform_fn(x) for x in self.X]
-        
-        if 'positions' in apply_to and self.positions is not None:
-            if torch.is_tensor(self.positions):
-                new_positions = torch.stack([transform_fn(p) for p in self.positions])
-            else:
-                new_positions = [transform_fn(p) for p in self.positions]
-        
-        if 'y' in apply_to and self.y is not None:
-            if torch.is_tensor(self.y):
-                if self.y.dim() > 0:  # If y is not scalar
-                    new_y = torch.stack([transform_fn(y_i) for y_i in self.y])
-                else:
-                    new_y = transform_fn(self.y)
-            else:
-                if hasattr(self.y, '__iter__') and not isinstance(self.y, (str, bytes)):
-                    new_y = [transform_fn(y_i) for y_i in self.y]
-                else:
-                    new_y = transform_fn(self.y)
-        
-        # Create new dataset with transformed data
-        return TextDataset(
-            X=new_X,
-            positions=new_positions,
-            y=new_y,
-            word_to_index=self.word_to_index,
-            index_to_word=self.index_to_word
-        )
-
-    def apply_batch_transform(self, transform_fn, apply_to=None):
-        """
-        Apply a transformation function to entire batches of data.
-        
-        Args:
-            transform_fn (callable): A function that takes a batch of data and returns a transformed batch.
-            apply_to (str or list, optional): Specifies which dataset attribute(s) to transform.
-                                             Can be 'X', 'y', 'positions', or a list containing these strings.
-                                             If None, applies to all three attributes. Default is None.
-        
-        Returns:
-            TextDataset: A new dataset with transformed values.
-        
-        Example:
-            # Normalize the X values as a batch
-            def batch_normalize(batch):
-                mean = batch.mean(dim=0, keepdim=True)
-                std = batch.std(dim=0, keepdim=True) + 1e-8
-                return (batch - mean) / std
-            
-            normalized_dataset = dataset.apply_batch_transform(batch_normalize, apply_to='X')
-        """
-        # Validate the apply_to parameter
-        valid_attributes = ['X', 'y', 'positions']
-        if apply_to is None:
-            apply_to = valid_attributes
-        elif isinstance(apply_to, str):
-            if apply_to not in valid_attributes:
-                raise ValueError(f"apply_to must be one of {valid_attributes}, got '{apply_to}'")
-            apply_to = [apply_to]
-        elif not all(attr in valid_attributes for attr in apply_to):
-            invalid = [attr for attr in apply_to if attr not in valid_attributes]
-            raise ValueError(f"Invalid attribute(s) in apply_to: {invalid}")
-        
-        # Apply batch transformations
-        new_X = self.X if 'X' not in apply_to or self.X is None else transform_fn(self.X)
-        new_positions = self.positions if 'positions' not in apply_to or self.positions is None else transform_fn(self.positions)
-        new_y = self.y if 'y' not in apply_to or self.y is None else transform_fn(self.y)
-        
-        # Create new dataset with transformed data
-        return TextDataset(
-            X=new_X,
-            positions=new_positions,
-            y=new_y,
-            word_to_index=self.word_to_index,
-            index_to_word=self.index_to_word
-        )
-
-    def map_vocabulary(self, vocab_transform_fn):
-        """
-        Apply a transformation function to the dataset's vocabulary.
-        
-        Args:
-            vocab_transform_fn (callable): A function that takes a word and returns a transformed word.
-            
-        Returns:
-            TextDataset: A new dataset with transformed vocabulary.
-            
-        Example:
-            # Lowercase all vocabulary words
-            new_dataset = dataset.map_vocabulary(lambda word: word.lower())
-            
-            # Add a prefix to all words
-            new_dataset = dataset.map_vocabulary(lambda word: f"prefix_{word}")
-        """
-        new_word_to_index = {}
-        
-        # Handle special tokens separately to maintain their original indices
-        special_tokens = {"<PAD>", "<UNK>"}
-        special_indices = {self.word_to_index.get(token) for token in special_tokens if token in self.word_to_index}
-        
-        # Process special tokens first
-        for token in special_tokens:
-            if token in self.word_to_index:
-                new_word_to_index[token] = self.word_to_index[token]
-        
-        # Apply transformation to all non-special tokens
-        for word, idx in self.word_to_index.items():
-            if word not in special_tokens:
-                transformed_word = vocab_transform_fn(word)
-                if transformed_word in new_word_to_index:
-                    print(f"Warning: Vocabulary collision after transform: '{word}' and another word both transform to '{transformed_word}'")
-                new_word_to_index[transformed_word] = idx
-        
-        # Generate the new index_to_word mapping
-        new_index_to_word = {idx: word for word, idx in new_word_to_index.items()}
-        
-        # Create new dataset with transformed vocabulary
-        return TextDataset(
-            X=self.X,
-            positions=self.positions,
-            y=self.y,
-            word_to_index=new_word_to_index,
-            index_to_word=new_index_to_word
-        )
-
-    def augment_data(self, augmentation_fn, num_augmentations=1):
-        """
-        Augment the dataset by creating modified copies of the original data.
-        
-        Args:
-            augmentation_fn (callable): A function that takes a tuple of (X, positions, y) and 
-                                       returns a modified tuple (X', positions', y').
-            num_augmentations (int): Number of augmented copies to create for each original item.
-            
-        Returns:
-            TextDataset: A new dataset with both original and augmented data.
-            
-        Example:
-            # Add random noise to word indices
-            def add_noise(item):
-                x, pos, y = item
-                noise = torch.randint(-1, 2, x.shape)
-                return x + noise, pos, y
-                
-            augmented_dataset = dataset.augment_data(add_noise, num_augmentations=2)
-        """
-        if self.X is None or len(self.X) == 0:
-            return self
-        
-        # Start with original data
-        all_X = list(self.X)
-        all_positions = list(self.positions)
-        all_y = list(self.y)
-        
-        # Generate augmented data
-        for i in range(len(self.X)):
-            original_item = (self.X[i], self.positions[i], self.y[i])
-            
-            for _ in range(num_augmentations):
-                augmented_X, augmented_pos, augmented_y = augmentation_fn(original_item)
-                all_X.append(augmented_X)
-                all_positions.append(augmented_pos)
-                all_y.append(augmented_y)
-        
-        # Convert lists back to tensors
-        if torch.is_tensor(self.X):
-            new_X = torch.stack(all_X)
-        else:
-            new_X = all_X
-            
-        if torch.is_tensor(self.positions):
-            new_positions = torch.stack(all_positions)
-        else:
-            new_positions = all_positions
-            
-        if torch.is_tensor(self.y):
-            new_y = torch.stack(all_y) if all_y[0].dim() > 0 else torch.tensor(all_y)
-        else:
-            new_y = all_y
-        
-        # Create new dataset with augmented data
-        return TextDataset(
-            X=new_X,
-            positions=new_positions,
-            y=new_y,
-            word_to_index=self.word_to_index,
-            index_to_word=self.index_to_word
-        )
-
-
-# Example usage
-if __name__ == "__main__":
-    # Example data
-    file_path = "test.txt"
-    if not os.path.exists(file_path):
-        with open(file_path, 'w', encoding="utf-8") as f:
-            f.write("This is a test file. It contains some text for testing purposes. This text will be used to build a vocabulary and train a simple bigram model. The model will then be used to generate new text based on a seed or without a seed using a reverse sigma approach.")
-
-    with open(file_path, 'r', encoding="utf-8") as file:
+def create_sample_text_file(filename, text=None):
+    """Create a sample text file for demonstration if it doesn't exist"""
+    if not os.path.exists(filename):
+        if text is None:
+            # Default sample text
+            text = """
+            In the field of natural language processing, text generation has become an increasingly important 
+            research area. Language models can be trained to generate coherent and meaningful text based on 
+            statistical patterns found in training data. The quality of generated text depends on various factors 
+            including the model architecture, training data quality, and the specific algorithms used for sampling 
+            from probability distributions. Advanced techniques like Euclidean flow models aim to improve the 
+            coherence and flow of generated text by considering the relationships between words in vector spaces. 
+            These approaches often produce more natural sounding output by maintaining consistent thematic and 
+            stylistic elements throughout the generated sequence. Researchers continue to explore new methods 
+            for improving text generation across different domains and applications.
+            """
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(text)
+    return filename
+def main():
+    # Create sample text file
+    file_path = create_sample_text_file("test.txt")
+    
+    print(f"Using text file: {file_path}")
+    
+    # Read text file
+    with open(file_path, 'r', encoding='utf-8') as file:
         words = list(file.read().lower().split()[:KB_limit])
-
+    
     # Create vocabulary
     unique_words = list(set(words))
     word_to_index = {word: idx + 1 for idx, word in enumerate(unique_words)}
@@ -572,79 +475,36 @@ if __name__ == "__main__":
     index_to_word[0] = "<PAD>"
     word_to_index["<UNK>"] = len(word_to_index)
     index_to_word[len(index_to_word)] = "<UNK>"
-
+    
+    print(f"Vocabulary size: {len(word_to_index)}")
+    
     # Create sequences for model training
     X_data = []
     for i in range(len(words) - 2):
         indices = [word_to_index.get(words[i], word_to_index["<UNK>"]),
-                   word_to_index.get(words[i+1], word_to_index["<UNK>"]),
-                   word_to_index.get(words[i+2], word_to_index["<UNK>"])]
+                  word_to_index.get(words[i+1], word_to_index["<UNK>"]),
+                  word_to_index.get(words[i+2], word_to_index["<UNK>"])]
         X_data.append(indices)
-
+    
+    print(f"Created {len(X_data)} training sequences")
+    
     # Convert to PyTorch tensors
     X = torch.tensor(X_data, dtype=torch.long)
     positions = torch.tensor([[0, 1, 2] for _ in range(len(X_data))], dtype=torch.long)
-    y = torch.tensor([word_to_index.get(words[i+2], word_to_index["<UNK>"]) for i in range(len(words) - 2)], dtype=torch.long)
 
+    positions = torch.tensor([[0, 1, 2]*_ for _ in range(len(X_data))], dtype=torch.long)
+    y = torch.tensor([word_to_index.get(words[i+2], word_to_index["<UNK>"]) for i in range(len(words) - 2)], dtype=torch.long)
+    
     # Create dataset
     dataset = TextDataset(X, positions, y, word_to_index, index_to_word)
-
-    # Example of using pointwise transform
-    print("\nExample of pointwise transform - adding +1 to all X values:")
-    transformed_dataset = dataset.apply_pointwise_transform(
-        lambda x: x + 1 if torch.is_tensor(x) else x,
-        apply_to='positions'
-    )
-    print(f"Original X[0]: {dataset.X[0]}")
-    print(f"Transformed X[0]: {transformed_dataset.X[0]}")
     
-    # Example of batch transform
-    print("\nExample of batch transform - normalizing positions to floating point:")
-    def normalize_positions(batch):
-        if torch.is_tensor(batch):
-            # Convert to float and normalize
-            batch_float = batch.float()
-            return (batch_float - batch_float.mean()) / (batch_float.std() + 1e-8)
-        return batch
     
-    normalized_dataset = dataset.apply_batch_transform(normalize_positions, apply_to='positions')
-    print(f"Original positions[0]: {dataset.positions[0]}")
-    print(f"Normalized positions[0]: {normalized_dataset.positions[0]}")
+    # Compare text generation methods
+    seed_options = ["language models", "natural language", "text generation", "the quality of"]
     
-    # Example of vocabulary mapping
-    print("\nExample of vocabulary mapping - adding prefix:")
-    prefixed_dataset = dataset.map_vocabulary(lambda word: f"prefix_{word}" if word not in ["<PAD>", "<UNK>"] else word)
-    sample_idx = 1
-    print(f"Original word at index {sample_idx}: {dataset.index_to_word.get(sample_idx)}")
-    print(f"Transformed word at index {sample_idx}: {prefixed_dataset.index_to_word.get(sample_idx)}")
-    
-    # Example of data augmentation
-    print("\nExample of data augmentation - random replacements:")
-    def augment_with_replacements(item):
-        x, pos, y = item
-        # Make a copy to avoid modifying the original
-        x_copy = x.clone()
-        
-        # Replace one token with a random valid token
-        if len(x_copy) > 0:
-            valid_indices = [idx for idx in range(1, len(dataset.word_to_index)) 
-                            if dataset.index_to_word[idx] not in ["<PAD>", "<UNK>"]]
-            if valid_indices:
-                replace_pos = random.randint(0, len(x_copy) - 2)
-                x_copy[replace_pos+1] = random.choice(valid_indices)
-        
-        return x_copy, pos, y
-    
-    augmented_dataset = dataset.augment_data(augment_with_replacements, num_augmentations=2)
-    print(f"Original dataset size: {len(dataset)}")
-    print(f"Augmented dataset size: {len(augmented_dataset)}")
-    
-    # Generate text using the built-in bigram model
-    print("\nText generation with bigram model:")
     while True:
-        seed_text = input("USER: ")
-        if seed_text.lower() == "exit":
-            break
-        generated_text = dataset.generate_text(seed=seed_text, length=250, temperature=0.8)
-        print(generated_text)
-        print()
+        print(dataset.generate_text_with_constant_flow(seed=input("USER: "), length=250, temperature=0.8, elasticity_factor=1.5))
+
+
+if __name__ == "__main__":
+    main()
