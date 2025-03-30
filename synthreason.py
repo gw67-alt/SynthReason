@@ -5,7 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import re
 import random
 from tqdm import tqdm
-KB_limit = 99999
+KB_limit = 9999
 
 # Define the TextDataset class directly in this file
 class TextDataset(Dataset):
@@ -139,7 +139,7 @@ class TextDataset(Dataset):
             # Sort by distance for constant flow
             if distances:
                 # Normalize distances to create constant flow rate
-                sorted_distances = sorted(distances, key=lambda x: x[1])
+                sorted_distances = sorted(distances, key=lambda x: x[0])
                 total_distance = sum(d[1] for d in sorted_distances) or 1.0
                 
                 # Apply constant flow rate adjustment
@@ -162,6 +162,7 @@ class TextDataset(Dataset):
                     total = sum(next_word_probs)
                     if total > 0:
                         next_word_probs = [p / total for p in next_word_probs]
+                        
                         return np.random.choice(candidates, p=next_word_probs)
                     else:
                         return random.choice(candidates)
@@ -178,7 +179,7 @@ class TextDataset(Dataset):
 
             for next_idx, prob in bigram_probs[current_idx].items():
                 word = index_to_word.get(next_idx, "")
-                if word not in ["<PAD>", "<UNK>"] and len(word) > 0:
+                if word not in [",", "."] and len(word) > 0:
                     next_whole_idx = precomputed_positions.get(next_idx, 1.0)
                     length_ratio = next_whole_idx - ((precomputed_positions.get(next_idx, 1.0)- 1) / max_word_length)
                     elasticity_boost = (1.0 + (length_ratio * elasticity_factor))
