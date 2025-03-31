@@ -5,7 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import re
 import random
 from tqdm import tqdm
-KB_limit = 99999
+KB_limit = 9999
 
 # Define the TextDataset class directly in this file
 class TextDataset(Dataset):
@@ -194,7 +194,7 @@ class TextDataset(Dataset):
                 total = sum(next_word_probs)
                 if total > 0:
                     next_word_probs = [p / total for p in next_word_probs]
-                    return np.random.choice(next_word_probs, p=next_word_probs)
+                    return np.random.choice(candidates, p=next_word_probs)
                 else:
                     return random.choice(candidates)
             else:
@@ -313,7 +313,7 @@ class TextDataset(Dataset):
                     candidates = []
                     for next_idx, prob in bigram_probs[current_idx].items():
                         word = self.index_to_word.get(next_idx, "")
-                        if word not in [",", "."] and len(word) > 0:
+                        if word not in ["<PAD>", "<UNK>"] and len(word) > 0:
                             next_whole_idx = self.precomputed_positions.get(next_idx, 1.0)
                             length_ratio = current_idx * ((self.precomputed_positions.get(next_idx, 1.0)- 1) / max_word_length)
                             elasticity_boost = (1.0 + (length_ratio * elasticity_factor))
@@ -458,117 +458,6 @@ def create_sample_text_file(filename, text=None):
         with open(filename, 'w', encoding='utf-8') as f:
             f.write(text)
     return filename
-def categorize_response(text, seed_verb):
-    """
-    Categorize the generated text response based on content and seed verb.
-    
-    Args:
-        text (str): The generated text to categorize
-        seed_verb (str): The verb used to seed the generation
-        
-    Returns:
-        tuple: (primary_category, secondary_category, confidence_score)
-    """
-    # Define verb categories and their associated verbs
-    verb_categories = {
-        "action": ["run", "walk", "jump", "swim", "climb", "dance", "sing", "write", "read", "speak", 
-                   "listen", "watch", "observe", "eat", "drink", "sleep", "breathe"],
-        
-        "communication": ["talk", "chat", "discuss", "argue", "debate", "present", "explain", 
-                          "describe", "narrate", "tell", "inform", "announce", "declare", 
-                          "state", "mention", "suggest", "propose", "recommend", "advise", 
-                          "consult", "negotiate", "mediate", "whisper", "shout", "yell"],
-        
-        "movement": ["move", "shift", "slide", "glide", "roll", "spin", "twist", "turn", 
-                     "rotate", "revolve", "sway", "swing", "bounce", "skip", "hop", "leap", 
-                     "sprint", "jog", "dash", "rush", "hurry", "wander", "roam", "travel", "journey"],
-        
-        "work": ["work", "labor", "toil", "produce", "manufacture", "develop", "program", 
-                 "code", "debug", "test", "analyze", "research", "study", "learn", "teach", 
-                 "train", "coach", "mentor", "manage", "lead", "direct", "supervise", 
-                 "organize", "plan", "arrange"],
-        
-        "change": ["change", "alter", "modify", "transform", "convert", "adapt", "adjust", 
-                   "evolve", "develop", "grow", "improve", "enhance", "upgrade", "update", 
-                   "revise", "edit", "correct", "fix", "repair", "restore", "renew", 
-                   "refresh", "rejuvenate", "revolutionize", "innovate"],
-        
-        "emotional": ["feel", "love", "hate", "like", "dislike", "enjoy", "appreciate", 
-                      "adore", "worship", "admire", "respect", "trust", "doubt", "fear", 
-                      "dread", "worry", "stress", "relax", "calm", "excite", "thrill", 
-                      "surprise", "shock", "amaze", "wonder"],
-        
-        "cognitive": ["consider", "contemplate", "reflect", "meditate", "reason", "rationalize", 
-                      "justify", "understand", "comprehend", "grasp", "perceive", "sense", 
-                      "intuit", "know", "recognize", "remember", "recall", "forget", "learn", 
-                      "discover", "realize", "imagine", "visualize", "dream", "fantasize"],
-        
-        "possession": ["have", "own", "possess", "hold", "keep", "retain", "maintain", 
-                       "acquire", "obtain", "gain", "earn", "win", "receive", "accept", 
-                       "take", "grab", "seize", "capture", "collect", "gather", 
-                       "accumulate", "hoard", "save", "preserve", "protect"],
-        
-        "destruction": ["destroy", "demolish", "ruin", "wreck", "break", "shatter", "smash", 
-                        "crush", "crumble", "disintegrate", "tear", "rip", "split", "crack", 
-                        "fracture", "damage", "harm", "hurt", "injure", "wound", "kill", 
-                        "murder", "assassinate", "execute", "slaughter"],
-        
-        "creation": ["create", "generate", "produce", "form", "shape", "mold", "craft", 
-                     "construct", "build", "assemble", "compose", "write", "author", 
-                     "design", "develop", "invent", "devise", "conceive", "imagine", 
-                     "envision", "conceptualize", "formulate", "originate", "found", "establish"]
-    }
-    
-    # Find primary category based on seed verb
-  # Find primary category based on seed verb
-    primary_category = "unknown"
-    for category, verbs in verb_categories.items():
-        if seed_verb.lower() in verbs:
-            primary_category = category
-            break
-    
-    # Define content markers for each category
-    content_markers = {
-        "action": ["body", "move", "physical", "action", "activity", "perform", "motion", "act", "exercise"],
-        "communication": ["speak", "talk", "say", "tell", "discuss", "communicate", "message", "word", "express"],
-        "movement": ["direction", "path", "travel", "move", "go", "come", "journey", "distance", "speed"],
-        "work": ["job", "task", "project", "work", "effort", "business", "company", "employee", "career"],
-        "change": ["different", "new", "transform", "alter", "modify", "evolve", "develop", "shift", "change"],
-        "emotional": ["feel", "emotion", "sentiment", "heart", "passion", "joy", "sad", "angry", "excited"],
-        "cognitive": ["think", "mind", "idea", "thought", "concept", "understand", "comprehend", "know", "realize"],
-        "possession": ["have", "own", "mine", "belong", "property", "possess", "keep", "hold", "acquire"],
-        "destruction": ["destroy", "break", "damage", "ruin", "demolish", "end", "finish", "terminate", "hurt"],
-        "creation": ["make", "create", "build", "form", "construct", "develop", "establish", "generate", "design"],
-        "unknown": []
-    }
-    
-    # Count marker words for each category in the text
-    text_lower = text.lower()
-    category_scores = {}
-    
-    for category, markers in content_markers.items():
-        score = 0
-        for marker in markers:
-            if f" {marker} " in f" {text_lower} ":  # Add spaces to ensure whole word matches
-                score += 1
-        category_scores[category] = score
-    
-    # Determine secondary category based on content
-    secondary_candidates = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
-    secondary_category = secondary_candidates[0][0]
-    
-    # If the primary and secondary are the same, get the next highest
-    if secondary_category == primary_category and len(secondary_candidates) > 1:
-        secondary_category = secondary_candidates[1][0]
-    
-    # Calculate confidence score (0.5-1.0)
-    # 0.5 base confidence + up to 0.5 based on content markers
-    total_markers = sum(category_scores.values())
-    primary_markers = category_scores[primary_category]
-    confidence = 0.5 + (0.5 * (primary_markers / max(total_markers, 1)))
-    
-    return (primary_category, secondary_category, round(confidence, 2))
-
 def main():
     # Create sample text file
     file_path = create_sample_text_file("test.txt")
@@ -577,7 +466,7 @@ def main():
     
     # Read text file
     with open(file_path, 'r', encoding='utf-8') as file:
-        words = list(file.read().lower().split()[:9999])
+        words = list(file.read().lower().split()[:KB_limit])
     
     # Create vocabulary
     unique_words = list(set(words))
@@ -603,140 +492,21 @@ def main():
     # Convert to PyTorch tensors
     X = torch.tensor(X_data, dtype=torch.long)
     positions = torch.tensor([[0, 1, 2] for _ in range(len(X_data))], dtype=torch.long)
+
+    positions = torch.tensor([[np.sum([positions])] for _ in range(len(X_data))], dtype=torch.long)
+
     y = torch.tensor([word_to_index.get(words[i+2], word_to_index["<UNK>"]) for i in range(len(words) - 2)], dtype=torch.long)
     
     # Create dataset
     dataset = TextDataset(X, positions, y, word_to_index, index_to_word)
     
-    # List of verbs by category
-    verbs_by_category = {
-        "Action": ["run", "walk", "jump", "swim", "climb"],
-        "Communication": ["talk", "discuss", "explain", "tell", "announce"],
-        "Movement": ["move", "travel", "journey", "wander", "roam"],
-        "Work": ["work", "manage", "organize", "analyze", "research"],
-        "Change": ["change", "transform", "evolve", "grow", "adapt"],
-        "Emotional": ["feel", "love", "hate", "enjoy", "worry"],
-        "Cognitive": ["think", "understand", "remember", "imagine", "realize"],
-        "Possession": ["have", "own", "acquire", "gather", "collect"],
-        "Destruction": ["destroy", "break", "damage", "crack", "shatter"],
-        "Creation": ["create", "build", "design", "develop", "invent"]
-    }
     
-    # Flatten the verbs list for processing
-    verbs = []
-    for category_verbs in verbs_by_category.values():
-        verbs.extend(category_verbs)
+    # Compare text generation methods
+    seed_options = ["language models", "natural language", "text generation", "the quality of"]
     
-    # Get user seed
-    seed = input("USER: ")
-    
-    # Initialize counters for categories
-    category_counts = {category: 0 for category in verbs_by_category.keys()}
-    subcategory_matrix = {primary: {secondary: 0 for secondary in verbs_by_category.keys()} 
-                          for primary in verbs_by_category.keys()}
-    
-    # Track all categorized responses
-    categorized_responses = []
-    
-    # Generate and categorize responses
-    print("\nGenerating and categorizing responses...\n")
-    for verb in tqdm(verbs, desc="Processing verbs"):
-        # Determine the verb's original category
-        verb_category = next((category for category, cat_verbs in verbs_by_category.items() 
-                             if verb in cat_verbs), "Unknown")
-        
-        # Generate initial short text
-        short_text = dataset.generate_text_with_constant_flow(
-            seed=verb + " " + seed, 
-            length=6, 
-            temperature=1.1, 
-            elasticity_factor=1.5
-        )
-        
-        # Get first word from short text
-        first_word = short_text.split()[1] if short_text else seed
-        
-        # Generate longer text with verb + first word
-        long_text = dataset.generate_text_with_constant_flow(
-            seed=verb + " " + first_word, 
-            length=350, 
-            temperature=0.7, 
-            elasticity_factor=1.5
-        )
-        
-        # Get first sentence
-        first_sentence = long_text.split(".")[1] + "." if long_text else ""
-        
-        # Categorize the response
-        primary_category, secondary_category, confidence = categorize_response(first_sentence, verb)
-        
-        # Format confidence as percentage
-        confidence_pct = f"{int(confidence * 100)}%"
-        
-        # Map internal category names to display names (title case)
-        display_primary = primary_category.title()
-        display_secondary = secondary_category.title()
-        
-        # Update counters
-        if display_primary in category_counts:
-            category_counts[display_primary] += 1
-        if display_primary in subcategory_matrix and display_secondary in subcategory_matrix[display_primary]:
-            subcategory_matrix[display_primary][display_secondary] += 1
-        
-        # Store categorized response
-        categorized_responses.append({
-            "verb": verb,
-            "verb_category": verb_category,
-            "response": first_sentence,
-            "primary_category": display_primary,
-            "secondary_category": display_secondary,
-            "confidence": confidence_pct
-        })
-        
-        # Print categorized response
-        print(f"Verb [{verb}] ({verb_category}):")
-        print(f"Response: {first_sentence}")
-        print(f"Categories: {display_primary} (Primary, {confidence_pct}) / {display_secondary} (Secondary)")
-        print("-" * 80)
-    
-    # Print category statistics
-    print("\nCategory Distribution:")
-    for category, count in sorted(category_counts.items(), key=lambda x: x[1], reverse=True):
-        percentage = (count / len(categorized_responses)) * 100
-        print(f"{category}: {count} ({percentage:.1f}%)")
-    
-    # Print subcategory relationships
-    print("\nPrimary → Secondary Category Relationships:")
-    for primary, secondaries in subcategory_matrix.items():
-        significant_secondaries = {sec: count for sec, count in secondaries.items() if count > 0}
-        if significant_secondaries:
-            print(f"\n{primary} primarily leads to:")
-            for secondary, count in sorted(significant_secondaries.items(), key=lambda x: x[1], reverse=True):
-                if count > 0:
-                    print(f"  - {secondary}: {count}")
-    
-    # Analyze how seed verbs influence response categories
-    print("\nSeed Verb Influence Analysis:")
-    categories = list(verbs_by_category.keys())
-    for category, cat_verbs in verbs_by_category.items():
-        matching_responses = [r for r in categorized_responses if r["verb"] in cat_verbs]
-        if matching_responses:
-            primary_match_count = sum(1 for r in matching_responses if r["primary_category"] == category)
-            primary_match_pct = (primary_match_count / len(matching_responses)) * 100
-            
-            print(f"\n{category} verbs ({len(cat_verbs)}):")
-            print(f"  - Stay in category: {primary_match_pct:.1f}%")
-            print(f"  - Top secondary categories:")
-            
-            # Count secondary categories
-            secondary_counts = {}
-            for r in matching_responses:
-                secondary_counts[r["secondary_category"]] = secondary_counts.get(r["secondary_category"], 0) + 1
-            
-            # Display top 3 secondary categories
-            for secondary, count in sorted(secondary_counts.items(), key=lambda x: x[1], reverse=True)[:3]:
-                secondary_pct = (count / len(matching_responses)) * 100
-                print(f"    - {secondary}: {secondary_pct:.1f}%")
+    while True:
+        print(dataset.generate_text_with_constant_flow(seed=input("USER: "), length=250, temperature=0.8, elasticity_factor=1.5))
+
 
 if __name__ == "__main__":
     main()
