@@ -116,7 +116,7 @@ class TextDataset(Dataset):
                 word = index_to_word.get(next_idx, "")
                 if word not in ["<PAD>", "<UNK>"] and len(word) > 0:
                     # Use word vectors to calculate distance instead of positions
-                    distance = self.get_euclidean_distance(current_idx, next_idx)
+                    distance = self.get_euclidean_distance(current_idx, next_idx+1)
                     distances.append((next_idx, distance, prob))
 
             # Sort by distance for constant flow
@@ -301,7 +301,7 @@ def create_sample_text_file(filename, text=None):
     
 def main():
     # Create sample text file
-    file_path = create_sample_text_file("test.txt")
+    file_path = create_sample_text_file("kb.txt")
     
     print(f"Using text file: {file_path}")
     
