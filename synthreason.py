@@ -5,7 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import re
 import random
 from tqdm import tqdm
-KB_limit = 9999
+KB_limit = -1
 
 class TextDataset(Dataset):
     def __init__(self, X=None, positions=None, y=None, word_to_index=None, index_to_word=None):
