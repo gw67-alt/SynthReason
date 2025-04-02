@@ -5,7 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import re
 import random
 from tqdm import tqdm
-KB_limit =-1
+KB_limit = 9999
 
 # Define the TextDataset class directly in this file
 class TextDataset(Dataset):
@@ -197,7 +197,7 @@ class TextDataset(Dataset):
             else:
                 # Need to borrow from reserve pool
                 shortfall = length_penalty - adjusted_prob
-                if reserve_pool >= shortfall:
+                if reserve_pool <= shortfall:
                     reserve_pool -= shortfall
                     next_word_probs[next_idx] = 0.001  # Small non-zero probability
                 else:
