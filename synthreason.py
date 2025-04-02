@@ -5,7 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import re
 import random
 from tqdm import tqdm
-KB_limit = -1
+KB_limit = 9999
 
 # Define the TextDataset class directly in this file
 class TextDataset(Dataset):
@@ -169,6 +169,49 @@ class TextDataset(Dataset):
             
             # Fallback to random choice if no valid candidates
             return random.choice(valid_indices)
+
+    def _sample_next_word(bigram_probs, current_idx, elasticity_factor, inhibition_factor):
+        # Get base probabilities for next words
+        if current_idx not in bigram_probs:
+            return random.choice(valid_indices)
+        
+        next_word_probs = {}
+        reserve_pool = 1.0  # Total probability mass to distribute/borrow
+        
+        # First pass - calculate initial adjustments
+        for next_idx, prob in bigram_probs[current_idx].items():
+            word = self.index_to_word.get(next_idx, "")
+            
+            # Calculate positive boost
+            position_boost = precomputed_positions.get(next_idx, 1.0) * elasticity_factor
+            
+            # Calculate negative influence (inhibition)
+            length_penalty = len(word) * inhibition_factor
+            
+            # Apply subtraction with carrying
+            adjusted_prob = prob * (1.0 + position_boost)
+            
+            # Handle carrying for subtraction
+            if adjusted_prob >= length_penalty:
+                next_word_probs[next_idx] = adjusted_prob - length_penalty
+            else:
+                # Need to borrow from reserve pool
+                shortfall = length_penalty - adjusted_prob
+                if reserve_pool >= shortfall:
+                    reserve_pool -= shortfall
+                    next_word_probs[next_idx] = 0.001  # Small non-zero probability
+                else:
+                    # Cannot cover - assign minimum probability
+                    next_word_probs[next_idx] = 0.001
+        
+        # Normalize the resulting probabilities
+        total = sum(next_word_probs.values())
+        normalized_probs = {idx: p/total for idx, p in next_word_probs.items()}
+        
+        # Sample based on the adjusted probabilities
+        candidates = list(normalized_probs.keys())
+        probs = list(normalized_probs.values())
+        return np.random.choice(candidates, p=probs)
 
     def generate_text_with_constant_flow(self, seed=None, length=50, temperature=1.0, elasticity_factor=1.5, reverse_sigma_length=1.5):
         """
@@ -476,7 +519,7 @@ def main():
     
     while True:
         print(dataset.generate_text_with_constant_flow(seed=input("USER: "), length=250, temperature=0.8, elasticity_factor=1.5))
-        print()
+
 
 if __name__ == "__main__":
     main()
