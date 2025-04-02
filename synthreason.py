@@ -197,7 +197,7 @@ class TextDataset(Dataset):
             else:
                 # Need to borrow from reserve pool
                 shortfall = length_penalty - adjusted_prob
-                if reserve_pool <= shortfall:
+                if reserve_pool >= shortfall:
                     reserve_pool -= shortfall
                     next_word_probs[next_idx] = 0.001  # Small non-zero probability
                 else:
