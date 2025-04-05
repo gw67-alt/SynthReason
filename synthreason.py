@@ -57,7 +57,7 @@ class IsoMarkov:
                     temp_s.append(g)
 
             temp_m.setdefault(g, {})
-            temp_m[g][next_word] = temp_m[g].get(next_word, 0) + 1
+            temp_m[g][next_word] = temp_m[g].get(next_word, 0) + i
         # --- End First Loop ---
 
         num_contexts = len(temp_m)
