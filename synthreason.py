@@ -1,3 +1,4 @@
+
 import random
 import math # Needed for exponentiation if used
 import sys # Added previously, good practice
@@ -268,7 +269,7 @@ class IsoMarkov:
                  overlap = 0
                  if result:
                       for i in range(1, min(len(result), len(context)) + 1):
-                           if tuple(result[-i:]) == context[:i]:
+                           if tuple(result[-i:]) == context[:i+1]:
                                 overlap = i
                  result.extend(list(context)[overlap:])
                  print(f"Restarted with context: {context}")
@@ -357,7 +358,7 @@ class IsoMarkov:
 # --- Main execution block remains the same ---
 if __name__ == "__main__":
     """ Demonstrates training and generating text, potentially using a seed. """
-    input_filename="test.txt" # Make sure this file exists
+    input_filename="xaa" # Make sure this file exists
 
     print(f"--- Starting Markov Chain Demo ---")
     print(f"Using training file: {input_filename}")
