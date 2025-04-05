@@ -217,6 +217,8 @@ class IsoMarkov:
                 # Add the restart context words, avoiding duplicates if result already ends with part of it
                 overlap = 0
                 if result:
+                    
+
                     for i in range(1, min(len(result), len(context)) + 1):
                          if tuple(result[-i:]) == context[:i]:
                               overlap = i
@@ -249,7 +251,7 @@ class IsoMarkov:
             valid_context = context and all(isinstance(w, str) for w in context)
             if valid_context:
                  try:
-                     current_f = (sum(len(w) for w in context) % 5) / 10.0 # f = 0.0 to 0.4
+                     current_f = (sum(options.get(w) for w in context) % 5) / 10.0 # f = 0.0 to 0.4
                  except TypeError:
                      current_f = 0.0 # Default if calculation fails
             else:
@@ -269,7 +271,7 @@ class IsoMarkov:
                  overlap = 0
                  if result:
                       for i in range(1, min(len(result), len(context)) + 1):
-                           if tuple(result[-i:]) == context[:i]:
+                           if tuple(result[-i:]) == context[:i+1]:
                                 overlap = i
                  result.extend(list(context)[overlap:])
                  print(f"Restarted with context: {context}")
@@ -282,6 +284,7 @@ class IsoMarkov:
                 # Prevent extreme exponents for stability
                 exponent = max(0.1, min(exponent, 10.0))
                 biased_weights = [(freq + 1e-9) ** exponent for freq in base_freqs]
+
 
                 # Normalize weights to prevent potential overflow/underflow issues in random.choices
                 sum_biased = sum(biased_weights)
@@ -358,7 +361,7 @@ class IsoMarkov:
 # --- Main execution block remains the same ---
 if __name__ == "__main__":
     """ Demonstrates training and generating text, potentially using a seed. """
-    input_filename="xaa" # Make sure this file exists
+    input_filename="test.txt" # Make sure this file exists
 
     print(f"--- Starting Markov Chain Demo ---")
     print(f"Using training file: {input_filename}")
