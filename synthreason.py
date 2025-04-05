@@ -1,5 +1,6 @@
 import random
 import math # Needed for exponentiation if used
+import sys # Added previously, good practice
 
 class IsoMarkov:
     def __init__(self, n=2):
@@ -43,8 +44,10 @@ class IsoMarkov:
             next_word = words[i+self.n]
 
             is_start = (i == 0) or (words[i-1][-1] in '.!?')
-            if is_start and g not in temp_s:
-                temp_s.append(g)
+            # Ensure g contains actual words before adding to starts
+            if is_start and g and all(isinstance(word, str) and word for word in g):
+                if g not in temp_s:
+                    temp_s.append(g)
 
             temp_m.setdefault(g, {})
             temp_m[g][next_word] = temp_m[g].get(next_word, 0) + 1
@@ -57,14 +60,16 @@ class IsoMarkov:
         for g, options in temp_m.items():
             # Ensure context tuple g is not empty before calculating sum
             f = 0.0
-            if g:
+            valid_context = g and all(isinstance(w, str) for w in g) # Check if context words are strings
+            if valid_context:
                 try:
                     # Calculate Tessellation factor based on word pattern
                     f = (sum(len(w) for w in g) % 5) / 10.0 # f is 0.0 to 0.4
                 except TypeError:
                     print(f"Warning: Skipping isohedral calculation for context {g} due to non-string element.")
                     f = 0.0 # Default factor if calculation fails
-
+            else:
+                 f = 0.0 # Default factor for invalid contexts
 
             self.m[g] = {} # Initialize context in the final map
             if not options: continue # Skip if no next words recorded
@@ -85,13 +90,19 @@ class IsoMarkov:
         # Clean up contexts that might have become empty after re-weighting
         empty_contexts = [g for g, options in self.m.items() if not options]
         for g in empty_contexts:
-            del self.m[g]
+             if g in self.m: # Check existence before deleting
+                del self.m[g]
+        # Clean up sentence starts that may no longer be valid contexts
+        self.s = [start for start in self.s if start in self.m]
+
 
         print(f"Training complete with re-weighting. {len(self.m)} contexts remain.")
         if not self.s:
-             print("Warning: No sentence starts detected. Will use random contexts.")
+             print("Warning: No sentence starts detected or valid after re-weighting. Will use random contexts.")
+             # Try to populate self.s with *valid* keys if empty
              if self.m:
-                 self.s = random.sample(list(self.m.keys()), k=min(len(self.m), 100))
+                 valid_keys = list(self.m.keys())
+                 self.s = random.sample(valid_keys, k=min(len(valid_keys), 100))
 
 
     def _get_random_start_context(self):
@@ -99,10 +110,12 @@ class IsoMarkov:
         if self.s:
             return random.choice(self.s)
         elif self.m:
-            print("Warning: Starting generation from a random context (no sentence starts identified).")
-            return random.choice(list(self.m.keys()))
-        else:
-            return None
+            print("Warning: Starting generation from a random context (no sentence starts identified/valid).")
+            # Ensure we pick from keys that actually exist
+            valid_keys = list(self.m.keys())
+            if valid_keys:
+                return random.choice(valid_keys)
+        return None # Return None if no options available
 
     def gen(self, seed=None, count=100, iso_bias_strength=2.0):
         """
@@ -114,118 +127,146 @@ class IsoMarkov:
             count (int): The desired number of words.
             iso_bias_strength (float): Controls how much the context's 'f' factor
                                      biases the choice towards frequent words.
-                                     0 = no extra bias (uses training weights directly).
-                                     Higher values = stronger bias when f is high.
 
         Returns:
             str: The generated text, or an error message.
         """
         if not self.m:
-            return "Model not trained. Please call train() first."
+            return "Model not trained or no valid contexts remain after training. Please call train() first."
         if not isinstance(count, int) or count < 1:
             raise ValueError("'count' must be a positive integer.")
 
-        # --- Seed Processing (Simplified from previous version for clarity) ---
+        # --- Seed Processing ---
         result = []
         context = None
+
         if seed:
-            seed_words = seed.split()
-            if len(seed_words) >= self.n:
-                context = tuple(seed_words[-self.n:])
-                result = seed_words
-            # Basic handling if seed is too short (can be enhanced)
-        if not context:
+            seed_words_list = seed.lower().split() # Process seed same way as training data
+            if len(seed_words_list) >= self.n:
+                # Use last n words directly as context
+                context = tuple(seed_words_list[-self.n:])
+                result = seed_words_list # Start result with the full seed
+            else:
+                # Seed is shorter than n, try to pad
+                print(f"Warning: Seed '{seed}' is shorter than n={self.n}. Trying to pad...")
+                start_context_full = self._get_random_start_context()
+                if start_context_full:
+                    num_padding_words = self.n - len(seed_words_list)
+                    # Take first part of a random start context for padding
+                    padding = list(start_context_full)[:num_padding_words]
+                    context = tuple(padding + seed_words_list)
+                    result = padding + seed_words_list
+                    print(f"Padded seed context: {context}")
+                else:
+                     # Cannot pad if no random starts available
+                     print("Error: Cannot pad seed - no valid starting contexts available.")
+                     context = None # Fallback to random start if possible below
+
+        # If no seed provided OR padding failed OR seed context invalid
+        if not context or context not in self.m:
+            if context: # only print warning if context was attempted but failed
+                 print(f"Warning: Seed context {context} not found in model. Starting randomly.")
             context = self._get_random_start_context()
             if context:
-                result = list(context)
+                result = list(context) # Start result with the random context
             else:
-                 return "Error: Cannot start generation - no valid contexts."
+                 # Critical error: No valid seed, no valid random start
+                 return "Error: Cannot start generation - no valid contexts found in model."
         # --- End Seed Processing ---
 
         while len(result) < count:
-            if context in self.m:
-                options = self.m[context] # Frequencies here are already re-weighted from train()
-
-                if not options: # Context exists but has no next words after re-weighting
-                    context = self._get_random_start_context()
-                    if not context: break
-                    result.extend(list(context))
-                    continue
-
-                # --- Dynamic Isohedral Bias during Generation ---
-                current_f = 0.0
-                if context:
-                     try:
-                         current_f = (sum(len(w) for w in context) % 5) / 10.0 # f = 0.0 to 0.4
-                     except TypeError:
-                         current_f = 0.0 # Default if calculation fails
-
-                words = list(options.keys())
-                base_freqs = list(options.values()) # These are the frequencies from self.m
-
-                if sum(base_freqs) == 0: # Safety check
-                    context = self._get_random_start_context()
-                    if not context: break
-                    result.extend(list(context))
-                    continue
-
-                if iso_bias_strength > 0:
-                    # Apply *additional* bias based on current_f and strength
-                    # Higher f -> higher exponent -> exaggerates differences in base_freqs
-                    # Makes high-frequency words even more likely when f is high
-                    exponent = 1.0 + (current_f * iso_bias_strength)
-                    biased_weights = [(freq + 1e-9) ** exponent for freq in base_freqs]
-
-                    if sum(biased_weights) > 0:
-                         next_word = random.choices(words, weights=biased_weights, k=1)[0]
-                    else: # Fallback if weights become zero (e.g., underflow)
-                         next_word = random.choices(words, weights=base_freqs, k=1)[0]
-                else:
-                    # No dynamic bias, use the frequencies directly from training
-                    next_word = random.choices(words, weights=base_freqs, k=1)[0]
-                # --- End Dynamic Isohedral Bias ---
-
-                result.append(next_word)
-                context = tuple(list(context)[1:] + [next_word])
-
-            else: # Context not found
+            # Check if current context is valid before proceeding
+            if context not in self.m:
+                print(f"\nWarning: Fell into unknown context {context}. Attempting to restart...")
                 context = self._get_random_start_context()
-                if not context: break
-                result.extend(list(context))
+                if not context:
+                    print("Error: Cannot recover from unknown context - no valid contexts left.")
+                    break # Stop generation
+                result.extend(list(context)) # Add the restart context words
+                print(f"Restarted with context: {context}")
+                continue # Try generating from new context
+
+            options = self.m[context] # Frequencies here are already re-weighted from train()
+
+            if not options: # Context exists but has no next words
+                print(f"\nWarning: Context {context} has no recorded next words. Attempting to restart...")
+                context = self._get_random_start_context()
+                if not context:
+                    print("Error: Cannot recover from dead-end context - no valid contexts left.")
+                    break # Stop generation
+                result.extend(list(context)) # Add the restart context words
+                print(f"Restarted with context: {context}")
+                continue # Try generating from new context
+
+            # --- Dynamic Isohedral Bias during Generation ---
+            current_f = 0.0
+            valid_context = context and all(isinstance(w, str) for w in context)
+            if valid_context:
+                 try:
+                     current_f = (sum(len(w) for w in context) % 5) / 10.0 # f = 0.0 to 0.4
+                 except TypeError:
+                     current_f = 0.0 # Default if calculation fails
+            else:
+                current_f = 0.0 # Default for invalid contexts
+
+            words = list(options.keys())
+            base_freqs = list(options.values()) # These are the frequencies from self.m
+
+            # Ensure base_freqs sum is > 0 before proceeding
+            if sum(base_freqs) == 0:
+                 print(f"\nWarning: Context {context} has zero total frequency for next words. Attempting restart.")
+                 context = self._get_random_start_context()
+                 if not context:
+                     print("Error: Cannot recover from zero-frequency context.")
+                     break
+                 result.extend(list(context))
+                 print(f"Restarted with context: {context}")
+                 continue
+
+            next_word = None # Initialize next_word
+            if iso_bias_strength > 0:
+                exponent = 1.0 + (current_f * iso_bias_strength)
+                biased_weights = [(freq + 1e-9) ** exponent for freq in base_freqs]
+
+                if sum(biased_weights) > 1e-9: # Check if weights sum is effectively > 0
+                     try:
+                         next_word = random.choices(words, weights=biased_weights, k=1)[0]
+                     except ValueError:
+                          print(f"\nWarning: random.choices failed with biased weights for {context}. Weights: {biased_weights[:5]}... Using fallback.")
+                          # Fallback to standard weights if biased choice fails
+                          next_word = random.choices(words, weights=base_freqs, k=1)[0]
+                else: # Fallback if biased weights sum is near zero
+                     next_word = random.choices(words, weights=base_freqs, k=1)[0]
+            else:
+                # No dynamic bias, use the frequencies directly from training
+                next_word = random.choices(words, weights=base_freqs, k=1)[0]
+            # --- End Dynamic Isohedral Bias ---
+
+            result.append(next_word)
+            # Ensure the chosen word is a string before adding to context
+            if isinstance(next_word, str):
+                 context = tuple(list(context)[1:] + [next_word])
+            else:
+                 print(f"\nError: Generated non-string word '{next_word}'. Stopping generation.")
+                 break # Stop if something went wrong
 
         return ' '.join(result[:count])
 
-
-# Example usage function
-def demo(input_filename="xaa", ngram_size=3, words_to_generate=100):
-    """ Demonstrates training and generating text. """
-    print(f"--- Starting Demo (n={ngram_size}, file='{input_filename}') ---")
-    try:
-        with open(input_filename, 'r', encoding='utf-8') as file:
-            txt = file.read().lower()
-            print(f"Successfully read training file '{input_filename}'.")
-    except FileNotFoundError:
-         print(f"Error: Training file '{input_filename}' not found.")
-         return f"Training file '{input_filename}' not found."
-    except Exception as e:
-         print(f"Error reading file '{input_filename}': {e}")
-         return f"Error reading training file: {e}"
-
-    if not txt: return "Training file empty."
-
-    m = IsoMarkov(ngram_size)
-    m.train(txt)
-
-    if not m.m: return "Model training failed."
-
-    print("\n--- Generation Example (with Isohedral Bias) ---")
-
-    return m.gen(None, words_to_generate, iso_bias_strength=2.0) # Return one sample
-
 # Main execution block
 if __name__ == "__main__":
-    generated_text = demo(input_filename="xaa", ngram_size=3, words_to_generate=1000)
-    print("\n--- Final Sample Output (Iso Bias 2.0) ---")
-    print(generated_text)
+    """ Demonstrates training and generating text, potentially using a seed. """
+    input_filename="xaa"
+    with open(input_filename, 'r', encoding='utf-8') as file:
+        txt = file.read().lower()
+ 
+    m = IsoMarkov(3)
+    m.train(txt)
 
-    print("\n--- Demo Complete ---")
+
+    words_to_generate = 250 # Generate 250 words as per previous example
+
+    while True:
+        seed_text = input("USER: ")
+
+        # Pass the seed text to the demo function
+        generated_text = print(m.gen(seed=seed_text, count=words_to_generate, iso_bias_strength=2.0))
