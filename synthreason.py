@@ -1,6 +1,7 @@
 import random
 import math # Needed for exponentiation if used
 import sys # Added previously, good practice
+from tqdm import tqdm # Import tqdm
 
 class IsoMarkov:
     def __init__(self, n=2):
@@ -19,6 +20,7 @@ class IsoMarkov:
         """
         Trains the Markov model on the provided text, including the
         original 'isohedral' re-weighting based on context word lengths.
+        Shows progress using tqdm.
         Args:
             t (str): The training text.
         """
@@ -29,17 +31,21 @@ class IsoMarkov:
              return
 
         words = t.split()
+        num_words = len(words)
 
-        if len(words) <= self.n:
-            print(f"Warning: Training data has {len(words)} words, which is not more than n-gram size {self.n}. Model cannot be trained effectively.")
+        if num_words <= self.n:
+            print(f"Warning: Training data has {num_words} words, which is not more than n-gram size {self.n}. Model cannot be trained effectively.")
             return
 
-        print(f"Training started with n={self.n} on {len(words)} words...")
+        print(f"Training started with n={self.n} on {num_words} words...")
 
         temp_m = {} # Use a temporary dictionary to build frequencies first
         temp_s = []
 
-        for i in range(len(words) - self.n):
+        # --- First Loop: Collect base frequencies with tqdm ---
+        print("Collecting base frequencies...")
+        # Wrap the range iterator with tqdm for progress bar
+        for i in tqdm(range(num_words - self.n), desc="Collecting Frequencies", unit="ngrams"):
             g = tuple(words[i:i+self.n])
             next_word = words[i+self.n]
 
@@ -51,13 +57,18 @@ class IsoMarkov:
 
             temp_m.setdefault(g, {})
             temp_m[g][next_word] = temp_m[g].get(next_word, 0) + 1
+        # --- End First Loop ---
 
-        print(f"Base frequencies collected. Found {len(temp_m)} unique {self.n}-gram contexts.")
+        num_contexts = len(temp_m)
+        print(f"Base frequencies collected. Found {num_contexts} unique {self.n}-gram contexts.")
         print("Applying 'isohedral' re-weighting...")
 
         # Apply isohedral formula: balance transitions (as in original code)
         self.m = {} # Reset self.m to store the re-weighted values
-        for g, options in temp_m.items():
+
+        # --- Second Loop: Apply re-weighting with tqdm ---
+        # Wrap the items iterator with tqdm for progress bar
+        for g, options in tqdm(temp_m.items(), total=num_contexts, desc="Applying Re-weighting", unit="contexts"):
             # Ensure context tuple g is not empty before calculating sum
             f = 0.0
             valid_context = g and all(isinstance(w, str) for w in g) # Check if context words are strings
@@ -66,7 +77,8 @@ class IsoMarkov:
                     # Calculate Tessellation factor based on word pattern
                     f = (sum(len(w) for w in g) % 5) / 10.0 # f is 0.0 to 0.4
                 except TypeError:
-                    print(f"Warning: Skipping isohedral calculation for context {g} due to non-string element.")
+                    # This warning might be too verbose with tqdm, consider removing or logging
+                    # print(f"Warning: Skipping isohedral calculation for context {g} due to non-string element.")
                     f = 0.0 # Default factor if calculation fails
             else:
                  f = 0.0 # Default factor for invalid contexts
@@ -84,16 +96,24 @@ class IsoMarkov:
                      reweighted_freq = 1
                 if reweighted_freq > 0:
                     self.m[g][w] = reweighted_freq
+        # --- End Second Loop ---
 
         self.s = temp_s # Assign collected sentence starts
 
         # Clean up contexts that might have become empty after re-weighting
+        # (This part is usually fast, maybe no tqdm needed)
         empty_contexts = [g for g, options in self.m.items() if not options]
-        for g in empty_contexts:
-             if g in self.m: # Check existence before deleting
-                del self.m[g]
+        if empty_contexts:
+             print(f"Cleaning up {len(empty_contexts)} contexts that became empty after re-weighting...")
+             for g in empty_contexts:
+                 if g in self.m: # Check existence before deleting
+                    del self.m[g]
+
         # Clean up sentence starts that may no longer be valid contexts
+        original_s_count = len(self.s)
         self.s = [start for start in self.s if start in self.m]
+        if len(self.s) != original_s_count:
+            print(f"Removed {original_s_count - len(self.s)} sentence starts pointing to invalid contexts.")
 
 
         print(f"Training complete with re-weighting. {len(self.m)} contexts remain.")
@@ -108,15 +128,25 @@ class IsoMarkov:
     def _get_random_start_context(self):
         """Helper function to get a starting context."""
         if self.s:
-            return random.choice(self.s)
-        elif self.m:
-            print("Warning: Starting generation from a random context (no sentence starts identified/valid).")
+            # Ensure the chosen start is still valid
+            valid_s = [s for s in self.s if s in self.m]
+            if valid_s:
+                return random.choice(valid_s)
+            else:
+                # If self.s contains only invalid contexts now
+                 print("Warning: All recorded sentence starts are now invalid. Trying random context.")
+                 # Fall through to elif self.m
+        if self.m: # Check self.m directly if self.s fails or is empty
             # Ensure we pick from keys that actually exist
             valid_keys = list(self.m.keys())
             if valid_keys:
+                if not self.s: # Only print this warning if no starts were ever detected/valid
+                    print("Warning: Starting generation from a random context (no sentence starts identified/valid).")
                 return random.choice(valid_keys)
         return None # Return None if no options available
 
+
+    # --- gen method remains the same as the previous version ---
     def gen(self, seed=None, count=100, iso_bias_strength=2.0):
         """
         Generates text using the trained Markov model, with selection bias
@@ -174,7 +204,8 @@ class IsoMarkov:
                  return "Error: Cannot start generation - no valid contexts found in model."
         # --- End Seed Processing ---
 
-        while len(result) < count:
+        generated_count = 0 # Keep track of generated words separately
+        while generated_count < count: # Generate until target count reached
             # Check if current context is valid before proceeding
             if context not in self.m:
                 print(f"\nWarning: Fell into unknown context {context}. Attempting to restart...")
@@ -182,8 +213,15 @@ class IsoMarkov:
                 if not context:
                     print("Error: Cannot recover from unknown context - no valid contexts left.")
                     break # Stop generation
-                result.extend(list(context)) # Add the restart context words
+                # Add the restart context words, avoiding duplicates if result already ends with part of it
+                overlap = 0
+                if result:
+                    for i in range(1, min(len(result), len(context)) + 1):
+                         if tuple(result[-i:]) == context[:i]:
+                              overlap = i
+                result.extend(list(context)[overlap:])
                 print(f"Restarted with context: {context}")
+                generated_count = len(result) # Update count based on added words
                 continue # Try generating from new context
 
             options = self.m[context] # Frequencies here are already re-weighted from train()
@@ -194,8 +232,15 @@ class IsoMarkov:
                 if not context:
                     print("Error: Cannot recover from dead-end context - no valid contexts left.")
                     break # Stop generation
-                result.extend(list(context)) # Add the restart context words
+                # Add the restart context words, avoiding duplicates
+                overlap = 0
+                if result:
+                     for i in range(1, min(len(result), len(context)) + 1):
+                          if tuple(result[-i:]) == context[:i]:
+                               overlap = i
+                result.extend(list(context)[overlap:])
                 print(f"Restarted with context: {context}")
+                generated_count = len(result) # Update count
                 continue # Try generating from new context
 
             # --- Dynamic Isohedral Bias during Generation ---
@@ -219,54 +264,161 @@ class IsoMarkov:
                  if not context:
                      print("Error: Cannot recover from zero-frequency context.")
                      break
-                 result.extend(list(context))
+                 # Add the restart context words, avoiding duplicates
+                 overlap = 0
+                 if result:
+                      for i in range(1, min(len(result), len(context)) + 1):
+                           if tuple(result[-i:]) == context[:i]:
+                                overlap = i
+                 result.extend(list(context)[overlap:])
                  print(f"Restarted with context: {context}")
+                 generated_count = len(result) # Update count
                  continue
 
             next_word = None # Initialize next_word
             if iso_bias_strength > 0:
                 exponent = 1.0 + (current_f * iso_bias_strength)
+                # Prevent extreme exponents for stability
+                exponent = max(0.1, min(exponent, 10.0))
                 biased_weights = [(freq + 1e-9) ** exponent for freq in base_freqs]
 
-                if sum(biased_weights) > 1e-9: # Check if weights sum is effectively > 0
+                # Normalize weights to prevent potential overflow/underflow issues in random.choices
+                sum_biased = sum(biased_weights)
+                if sum_biased > 1e-9: # Check if weights sum is effectively > 0
+                     normalized_biased_weights = [w / sum_biased for w in biased_weights]
                      try:
-                         next_word = random.choices(words, weights=biased_weights, k=1)[0]
-                     except ValueError:
-                          print(f"\nWarning: random.choices failed with biased weights for {context}. Weights: {biased_weights[:5]}... Using fallback.")
+                         next_word = random.choices(words, weights=normalized_biased_weights, k=1)[0]
+                     except ValueError as e:
+                          print(f"\nWarning: random.choices failed with biased weights for {context}. Error: {e}. Weights sum: {sum_biased}. Using fallback.")
                           # Fallback to standard weights if biased choice fails
-                          next_word = random.choices(words, weights=base_freqs, k=1)[0]
+                          sum_base = sum(base_freqs)
+                          if sum_base > 0:
+                              normalized_base_weights = [f / sum_base for f in base_freqs]
+                              next_word = random.choices(words, weights=normalized_base_weights, k=1)[0]
+                          else: # Cannot proceed if base frequencies also sum to zero
+                              print(f"Error: Base frequencies also sum to zero for {context}. Stopping.")
+                              break
+
                 else: # Fallback if biased weights sum is near zero
-                     next_word = random.choices(words, weights=base_freqs, k=1)[0]
-            else:
-                # No dynamic bias, use the frequencies directly from training
-                next_word = random.choices(words, weights=base_freqs, k=1)[0]
+                     sum_base = sum(base_freqs)
+                     if sum_base > 0:
+                         normalized_base_weights = [f / sum_base for f in base_freqs]
+                         next_word = random.choices(words, weights=normalized_base_weights, k=1)[0]
+                     else:
+                         print(f"Error: Base frequencies also sum to zero (fallback). Stopping.")
+                         break
+
+            else: # No dynamic bias
+                sum_base = sum(base_freqs)
+                if sum_base > 0:
+                    normalized_base_weights = [f / sum_base for f in base_freqs]
+                    next_word = random.choices(words, weights=normalized_base_weights, k=1)[0]
+                else:
+                    print(f"Error: Base frequencies sum to zero (no bias). Stopping.")
+                    break
+
             # --- End Dynamic Isohedral Bias ---
 
+            # Check if a word was successfully chosen
+            if next_word is None:
+                 print(f"\nError: Failed to select next word for context {context}. Attempting restart.")
+                 context = self._get_random_start_context()
+                 if not context:
+                     print("Error: Cannot recover, no valid context.")
+                     break
+                 # Add restart context words, avoid duplicates
+                 overlap = 0
+                 if result:
+                      for i in range(1, min(len(result), len(context)) + 1):
+                           if tuple(result[-i:]) == context[:i]:
+                                overlap = i
+                 result.extend(list(context)[overlap:])
+                 print(f"Restarted with context: {context}")
+                 generated_count = len(result)
+                 continue
+
             result.append(next_word)
+            generated_count += 1 # Increment count only when a word is successfully added
+
             # Ensure the chosen word is a string before adding to context
             if isinstance(next_word, str):
-                 context = tuple(list(context)[1:] + [next_word])
+                 # Slide context window
+                 context = tuple(result[-self.n:]) # More robust way to get last n words
             else:
                  print(f"\nError: Generated non-string word '{next_word}'. Stopping generation.")
                  break # Stop if something went wrong
 
-        return ' '.join(result[:count])
+        # Return exactly 'count' words if possible, joining from the potentially longer 'result' list
+        # Calculate start index to get the last 'count' generated words relative to the seed/start
+        final_output_words = result[max(0, len(result) - count):]
+        return ' '.join(final_output_words)
 
-# Main execution block
+
+# --- Main execution block remains the same ---
 if __name__ == "__main__":
     """ Demonstrates training and generating text, potentially using a seed. """
-    input_filename="xaa"
-    with open(input_filename, 'r', encoding='utf-8') as file:
-        txt = file.read().lower()
- 
-    m = IsoMarkov(3)
+    input_filename="test.txt" # Make sure this file exists
+
+    print(f"--- Starting Markov Chain Demo ---")
+    print(f"Using training file: {input_filename}")
+
+    try:
+        with open(input_filename, 'r', encoding='utf-8') as file:
+            txt = file.read().lower()
+        print(f"Successfully read training file.")
+    except FileNotFoundError:
+         print(f"Error: Training file '{input_filename}' not found.")
+         sys.exit(1) # Exit if training file is essential
+    except Exception as e:
+         print(f"Error reading file '{input_filename}': {e}")
+         sys.exit(1)
+
+    if not txt:
+        print("Error: Training file was empty.")
+        sys.exit(1)
+
+    # --- Initialize and Train ---
+    # Consider making n-gram size configurable here too
+    ngram_size = 3
+    m = IsoMarkov(ngram_size)
     m.train(txt)
 
+    if not m.m:
+        print("Error: Model training failed or resulted in no valid contexts.")
+        sys.exit(1)
 
-    words_to_generate = 250 # Generate 250 words as per previous example
+    # --- Interactive Generation Loop ---
+    words_to_generate = 250 # Number of words to generate each time
+    print(f"\n--- Interactive Generation Ready (n={ngram_size}) ---")
+    print(f"Enter seed text (or just press Enter to start randomly). Type 'quit' or 'exit' to stop.")
 
     while True:
-        seed_text = input("USER: ")
+        try:
+            seed_text_input = input("USER: ")
+        except EOFError: # Handle Ctrl+D
+             print("\nExiting.")
+             break
 
-        # Pass the seed text to the demo function
-        generated_text = print(m.gen(seed=seed_text, count=words_to_generate, iso_bias_strength=2.0))
+        if seed_text_input.lower() in ['quit', 'exit']:
+            print("Exiting.")
+            break
+
+        # Use None if input is empty, otherwise use the input string
+        seed_text = seed_text_input if seed_text_input else None
+
+        print("\nBOT Generating...")
+        # Pass the seed text to the gen method
+        # Use a moderate bias strength
+        generated_text = m.gen(seed=seed_text,
+                               count=words_to_generate,
+                               iso_bias_strength=2.0)
+
+        print("\n--- Generated Text ---")
+        if seed_text:
+            print(f"(Seed: '{seed_text}')")
+        else:
+             print("(Started randomly)")
+        print(generated_text)
+        print("-" * 20) # Separator
+
+    print("\n--- Demo Complete ---")
