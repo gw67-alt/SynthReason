@@ -269,7 +269,7 @@ class IsoMarkov:
                  overlap = 0
                  if result:
                       for i in range(1, min(len(result), len(context)) + 1):
-                           if tuple(result[-i:]) == context[:i+1]:
+                           if tuple(result[-i:]) == context[:i]:
                                 overlap = i
                  result.extend(list(context)[overlap:])
                  print(f"Restarted with context: {context}")
