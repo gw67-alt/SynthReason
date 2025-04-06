@@ -2,8 +2,16 @@ import random
 import math
 import sys
 from tqdm import tqdm
+from collections import defaultdict
 
 class IsoMarkov:
+    # Static configuration variables
+    MAX_EXPONENT = 5.0
+    MIN_EXPONENT = 0.1
+    SENTENCE_END_CHARS = set('.!?')
+    ISO_MODULUS = 5
+    ISO_DIVISOR = 10.0
+
     def __init__(self, n=2):
         """
         Initializes the Markov chain model with n-gram size.
@@ -31,41 +39,41 @@ class IsoMarkov:
 
         print(f"Training on {num_words} words with n={self.n}...")
 
-        # Build frequency dictionary
-        temp_m = {}
-        temp_s = []
+        # Build frequency dictionary using defaultdict to simplify code
+        temp_m = defaultdict(lambda: defaultdict(int))
+        temp_s = set()  # Use set for faster lookup
 
-        # First pass: collect base frequencies
+        # First pass: collect base frequencies with list comprehension and tqdm
         for i in tqdm(range(num_words - self.n), desc="Collecting Frequencies"):
             g = tuple(words[i:i+self.n])
             next_word = words[i+self.n]
+            
+            # Record sentence starts inline
+            if i == 0 or any(c in self.SENTENCE_END_CHARS for c in words[i-1][-1:]):
+                temp_s.add(g)
+                
+            # Increment frequency directly with defaultdict
+            temp_m[g][next_word] += 1
 
-            # Record sentence starts
-            if (i == 0) or (words[i-1][-1] in '.!?'):
-                if g not in temp_s:
-                    temp_s.append(g)
-
-            # Record transition
-            temp_m.setdefault(g, {})
-            temp_m[g][next_word] = temp_m[g].get(next_word, 0) + 1
-
-        # Second pass: apply isohedral re-weighting
+        # Second pass: apply isohedral re-weighting using dictionary comprehensions
         print(f"Applying isohedral re-weighting to {len(temp_m)} contexts...")
         
-        for g, options in tqdm(temp_m.items(), desc="Re-weighting"):
-            # Calculate isohedral factor
-            f = (sum(len(w) for w in g) % 5) / 10.0  # f is 0.0 to 0.4
-            
-            # Create entry in final dictionary
-            self.m[g] = {}
-            
-            # Apply re-weighting to each transition
-            for w, freq in options.items():
-                reweighted_freq = max(1, int(freq * (1 + f)))  # Ensure at least 1
-                self.m[g][w] = reweighted_freq
+        # Calculate all isohedral factors at once
+        iso_factors = {
+            g: (sum(len(w) for w in g) % self.ISO_MODULUS) / self.ISO_DIVISOR 
+            for g in temp_m.keys()
+        }
 
-        # Store valid sentence starts
-        self.s = [start for start in temp_s if start in self.m]
+        # Build final model with all re-weighted frequencies
+        self.m = {
+            g: {
+                w: max(1, int(freq * iso_factors[g]))  # Use iso_factors[g] directly
+                for w, freq in temp_m[g].items()
+            }
+            for g in tqdm(temp_m.keys(), desc="Re-weighting")
+        }
+        # Store valid sentence starts using set operations
+        self.s = list(temp_s.intersection(self.m.keys()))
         
         # If no valid starts, use random contexts
         if not self.s and self.m:
@@ -73,6 +81,28 @@ class IsoMarkov:
             
         print(f"Training complete. Model has {len(self.m)} contexts and {len(self.s)} sentence starts.")
 
+    def _get_weights(self, options, context, iso_bias_strength):
+        """Helper method to calculate weighted probabilities for next word selection"""
+        words = list(options.keys())
+        freqs = list(options.values())
+        
+        # Early return if no bias
+        if iso_bias_strength <= 0:
+            return words, [f/sum(freqs) for f in freqs]
+            
+        # Calculate isohedral factor for current context
+        current_f = (sum(len(w) for w in context) % self.ISO_MODULUS) / self.ISO_DIVISOR
+        
+        # Calculate exponent with bounded range
+        exponent = 1.0 + (current_f * iso_bias_strength)
+        exponent = max(self.MIN_EXPONENT, min(exponent, self.MAX_EXPONENT))
+        
+        # Calculate weights with bias applied
+        biased = [(f + 1e-9) ** exponent for f in freqs]
+        total = sum(biased)
+        
+        return words, [w/total for w in biased]
+        
     def gen(self, seed=None, count=100, iso_bias_strength=2.0):
         """
         Generates text using the trained Markov model with isohedral bias.
@@ -88,70 +118,37 @@ class IsoMarkov:
             
         if count < 1:
             raise ValueError("Word count must be positive.")
-
-        # Initialize generation
-        result = []
-        context = None
         
+        if not self.s:
+            raise ValueError("No valid starting contexts available.")
+
         # Process seed if provided
         if seed:
             seed_words = seed.lower().split()
-            if len(seed_words) >= self.n:
-                context = tuple(seed_words[-self.n:])
-                result = seed_words
-            else:
-                # Seed too short, use a random start context
-                context = random.choice(self.s)
-                result = list(context)
+            # Use seed if long enough, otherwise use a random start
+            context = tuple(seed_words[-self.n:]) if len(seed_words) >= self.n else random.choice(self.s)
+            result = seed_words if len(seed_words) >= self.n else list(context)
         else:
             # No seed, use a random start context
             context = random.choice(self.s)
             result = list(context)
 
-        # Generate text
-        generated = len(result)
-        while generated < count:
-            # Ensure context exists in our model
-            if context not in self.m:
+        # Generate text using inline logic
+        while len(result) < count:
+            # Reset context if invalid and continue
+            if context not in self.m or not self.m[context]:
                 context = random.choice(self.s)
                 result.extend(list(context))
-                generated = len(result)
                 continue
                 
-            options = self.m[context]
-            if not options:
-                context = random.choice(self.s)
-                result.extend(list(context))
-                generated = len(result)
-                continue
+            # Get weighted options
+            words, weights = self._get_weights(self.m[context], context, iso_bias_strength)
             
-            # Calculate isohedral factor for current context
-            current_f = (sum(len(w) for w in context) % 5) / 10.0  # f is 0.0 to 0.4
-            
-            # Get words and their frequencies
-            words = list(options.keys())
-            freqs = list(options.values())
-            
-            # Apply isohedral bias to weights
-            if iso_bias_strength > 0:
-                exponent = 1.0 + (current_f * iso_bias_strength)
-                exponent = max(0.1, min(exponent, 5.0))  # Limit exponent range
-                weights = [(f + 1e-9) ** exponent for f in freqs]
-                
-                # Normalize weights
-                total = sum(weights)
-                weights = [w / total for w in weights]
-            else:
-                # No bias, use original frequencies
-                total = sum(freqs)
-                weights = [f / total for f in freqs]
-            
-            # Choose next word
+            # Choose and append next word
             next_word = random.choices(words, weights=weights, k=1)[0]
             result.append(next_word)
-            generated += 1
             
-            # Update context window
+            # Slide context window
             context = tuple(result[-self.n:])
         
         # Return exactly 'count' words
@@ -159,27 +156,31 @@ class IsoMarkov:
 
 
 if __name__ == "__main__":
-    # Configuration
-    input_filename = "test.txt"
-    ngram_size = 3
-    words_to_generate = 250
+    # Static configuration
+    CONFIG = {
+        'input_filename': "test.txt",
+        'ngram_size': 3,
+        'words_to_generate': 250,
+        'iso_bias_strength': 2.0
+    }
     
     print(f"--- IsoMarkov Text Generator ---")
-    print(f"Reading training file: {input_filename}")
+    print(f"Reading training file: {CONFIG['input_filename']}")
     
+    # Read training file
     try:
-        with open(input_filename, 'r', encoding='utf-8') as file:
+        with open(CONFIG['input_filename'], 'r', encoding='utf-8') as file:
             txt = file.read().lower()
     except Exception as e:
         print(f"Error reading file: {e}")
         sys.exit(1)
     
     # Initialize and train model
-    model = IsoMarkov(ngram_size)
+    model = IsoMarkov(CONFIG['ngram_size'])
     model.train(txt)
     
     # Interactive generation loop
-    print(f"\n--- Ready to generate (n={ngram_size}) ---")
+    print(f"\n--- Ready to generate (n={CONFIG['ngram_size']}) ---")
     print(f"Enter seed text or press Enter for random start. Type 'exit' to quit.")
     
     while True:
@@ -188,11 +189,11 @@ if __name__ == "__main__":
             if user_input.lower() in ['quit', 'exit']:
                 break
                 
-            # Generate text
+            # Generate text with inline conditional
             generated = model.gen(
-                seed=user_input if user_input else None,
-                count=words_to_generate,
-                iso_bias_strength=2.0
+                seed=user_input or None,
+                count=CONFIG['words_to_generate'],
+                iso_bias_strength=CONFIG['iso_bias_strength']
             )
             
             # Display result
