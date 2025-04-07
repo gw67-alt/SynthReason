@@ -3,7 +3,7 @@ import math
 import sys
 from tqdm import tqdm
 from collections import defaultdict
-
+KB_limit = -1
 class IsoMarkov:
     # Static configuration variables
     MAX_EXPONENT = 5.0
@@ -248,7 +248,7 @@ if __name__ == "__main__":
     # Read training file
     try:
         with open(CONFIG['input_filename'], 'r', encoding='utf-8') as file:
-            txt = ' '.join(file.read().lower().split()[:9999])
+            txt = ' '.join(file.read().lower().split()[:KB_limit])
     except Exception as e:
         print(f"Error reading file: {e}")
         sys.exit(1)
