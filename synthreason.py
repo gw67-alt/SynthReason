@@ -235,11 +235,11 @@ class IsoMarkov:
 if __name__ == "__main__":
     # Static configuration
     CONFIG = {
-        'input_filename': "test.txt",
+        'input_filename': "xaa",
         'ngram_size': 3,
         'words_to_generate': 250,
         'iso_bias_strength': 2.0,
-        'window_size': 20  # Size of moving window for word filtering
+        'window_size': 200  # Size of moving window for word filtering
     }
     
     print(f"--- IsoMarkov Text Generator with Word Filtering ---")
