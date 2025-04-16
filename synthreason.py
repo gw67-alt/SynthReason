@@ -23,7 +23,7 @@ class SymbolicMarkov:
         self.n = n
         self.m = {}  # Transitions: {context_tuple: {next_word: frequency}}
         self.s = []  # Sentence starting n-grams
-        self.all_words = list()  # Store all words seen during training
+        self.all_words = set()  # Store all words seen during training
     
     def train(self, t):
         """
@@ -119,13 +119,13 @@ class SymbolicMarkov:
             
         # ∃ (existential) - Check if there's at least one high probability option
         maxFreq = max(subsetFreqs)
-        existsHighProb = any(freq > maxFreq * 0.8 for freq in subsetFreqs)
+        existsHighProb = any(freq > maxFreq * 0.8 for freq in tensorValues)
         
         # Λ (wedge product) - Combine context influence
         # Use last letters of context words to influence selection
         lastLetters = [w[-1] if w else '' for w in context]
         uniqueLastLetters = len(set(lastLetters))
-        contextInfluence = math.pow(uniqueLastLetters + 1, 1.5)  # Add 1 to avoid zeros
+        contextInfluence = math.pow(uniqueLastLetters + 1, 3.5)  # Add 1 to avoid zeros
         
         # ρ (rho) - Base density/distribution
         totalFreq = sum(subsetFreqs)
