@@ -23,7 +23,7 @@ class SymbolicMarkov:
         self.n = n
         self.m = {}  # Transitions: {context_tuple: {next_word: frequency}}
         self.s = []  # Sentence starting n-grams
-        self.all_words = set()  # Store all words seen during training
+        self.all_words = list()  # Store all words seen during training
     
     def train(self, t):
         """
