@@ -125,7 +125,7 @@ class SymbolicMarkov:
         # Use last letters of context words to influence selection
         lastLetters = [w[-1] if w else '' for w in context]
         uniqueLastLetters = len(set(lastLetters))
-        contextInfluence = math.pow(uniqueLastLetters + 1, -13.5)  # Add 1 to avoid zeros
+        contextInfluence = math.pow(uniqueLastLetters + 1, 1.5)  # Add 1 to avoid zeros
         
         # ρ (rho) - Base density/distribution
         totalFreq = sum(subsetFreqs)
