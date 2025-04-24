@@ -1,25 +1,32 @@
+import pyopencl as cl
+import numpy as np
 import random
 import math
 import sys
-import numpy as np
 from collections import defaultdict, Counter
 from tqdm import tqdm
-KB_limit = -1 #change to -1 for unlimited
+import time
+from datasets import load_dataset
+
+KB_limit = -1  # change to -1 for unlimited
+
 class SymbolicMarkovLPC:
     """
     Enhanced Markov chain text generator using symbolic probability distribution ⊆⊗∃·Λρ∑ω·Σø²,
-    symbolic training count adjustments ∀λ±ε, and LPC (Linear Predictive Coding) decoding.
+    symbolic training count adjustments ∀λ±ε, and LPC (Linear Predictive Coding) decoding
+    with OpenCL acceleration.
     """
 
     # Static configuration variables
     SENTENCE_END_CHARS = set('.!?')
 
-    def __init__(self, n=2, lpc_order=10):
+    def __init__(self, n=2, lpc_order=10, use_opencl=True):
         """
         Initializes the Markov chain model with n-gram size and LPC parameters.
         Args:
             n (int): Size of n-gram context
             lpc_order (int): Order of the LPC prediction (number of coefficients)
+            use_opencl (bool): Whether to use OpenCL acceleration when available
         """
         if not isinstance(n, int) or n < 1:
             raise ValueError("n-gram size 'n' must be a positive integer.")
@@ -28,6 +35,8 @@ class SymbolicMarkovLPC:
             
         self.n = n
         self.lpc_order = lpc_order
+        self.use_opencl = use_opencl
+        
         # Transitions will store floats due to symbolic adjustments
         self.m = {}  # Transitions: {context_tuple: {next_word: adjusted_frequency}}
         self.s = []  # Sentence starting n-grams
@@ -39,6 +48,123 @@ class SymbolicMarkovLPC:
         self.lpc_coefficients = None  # Will store LPC coefficients after training
         self.lpc_mean = None  # Will store mean value for LPC prediction
         self.word_vectors = None  # Will store numeric representations of words
+        
+        # Initialize OpenCL context and queue if available
+        self.cl_ctx = None
+        self.cl_queue = None
+        self.cl_progs = {}
+        
+        if use_opencl:
+            try:
+                # Initialize OpenCL
+                platforms = cl.get_platforms()
+                if platforms:
+                    # Try to get GPU device first, fallback to CPU if not available
+                    try:
+                        gpu_devices = platforms[0].get_devices(device_type=cl.device_type.GPU)
+                        if gpu_devices:
+                            self.cl_ctx = cl.Context(devices=gpu_devices)
+                            self.cl_queue = cl.CommandQueue(self.cl_ctx)
+                            print("Using OpenCL with GPU device:", gpu_devices[0].name)
+                    except:
+                        # Fallback to CPU
+                        cpu_devices = platforms[0].get_devices(device_type=cl.device_type.CPU)
+                        if cpu_devices:
+                            self.cl_ctx = cl.Context(devices=cpu_devices)
+                            self.cl_queue = cl.CommandQueue(self.cl_ctx)
+                            print("Using OpenCL with CPU device:", cpu_devices[0].name)
+                        else:
+                            print("No OpenCL devices found, falling back to CPU implementation.")
+                else:
+                    print("No OpenCL platforms found, falling back to CPU implementation.")
+                    self.use_opencl = False
+                    
+                if self.cl_ctx:
+                    # Compile OpenCL kernels
+                    self._compile_opencl_kernels()
+            except:
+                print("Error initializing OpenCL, falling back to CPU implementation.")
+                import traceback
+                traceback.print_exc()
+                self.use_opencl = False
+
+    def _compile_opencl_kernels(self):
+        """Compile OpenCL kernels for various LPC operations"""
+        if not self.cl_ctx:
+            return
+            
+        # OpenCL kernel for autocorrelation calculation
+        autocorr_kernel = """
+        __kernel void autocorrelation(
+            __global const float* sequence,
+            __global float* result,
+            const int seq_length,
+            const int max_lag
+        ) {
+            int lag = get_global_id(0);
+            if (lag >= max_lag)
+                return;
+                
+            float sum = 0.0f;
+            for (int i = 0; i < seq_length - lag; i++) {
+                sum += sequence[i] * sequence[i + lag];
+            }
+            result[lag] = sum;
+        }
+        """
+        
+        # OpenCL kernel for LPC prediction
+        lpc_prediction_kernel = """
+        __kernel void lpc_predict(
+            __global const float* past_sequence,
+            __global const float* coefficients,
+            __global float* result,
+            const float mean,
+            const int order
+        ) {
+            int idx = get_global_id(0);
+            if (idx != 0) // We only need one result
+                return;
+                
+            float prediction = mean;
+            for (int i = 0; i < order; i++) {
+                prediction += coefficients[i] * (past_sequence[order-i-1] - mean);
+            }
+            result[0] = prediction;
+        }
+        """
+        
+        # OpenCL kernel for vector distance calculation
+        vector_distance_kernel = """
+        __kernel void vector_distance(
+            __global const float* vectors,
+            __global const float* predicted_vector,
+            __global float* distances,
+            const int vector_dim,
+            const int num_vectors
+        ) {
+            int vector_idx = get_global_id(0);
+            if (vector_idx >= num_vectors)
+                return;
+                
+            float sum_sq = 0.0f;
+            for (int d = 0; d < vector_dim; d++) {
+                float diff = vectors[vector_idx * vector_dim + d] - predicted_vector[d];
+                sum_sq += diff * diff;
+            }
+            distances[vector_idx] = sqrt(sum_sq);
+        }
+        """
+        
+        try:
+            # Compile the kernels
+            self.cl_progs['autocorr'] = cl.Program(self.cl_ctx, autocorr_kernel).build()
+            self.cl_progs['lpc_predict'] = cl.Program(self.cl_ctx, lpc_prediction_kernel).build()
+            self.cl_progs['vector_distance'] = cl.Program(self.cl_ctx, vector_distance_kernel).build()
+            print("OpenCL kernels compiled successfully.")
+        except cl.RuntimeError as e:
+            print(f"Error compiling OpenCL kernels: {e}")
+            self.use_opencl = False
 
     def _convert_words_to_vectors(self, words):
         """
@@ -69,14 +195,87 @@ class SymbolicMarkovLPC:
             consonant_count = word_length - vowel_count
             
             # Combine all features into a vector
-            vector = np.array(char_codes + [word_length, vowel_count, consonant_count], dtype=float)
+            vector = np.array(char_codes + [word_length, vowel_count, consonant_count], dtype=np.float32)
             vectors[word] = vector
             
         return vectors
 
-    def _calculate_lpc_coefficients(self, sequence, order):
+    def _calculate_lpc_coefficients_opencl(self, sequence, order):
         """
-        Calculate LPC coefficients from a numeric sequence.
+        Calculate LPC coefficients using OpenCL for acceleration.
+        
+        Args:
+            sequence (np.array): Numeric sequence for analysis
+            order (int): Order of LPC prediction
+            
+        Returns:
+            tuple: (coefficients, mean)
+        """
+        if not self.cl_ctx or not self.cl_queue or 'autocorr' not in self.cl_progs:
+            # Fallback to CPU implementation
+            return self._calculate_lpc_coefficients_cpu(sequence, order)
+            
+        # Ensure sequence is long enough
+        if len(sequence) < 2 * order + 1:
+            padded_sequence = np.pad(sequence, (0, 2 * order + 1 - len(sequence)))
+        else:
+            padded_sequence = sequence
+            
+        # Convert to float32 for OpenCL
+        seq_np = np.array(padded_sequence, dtype=np.float32)
+        seq_length = np.int32(len(seq_np))
+        max_lag = np.int32(order + 1)
+        
+        # Create OpenCL buffers
+        seq_buf = cl.Buffer(self.cl_ctx, cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR, hostbuf=seq_np)
+        autocorr_buf = cl.Buffer(self.cl_ctx, cl.mem_flags.WRITE_ONLY, size=max_lag * np.dtype(np.float32).itemsize)
+        
+        # Execute autocorrelation kernel
+        global_size = (int(max_lag),)
+        self.cl_progs['autocorr'].autocorrelation(
+            self.cl_queue, global_size, None,
+            seq_buf, autocorr_buf, seq_length, max_lag
+        )
+        
+        # Read back results
+        autocorr = np.empty(max_lag, dtype=np.float32)
+        cl.enqueue_copy(self.cl_queue, autocorr, autocorr_buf)
+        
+        # Free OpenCL buffers
+        seq_buf.release()
+        autocorr_buf.release()
+        
+        # Handle potential numerical issues
+        if np.isclose(autocorr[0], 0):
+            return np.zeros(order, dtype=np.float32), np.mean(sequence).astype(np.float32)
+            
+        # Levinson-Durbin recursion to solve the Yule-Walker equations (on CPU for now)
+        # This part is less parallelizable and more complex for OpenCL
+        coeffs = np.zeros(order, dtype=np.float32)
+        reflection = np.zeros(order, dtype=np.float32)
+        error = autocorr[0]
+        
+        for i in range(order):
+            # Calculate reflection coefficient
+            reflection[i] = -autocorr[i+1]
+            for j in range(i):
+                reflection[i] -= coeffs[j] * autocorr[i-j]
+            reflection[i] /= error
+            
+            # Update LPC coefficients
+            coeffs[i] = reflection[i]
+            for j in range(i//2):
+                temp = coeffs[j]
+                coeffs[j] += reflection[i] * coeffs[i-j-1]
+                coeffs[i-j-1] += reflection[i] * temp
+                
+            error *= 1 - reflection[i]**2
+            
+        return coeffs, np.mean(sequence).astype(np.float32)
+
+    def _calculate_lpc_coefficients_cpu(self, sequence, order):
+        """
+        Calculate LPC coefficients on CPU (fallback).
         
         Args:
             sequence (np.array): Numeric sequence for analysis
@@ -99,11 +298,11 @@ class SymbolicMarkovLPC:
         
         # Handle potential numerical issues
         if np.isclose(autocorr[0], 0):
-            return np.zeros(order), np.mean(sequence)
+            return np.zeros(order, dtype=np.float32), np.mean(sequence).astype(np.float32)
             
         # Levinson-Durbin recursion to solve the Yule-Walker equations
-        coeffs = np.zeros(order)
-        reflection = np.zeros(order)
+        coeffs = np.zeros(order, dtype=np.float32)
+        reflection = np.zeros(order, dtype=np.float32)
         error = autocorr[0]
         
         for i in range(order):
@@ -122,11 +321,62 @@ class SymbolicMarkovLPC:
                 
             error *= 1 - reflection[i]**2
             
-        return coeffs, np.mean(sequence)
+        return coeffs, np.mean(sequence).astype(np.float32)
 
-    def _predict_with_lpc(self, past_sequence, coefficients, mean):
+    def _predict_with_lpc_opencl(self, past_sequence, coefficients, mean):
         """
-        Use LPC coefficients to predict the next value in a sequence.
+        Use LPC coefficients to predict the next value in a sequence using OpenCL.
+        
+        Args:
+            past_sequence (np.array): Recent history of values
+            coefficients (np.array): LPC coefficients
+            mean (float): Mean value for prediction
+            
+        Returns:
+            float: Predicted next value
+        """
+        if not self.cl_ctx or not self.cl_queue or 'lpc_predict' not in self.cl_progs:
+            # Fallback to CPU implementation
+            return self._predict_with_lpc_cpu(past_sequence, coefficients, mean)
+            
+        order = len(coefficients)
+        # If past sequence is shorter than order, pad with zeros
+        if len(past_sequence) < order:
+            padded_sequence = np.pad(past_sequence, (order - len(past_sequence), 0))
+        else:
+            padded_sequence = past_sequence[-order:]
+            
+        # Convert to float32 for OpenCL
+        padded_sequence = np.array(padded_sequence, dtype=np.float32)
+        coeffs = np.array(coefficients, dtype=np.float32)
+        mean_val = np.float32(mean)
+        
+        # Create OpenCL buffers
+        seq_buf = cl.Buffer(self.cl_ctx, cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR, hostbuf=padded_sequence)
+        coeffs_buf = cl.Buffer(self.cl_ctx, cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR, hostbuf=coeffs)
+        result_buf = cl.Buffer(self.cl_ctx, cl.mem_flags.WRITE_ONLY, size=np.dtype(np.float32).itemsize)
+        
+        # Execute LPC prediction kernel
+        global_size = (1,)
+        self.cl_progs['lpc_predict'].lpc_predict(
+            self.cl_queue, global_size, None,
+            seq_buf, coeffs_buf, result_buf, mean_val, np.int32(order)
+        )
+        
+        # Read back result
+        result = np.empty(1, dtype=np.float32)
+        cl.enqueue_copy(self.cl_queue, result, result_buf)
+        
+        # Free OpenCL buffers
+        seq_buf.release()
+        coeffs_buf.release()
+        result_buf.release()
+        
+        return float(result[0])
+
+    def _predict_with_lpc_cpu(self, past_sequence, coefficients, mean):
+        """
+        Use LPC coefficients to predict the next value in a sequence (CPU fallback).
         
         Args:
             past_sequence (np.array): Recent history of values
@@ -149,6 +399,51 @@ class SymbolicMarkovLPC:
             prediction += coefficients[i] * (padded_sequence[order-i-1] - mean)
             
         return prediction
+
+    def _calculate_vector_distances_opencl(self, word_vectors, predicted_vector):
+        """
+        Calculate Euclidean distances between word vectors and predicted vector using OpenCL.
+        
+        Args:
+            word_vectors (np.array): Array of word vectors (2D: words x dimensions)
+            predicted_vector (np.array): Predicted vector (1D)
+            
+        Returns:
+            np.array: Distances for each word vector
+        """
+        if not self.cl_ctx or not self.cl_queue or 'vector_distance' not in self.cl_progs:
+            # Fallback to CPU implementation
+            return np.array([np.linalg.norm(wv - predicted_vector) for wv in word_vectors])
+            
+        # Convert inputs to float32 for OpenCL
+        vectors_np = np.array(word_vectors, dtype=np.float32)
+        predicted_np = np.array(predicted_vector, dtype=np.float32)
+        
+        num_vectors = np.int32(vectors_np.shape[0])
+        vector_dim = np.int32(vectors_np.shape[1])
+        
+        # Create OpenCL buffers
+        vectors_buf = cl.Buffer(self.cl_ctx, cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR, hostbuf=vectors_np)
+        predicted_buf = cl.Buffer(self.cl_ctx, cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR, hostbuf=predicted_np)
+        distances_buf = cl.Buffer(self.cl_ctx, cl.mem_flags.WRITE_ONLY, size=num_vectors * np.dtype(np.float32).itemsize)
+        
+        # Execute distance calculation kernel
+        global_size = (int(num_vectors),)
+        self.cl_progs['vector_distance'].vector_distance(
+            self.cl_queue, global_size, None,
+            vectors_buf, predicted_buf, distances_buf, vector_dim, num_vectors
+        )
+        
+        # Read back results
+        distances = np.empty(num_vectors, dtype=np.float32)
+        cl.enqueue_copy(self.cl_queue, distances, distances_buf)
+        
+        # Free OpenCL buffers
+        vectors_buf.release()
+        predicted_buf.release()
+        distances_buf.release()
+        
+        return distances
 
     def train(self, t):
         """
@@ -262,7 +557,7 @@ class SymbolicMarkovLPC:
             self.lpc_order = max(1, len(word_sequence) // 2)
         
         # Calculate LPC coefficients for each dimension of the word vectors
-        print(f"Calculating LPC coefficients (order {self.lpc_order})...")
+        print(f"Calculating LPC coefficients (order {self.lpc_order}) using {'OpenCL' if self.use_opencl else 'CPU'}...")
         
         # Reshape sequence for dimension-wise analysis
         word_sequence = np.array(word_sequence)
@@ -272,7 +567,10 @@ class SymbolicMarkovLPC:
         
         for dim in tqdm(range(vector_dims), desc="Computing LPC coefficients for each dimension"):
             dim_sequence = word_sequence[:, dim]
-            coeffs, mean = self._calculate_lpc_coefficients(dim_sequence, self.lpc_order)
+            if self.use_opencl:
+                coeffs, mean = self._calculate_lpc_coefficients_opencl(dim_sequence, self.lpc_order)
+            else:
+                coeffs, mean = self._calculate_lpc_coefficients_cpu(dim_sequence, self.lpc_order)
             self.lpc_coefficients.append(coeffs)
             self.lpc_mean.append(mean)
         print("LPC training complete!")
@@ -387,6 +685,7 @@ class SymbolicMarkovLPC:
     def _apply_lpc_decoding(self, context_words, candidate_words, base_weights):
         """
         Apply LPC decoding to adjust word selection probabilities.
+        Using OpenCL acceleration when available.
         
         Args:
             context_words (list): List of words in the current context
@@ -413,37 +712,45 @@ class SymbolicMarkovLPC:
         
         # Make LPC predictions for each dimension
         vector_dims = context_sequence.shape[1]
-        predicted_vector = np.zeros(vector_dims)
+        predicted_vector = np.zeros(vector_dims, dtype=np.float32)
         
         for dim in range(vector_dims):
             # Extract the sequence for this dimension
             dim_sequence = context_sequence[:, dim]
-            # Make prediction using LPC
-            predicted_value = self._predict_with_lpc(
-                dim_sequence, 
-                self.lpc_coefficients[dim], 
-                self.lpc_mean[dim]
-            )
+            # Make prediction using LPC with OpenCL acceleration if available
+            if self.use_opencl:
+                predicted_value = self._predict_with_lpc_opencl(
+                    dim_sequence, 
+                    self.lpc_coefficients[dim], 
+                    self.lpc_mean[dim]
+                )
+            else:
+                predicted_value = self._predict_with_lpc_cpu(
+                    dim_sequence, 
+                    self.lpc_coefficients[dim], 
+                    self.lpc_mean[dim]
+                )
             predicted_vector[dim] = predicted_value
             
-        # Calculate similarity between predicted vector and candidate word vectors
-        similarities = []
-        for word in candidate_words:
-            if word in self.word_vectors:
-                # Euclidean distance (inverse for similarity)
-                distance = np.linalg.norm(self.word_vectors[word] - predicted_vector)
-                # Convert distance to similarity (smaller distance = higher similarity)
-                similarity = 1.0 / (1.0 + distance)
-                similarities.append(similarity)
-            else:
-                similarities.append(0.1)  # Default small similarity for unknown words
+        # Calculate similarity between predicted vector and candidate word vectors using OpenCL
+        candidate_vectors = np.array([self.word_vectors.get(word, np.zeros(vector_dims, dtype=np.float32)) 
+                                     for word in candidate_words])
+        
+        # Calculate distances between candidate vectors and predicted vector
+        if self.use_opencl:
+            distances = self._calculate_vector_distances_opencl(candidate_vectors, predicted_vector)
+        else:
+            distances = np.array([np.linalg.norm(cv - predicted_vector) for cv in candidate_vectors])
+            
+        # Convert distances to similarities (smaller distance = higher similarity)
+        similarities = 1.0 / (1.0 + distances)
                 
         # Normalize similarities
-        total_similarity = sum(similarities)
+        total_similarity = np.sum(similarities)
         if total_similarity > 0:
-            normalized_similarities = [s / total_similarity for s in similarities]
+            normalized_similarities = similarities / total_similarity
         else:
-            normalized_similarities = [1.0 / len(similarities)] * len(similarities)
+            normalized_similarities = np.ones(len(similarities)) / len(similarities)
             
         # Combine base weights with LPC-based similarities
         lpc_weight = 0.3  # How much to weight the LPC prediction (0.0 to 1.0)
@@ -466,7 +773,7 @@ class SymbolicMarkovLPC:
     def gen(self, seed=None, count=100, window_size=20, word_filter=None, use_lpc=True):
         """
         Generates text using the trained Markov model with symbolic probability distribution
-        and optional LPC decoding.
+        and optional LPC decoding with OpenCL acceleration.
 
         Args:
             seed (str, optional): Starting sequence of words.
@@ -647,65 +954,107 @@ def no_repetition_filter(word, window_words):
     """Prevents a word from being repeated within the window"""
     return word not in window_words
 
-if __name__ == "__main__":
+def main():
     # Configuration
     CONFIG = {
         'input_filename': "test.txt",  # Default, will be overridden by input
         'ngram_size': 2,  # Default n-gram size (can be changed)
         'words_to_generate': 150,  # Default generation length
         'window_size': 50,  # Default window size for filter
-        'lpc_order': 10,  # Default LPC order 
-        'use_lpc': True   # Whether to use LPC decoding
+        'lpc_order': 10,  # Default LPC order
+        'use_lpc': True,   # Whether to use LPC decoding
+        'use_opencl': True, # Whether to use OpenCL acceleration
+        'use_huggingface': True, # Flag to use Hugging Face dataset
+        'hf_dataset_name': "wikipedia",
+        'hf_subset_name': "20220301.en"
     }
 
-    print(f"--- Symbolic Markov Text Generator with LPC Decoding ---")
-    print(f"--- (Training: ∀λ±ε | Generation: ⊆⊗∃·Λρ∑ω·Σø² + LPC) ---")
+    print(f"--- Symbolic Markov Text Generator with OpenCL-accelerated LPC Decoding ---")
+    print(f"--- (Training: ∀λ±ε | Generation: ⊆⊗∃·Λρ∑ω·Σø² + OpenCL LPC) ---")
 
-    # Get filename from user input
-    try:
-        filename_to_use = input(f"Enter input filename (default: {CONFIG['input_filename']}): ")
-        if not filename_to_use:
-            filename_to_use = CONFIG['input_filename']
-        CONFIG['input_filename'] = filename_to_use
+    txt = ""
 
-        with open(CONFIG['input_filename'], 'r', encoding='utf-8') as file:
-            # Read, lower, and split robustly
-            txt = ' '.join(file.read().lower().split()[:KB_limit])
-            if not txt:
-                print(f"Error: Input file '{CONFIG['input_filename']}' is empty.")
+    CONFIG = {
+        'use_huggingface': True,
+        'hf_dataset_name': "wikipedia",
+        'hf_subset_name': "20220301.en",
+        'max_samples': 10000000  
+    }
+
+    if CONFIG['use_huggingface']:
+        try:
+            dataset = load_dataset(CONFIG['hf_dataset_name'], CONFIG['hf_subset_name'], split="train")
+            # Take a limited number of samples
+            if CONFIG.get('max_samples'):
+                full_samples = dataset.select(range(CONFIG['max_samples']))
+            else:
+                full_samples = dataset[:] # Load all samples into memory (if manageable)
+            print(f"Loaded {len(full_samples)} samples from the dataset.")
+            # Now 'full_samples' is a Dataset object containing all the loaded samples
+            # You can access the text data using full_samples['text']
+            text_data = " ".join(full_samples['text'])[:KB_LIMIT] # Combine all text
+            print(f"Combined text data length: {len(text_data)} characters.")
+
+        except Exception as e:
+            # Fallback to local file loading
+            print(f"Error loading Hugging Face dataset: {e}")
+            print("Falling back to default 'test.txt' for demonstration.")
+            try:
+                with open(CONFIG['input_filename'], 'r', encoding='utf-8') as file:
+                    txt = ' '.join(file.read().lower().split()[:KB_limit])
+                    if not txt:
+                        print(f"Error: Input file '{CONFIG['input_filename']}' is empty.")
+                        sys.exit(1)
+            except FileNotFoundError:
+                print(f"Error: Input file '{CONFIG['input_filename']}' not found.")
                 sys.exit(1)
+            except Exception as e:
+                print(f"Error reading file: {e}")
+                sys.exit(1)
+    else:
+        # Get filename from user input
+        try:
+            filename_to_use = input(f"Enter input filename (default: {CONFIG['input_filename']}): ")
+            if not filename_to_use:
+                filename_to_use = CONFIG['input_filename']
+            CONFIG['input_filename'] = filename_to_use
 
-    except FileNotFoundError:
-        print(f"Error: Input file '{CONFIG['input_filename']}' not found.")
-        # Simple fallback text for demonstration if file fails
-        print("Using sample text for demonstration.")
-        txt = ("this is a simple sample text for the markov chain generator it demonstrates "
-               "basic functionality and provides enough words for training with small ngrams "
-               "repeating some words is necessary for the model to learn transitions this sample "
-               "is quite short so results may be limited a larger corpus will yield better output")
-    except Exception as e:
-        print(f"Error reading file: {e}")
-        sys.exit(1)
+            with open(CONFIG['input_filename'], 'r', encoding='utf-8') as file:
+                txt = ' '.join(file.read().lower().split()[:KB_limit])
+                if not txt:
+                    print(f"Error: Input file '{CONFIG['input_filename']}' is empty.")
+                    sys.exit(1)
+
+        except FileNotFoundError:
+            print(f"Error: Input file '{CONFIG['input_filename']}' not found.")
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error reading file: {e}")
+            sys.exit(1)
 
     # Allow user to configure parameters
     try:
         ngram_input = input(f"Enter n-gram size (default: {CONFIG['ngram_size']}): ")
         if ngram_input:
             CONFIG['ngram_size'] = int(ngram_input)
-            
+
         lpc_input = input(f"Enter LPC order (default: {CONFIG['lpc_order']}): ")
         if lpc_input:
             CONFIG['lpc_order'] = int(lpc_input)
-            
+
         use_lpc_input = input(f"Use LPC decoding? (y/n, default: {'y' if CONFIG['use_lpc'] else 'n'}): ")
         if use_lpc_input:
             CONFIG['use_lpc'] = use_lpc_input.lower() == 'y'
+
+        use_opencl_input = input(f"Use OpenCL acceleration? (y/n, default: {'y' if CONFIG['use_opencl'] else 'n'}): ")
+        if use_opencl_input:
+            CONFIG['use_opencl'] = use_opencl_input.lower() == 'y'
     except ValueError:
         print("Invalid input. Using default values.")
 
     # Initialize and train model
     try:
-        model = SymbolicMarkovLPC(CONFIG['ngram_size'], CONFIG['lpc_order'])
+        model = SymbolicMarkovLPC(CONFIG['ngram_size'], CONFIG['lpc_order'], CONFIG['use_opencl'])
         model.train(txt)
     except ValueError as e:
         print(f"Error during initialization or training: {e}")
@@ -723,49 +1072,37 @@ if __name__ == "__main__":
         print(f"\n--- Ready to generate text ---")
         print(f"Using n={model.n}, LPC order={model.lpc_order}, generating {CONFIG['words_to_generate']} words.")
         print(f"LPC decoding is {'enabled' if CONFIG['use_lpc'] else 'disabled'}")
+        print(f"OpenCL acceleration is {'enabled' if model.use_opencl else 'disabled'}")
         print(f"Applying filter: no_repetition_filter (window: {CONFIG['window_size']})")
         print(f"Enter seed text (at least {model.n} words recommended) or press Enter for random start. Type 'exit' to quit.")
 
         while True:
-            try:
-                user_input = input("\nSEED: ")
-                if user_input.lower() in ['quit', 'exit', 'q']:
-                    print("Exiting...")
-                    break
-
-                # Generate text with the user's seed or random start
-                generated_text = model.gen(
-                    seed=user_input,
-                    count=CONFIG['words_to_generate'],
-                    window_size=CONFIG['window_size'],
-                    word_filter=no_repetition_filter,
-                    use_lpc=CONFIG['use_lpc']
-                )
-
-                print("\nGENERATED:")
-                print(generated_text)
-
-                # Optional: ask if user wants to generate more or change parameters
-                more_input = input("\nGenerate again with different parameters? (y/n, default: n): ")
-                if more_input.lower() == 'y':
-                    words_input = input(f"How many words to generate? (default: {CONFIG['words_to_generate']}): ")
-                    if words_input:
-                        try:
-                            CONFIG['words_to_generate'] = int(words_input)
-                        except ValueError:
-                            print("Invalid input. Using previous value.")
-                            
-                    use_lpc_change = input(f"Use LPC decoding? (y/n, default: {'y' if CONFIG['use_lpc'] else 'n'}): ")
-                    if use_lpc_change:
-                        CONFIG['use_lpc'] = use_lpc_change.lower() == 'y'
-
-            except KeyboardInterrupt:
-                print("\nOperation interrupted by user. Exiting...")
+            user_input = input("\nSEED: ")
+            if user_input.lower() in ['quit', 'exit', 'q']:
+                print("Exiting...")
                 break
-            except Exception as e:
-                print(f"Error during text generation: {e}")
-                import traceback
-                traceback.print_exc()
+
+            CONFIG['words_to_generate'] = 250
+
+            # Generate text with the user's seed or random start
+            start_time = time.time() if 'time' in sys.modules else None
+
+            generated_text = model.gen(
+                seed=user_input,
+                count=CONFIG['words_to_generate'],
+                window_size=CONFIG['window_size'],
+                word_filter=no_repetition_filter,
+                use_lpc=CONFIG['use_lpc']
+            )
+
+            end_time = time.time() if 'time' in sys.modules else None
+
+            print("\nGENERATED:")
+            print(generated_text)
+
+            if start_time and end_time:
+                print(f"\nGeneration took {end_time - start_time:.2f} seconds")
 
 if __name__ == "__main__":
+    import time  # Import time for performance measurement
     main()
