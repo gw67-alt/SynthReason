@@ -956,18 +956,6 @@ def no_repetition_filter(word, window_words):
 
 def main():
     # Configuration
-    CONFIG = {
-        'input_filename': "test.txt",  # Default, will be overridden by input
-        'ngram_size': 2,  # Default n-gram size (can be changed)
-        'words_to_generate': 150,  # Default generation length
-        'window_size': 50,  # Default window size for filter
-        'lpc_order': 10,  # Default LPC order
-        'use_lpc': True,   # Whether to use LPC decoding
-        'use_opencl': True, # Whether to use OpenCL acceleration
-        'use_huggingface': True, # Flag to use Hugging Face dataset
-        'hf_dataset_name': "wikipedia",
-        'hf_subset_name': "20220301.en"
-    }
 
     print(f"--- Symbolic Markov Text Generator with OpenCL-accelerated LPC Decoding ---")
     print(f"--- (Training: ∀λ±ε | Generation: ⊆⊗∃·Λρ∑ω·Σø² + OpenCL LPC) ---")
