@@ -961,18 +961,21 @@ def main():
     print(f"--- (Training: ∀λ±ε | Generation: ⊆⊗∃·Λρ∑ω·Σø² + OpenCL LPC) ---")
 
     txt = ""
-
     CONFIG = {
-        'use_huggingface': True,
-        'hf_dataset_name': "wikipedia",
-        'hf_subset_name': "20220301.en",
+        'input_filename': "test.txt",  # Default, will be overridden by input
+        'ngram_size': 2,  # Default n-gram size (can be changed)
+        'words_to_generate': 150,  # Default generation length
+        'window_size': 50,  # Default window size for filter
+        'lpc_order': 10,  # Default LPC order
+        'use_lpc': True,   # Whether to use LPC decoding
+        'use_opencl': True, # Whether to use OpenCL acceleration
+        'use_huggingface': True, # Flag to use Hugging Face dataset
         'max_samples': 10000
-    }
+  }
 
     if CONFIG['use_huggingface']:
         try:
-            dataset = load_dataset(CONFIG['hf_dataset_name'], CONFIG['hf_subset_name'], split="train")
-            # Take a limited number of samples
+            dataset = load_dataset('wikitext', 'wikitext-103-raw-v1', split="train") # Take a limited number of samples
             if CONFIG.get('max_samples'):
                 full_samples = dataset.select(range(CONFIG['max_samples']))
             else:
@@ -980,7 +983,7 @@ def main():
             print(f"Loaded {len(full_samples)} samples from the dataset.")
             # Now 'full_samples' is a Dataset object containing all the loaded samples
             # You can access the text data using full_samples['text']
-            text_data = " ".join(full_samples['text'])[:KB_LIMIT] # Combine all text
+            text_data = " ".join(full_samples['text'])[:KB_limit] # Combine all text
             print(f"Combined text data length: {len(text_data)} characters.")
 
         except Exception as e:
@@ -989,8 +992,8 @@ def main():
             print("Falling back to default 'test.txt' for demonstration.")
             try:
                 with open(CONFIG['input_filename'], 'r', encoding='utf-8') as file:
-                    txt = ' '.join(file.read().lower().split()[:KB_limit])
-                    if not txt:
+                    text_data = ' '.join(file.read().lower().split()[:KB_limit])
+                    if not text_data:
                         print(f"Error: Input file '{CONFIG['input_filename']}' is empty.")
                         sys.exit(1)
             except FileNotFoundError:
@@ -1008,8 +1011,8 @@ def main():
             CONFIG['input_filename'] = filename_to_use
 
             with open(CONFIG['input_filename'], 'r', encoding='utf-8') as file:
-                txt = ' '.join(file.read().lower().split()[:KB_limit])
-                if not txt:
+                text_data = ' '.join(file.read().lower().split()[:KB_limit])
+                if not text_data:
                     print(f"Error: Input file '{CONFIG['input_filename']}' is empty.")
                     sys.exit(1)
 
@@ -1043,7 +1046,7 @@ def main():
     # Initialize and train model
     try:
         model = SymbolicMarkovLPC(CONFIG['ngram_size'], CONFIG['lpc_order'], CONFIG['use_opencl'])
-        model.train(txt)
+        model.train(text_data)
     except ValueError as e:
         print(f"Error during initialization or training: {e}")
         sys.exit(1)
