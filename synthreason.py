@@ -160,9 +160,9 @@ class SymbolicMarkov:
 
         # ⊗ (tensor product) - Relationship between context and options
         tensorValues = []
-        for word in subsetWords:
+        for word in context:
             tensorValue = 1.0 # Use float
-            for contextWord in context:
+            for contextWord in subsetWords:
                 overlap = len(set(contextWord) & set(word))
                 tensorValue *= (float(overlap) + 1.0) # Ensure float calculation
             tensorValues.append(tensorValue)
@@ -206,19 +206,19 @@ class SymbolicMarkov:
             combined = baseDistribution[i] * 5.0
             # Ensure tensorValues has the right index
             if i < len(tensorValues):
-                combined *= math.pow(tensorValues[i], 0.3)
+                combined *= math.pow(tensorValues[i], 0.1)
 
             # Ensure wordWeights has the right index
             if i < len(wordWeights):
                  combined *= wordWeights[i] * 0.8
 
-            combined *= math.pow(contextInfluence, 0.4)
+            combined *= math.pow(contextInfluence, 0.3)
 
             if existsHighProb and baseDistribution[i] < 0.3:
                 combined *= 1.5
 
             # Apply the square as indicated by ²
-            adjustedWeights.append(math.pow(max(0, combined), 2)) # Ensure non-negative before squaring
+            adjustedWeights.append(math.pow(max(0, combined), 0.7)) # Ensure non-negative before squaring
 
         # Normalize the final weights
         totalWeight = sum(adjustedWeights)
@@ -232,7 +232,7 @@ class SymbolicMarkov:
 
         # Ensure weights length matches words length
         if len(subsetWords) != len(normalizedWeights):
-             print(f"Warning: Mismatch in symbolic probability calculation. Words: {len(subsetWords)}, Weights: {len(normalizedWeights)}. Falling back to uniform.")
+             #print(f"Warning: Mismatch in symbolic probability calculation. Words: {len(subsetWords)}, Weights: {len(normalizedWeights)}. Falling back to uniform.")
              normalizedWeights = [1.0 / len(subsetWords)] * len(subsetWords) if subsetWords else []
 
 
@@ -262,7 +262,7 @@ class SymbolicMarkov:
         if not self.s:
             # Try to recover if training failed silently
             if self.m:
-                 print("Warning: No sentence starts available, but model has contexts. Choosing a random context.")
+                 #print("Warning: No sentence starts available, but model has contexts. Choosing a random context.")
                  self.s = random.sample(list(self.m.keys()), k=min(len(self.m), 100))
                  if not self.s: # Still no starts possible
                      raise ValueError("No valid starting contexts available and recovery failed.")
@@ -281,7 +281,7 @@ class SymbolicMarkov:
                     result = seed_words
                 else:
                     # Seed context not found, fall back to random start but keep seed words
-                    print(f"Warning: Seed context {potential_context} not found in model. Starting with a random context.")
+                    #print(f"Warning: Seed context {potential_context} not found in model. Starting with a random context.")
                     context = random.choice(self.s)
                     result = seed_words + list(context) # Append random context start
             else:
@@ -303,7 +303,7 @@ class SymbolicMarkov:
             if context not in self.m or not self.m[context]:
                 retry_count += 1
                 if retry_count >= max_retries:
-                    print(f"\nWarning: Max retries ({max_retries}) reached finding a valid next context. Stopping generation.")
+                    #print(f"\nWarning: Max retries ({max_retries}) reached finding a valid next context. Stopping generation.")
                     break # Exit generation loop
 
                 # Try finding a new valid context
@@ -313,13 +313,13 @@ class SymbolicMarkov:
                      possible_starts = [c for c in self.m.keys() if self.m[c]]
 
                 if not possible_starts:
-                    print("\nWarning: No valid contexts found to continue generation. Stopping.")
+                    #print("\nWarning: No valid contexts found to continue generation. Stopping.")
                     break # Exit generation loop
 
                 context = random.choice(possible_starts)
                 # Avoid adding the whole context if it might make output too long abruptly
                 # result.extend(context) # Consider removing this line if it causes issues
-                print(f"Info: Resetting context to {context} (Retry {retry_count}/{max_retries})")
+                #print(f"Info: Resetting context to {context} (Retry {retry_count}/{max_retries})")
                 continue # Try again with the new context
 
             # Get weighted options using symbolic probability
@@ -329,7 +329,7 @@ class SymbolicMarkov:
             if not words or not weights or len(words) != len(weights) or sum(weights) == 0:
                 retry_count += 1
                 if retry_count >= max_retries:
-                    print(f"\nWarning: Max retries ({max_retries}) reached finding valid next words. Stopping generation.")
+                    #print(f"\nWarning: Max retries ({max_retries}) reached finding valid next words. Stopping generation.")
                     break
 
                 # Try finding a new valid context (same logic as above)
@@ -337,11 +337,11 @@ class SymbolicMarkov:
                 if not possible_starts:
                     possible_starts = [c for c in self.m.keys() if self.m[c]]
                 if not possible_starts:
-                     print("\nWarning: No valid contexts found to continue generation. Stopping.")
+                     #print("\nWarning: No valid contexts found to continue generation. Stopping.")
                      break
 
                 context = random.choice(possible_starts)
-                print(f"Info: Resetting context to {context} due to no valid next words (Retry {retry_count}/{max_retries})")
+                #print(f"Info: Resetting context to {context} due to no valid next words (Retry {retry_count}/{max_retries})")
 
                 continue # Try again
 
@@ -374,7 +374,7 @@ class SymbolicMarkov:
                             k=1
                         )[0]
                     except ValueError as e:
-                        print(f"Warning: Error during weighted choice (filter loop): {e}. Weights: {normalized_weights}")
+                        #print(f"Warning: Error during weighted choice (filter loop): {e}. Weights: {normalized_weights}")
                         break # Exit sampling loop
 
                     candidate_word = available_words[chosen_idx]
@@ -395,11 +395,11 @@ class SymbolicMarkov:
                     try:
                         next_word = random.choices(words, weights=weights, k=1)[0]
                     except ValueError as e:
-                         print(f"Warning: Error during weighted choice (fallback): {e}. Weights: {weights}. Choosing uniformly.")
+                         #print(f"Warning: Error during weighted choice (fallback): {e}. Weights: {weights}. Choosing uniformly.")
                          if words: # Check if words list is not empty
                               next_word = random.choice(words)
                          else: # Should not happen if initial check passed, but safety first
-                              print("Error: Cannot select fallback word, no options available.")
+                              #print("Error: Cannot select fallback word, no options available.")
                               retry_count+=1 # Count as retry and try new context next iteration
                               continue
 
@@ -408,18 +408,18 @@ class SymbolicMarkov:
                 try:
                      next_word = random.choices(words, weights=weights, k=1)[0]
                 except ValueError as e:
-                    print(f"Warning: Error during weighted choice (no filter): {e}. Weights: {weights}. Choosing uniformly.")
+                    #print(f"Warning: Error during weighted choice (no filter): {e}. Weights: {weights}. Choosing uniformly.")
                     if words:
                          next_word = random.choice(words)
                     else:
-                        print("Error: Cannot select word, no options available.")
+                        #print("Error: Cannot select word, no options available.")
                         retry_count+=1
                         continue
 
 
             # Check if a word was actually selected
             if next_word is None:
-                 print("Warning: Failed to select a next word. Resetting context.")
+                 #print("Warning: Failed to select a next word. Resetting context.")
                  retry_count += 1
                  # (Context reset logic will trigger on next loop iteration if needed)
                  continue
@@ -443,7 +443,7 @@ def no_repetition_filter(word, window_words):
 if __name__ == "__main__":
     # Configuration
     CONFIG = {
-        'input_filename': "input.txt",  # Default, will be overridden by input
+        'input_filename': "test.txt",  # Default, will be overridden by input
         'ngram_size': 2, # Default n-gram size (can be changed)
         'words_to_generate': 150, # Default generation length
         'window_size': 50  # Default window size for filter
