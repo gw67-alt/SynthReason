@@ -956,32 +956,35 @@ def no_repetition_filter(word, window_words):
 
 def main():
     # Configuration
-    CONFIG = {
-        'input_filename': "test.txt",  # Default, will be overridden by input
-        'ngram_size': 2,  # Default n-gram size (can be changed)
-        'words_to_generate': 150,  # Default generation length
-        'window_size': 50,  # Default window size for filter
-        'lpc_order': 10,  # Default LPC order
-        'use_lpc': True,   # Whether to use LPC decoding
-        'use_opencl': True, # Whether to use OpenCL acceleration
-        'use_huggingface': True, # Flag to use Hugging Face dataset
-        'hf_dataset_name': "wikipedia",
-        'hf_subset_name': "20220301.en"
-    }
 
     print(f"--- Symbolic Markov Text Generator with OpenCL-accelerated LPC Decoding ---")
     print(f"--- (Training: ∀λ±ε | Generation: ⊆⊗∃·Λρ∑ω·Σø² + OpenCL LPC) ---")
 
     txt = ""
+
+    CONFIG = {
+        'use_huggingface': True,
+        'hf_dataset_name': "wikipedia",
+        'hf_subset_name': "20220301.en",
+        'max_samples': 10000
+    }
+
     if CONFIG['use_huggingface']:
-        print(f"Loading Hugging Face dataset: {CONFIG['hf_dataset_name']}, subset: {CONFIG['hf_subset_name']}")
         try:
-            dataset = load_dataset(CONFIG['hf_dataset_name'], CONFIG['hf_subset_name'], split="train", streaming=True,trust_remote_code=True)
-            # Take a limited number of samples for demonstration
-            sample = next(iter(dataset))
-            txt = sample['text']
-            print(f"Loaded a sample of text from the dataset (length: {len(txt)} characters).")
+            dataset = load_dataset(CONFIG['hf_dataset_name'], CONFIG['hf_subset_name'], split="train")
+            # Take a limited number of samples
+            if CONFIG.get('max_samples'):
+                full_samples = dataset.select(range(CONFIG['max_samples']))
+            else:
+                full_samples = dataset[:] # Load all samples into memory (if manageable)
+            print(f"Loaded {len(full_samples)} samples from the dataset.")
+            # Now 'full_samples' is a Dataset object containing all the loaded samples
+            # You can access the text data using full_samples['text']
+            text_data = " ".join(full_samples['text'])[:KB_LIMIT] # Combine all text
+            print(f"Combined text data length: {len(text_data)} characters.")
+
         except Exception as e:
+            # Fallback to local file loading
             print(f"Error loading Hugging Face dataset: {e}")
             print("Falling back to default 'test.txt' for demonstration.")
             try:
