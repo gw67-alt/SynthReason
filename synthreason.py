@@ -4,7 +4,7 @@ import sys
 import numpy as np
 from collections import defaultdict, Counter
 from tqdm import tqdm
-KB_limit = 9999 #change to -1 for unlimited
+KB_limit = -1 #change to -1 for unlimited
 class SymbolicMarkovLPC:
     """
     Enhanced Markov chain text generator using symbolic probability distribution ⊆⊗∃·Λρ∑ω·Σø²,
@@ -270,12 +270,11 @@ class SymbolicMarkovLPC:
         self.lpc_coefficients = []
         self.lpc_mean = []
         
-        for dim in range(vector_dims):
+        for dim in tqdm(range(vector_dims), desc="Computing LPC coefficients for each dimension"):
             dim_sequence = word_sequence[:, dim]
             coeffs, mean = self._calculate_lpc_coefficients(dim_sequence, self.lpc_order)
             self.lpc_coefficients.append(coeffs)
             self.lpc_mean.append(mean)
-            
         print("LPC training complete!")
 
     def _symbolic_probability(self, context, options):
