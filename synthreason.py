@@ -5,8 +5,6 @@ import math
 import sys
 from collections import defaultdict, Counter
 from tqdm import tqdm
-import time
-from datasets import load_dataset
 
 KB_limit = -1  # change to -1 for unlimited
 
@@ -954,89 +952,62 @@ def no_repetition_filter(word, window_words):
     """Prevents a word from being repeated within the window"""
     return word not in window_words
 
+# Main function
 def main():
     # Configuration
-
-    print(f"--- Symbolic Markov Text Generator with OpenCL-accelerated LPC Decoding ---")
-    print(f"--- (Training: ∀λ±ε | Generation: ⊆⊗∃·Λρ∑ω·Σø² + OpenCL LPC) ---")
-
-    txt = ""
     CONFIG = {
         'input_filename': "test.txt",  # Default, will be overridden by input
         'ngram_size': 2,  # Default n-gram size (can be changed)
         'words_to_generate': 150,  # Default generation length
         'window_size': 50,  # Default window size for filter
-        'lpc_order': 10,  # Default LPC order
+        'lpc_order': 10,  # Default LPC order 
         'use_lpc': True,   # Whether to use LPC decoding
-        'use_opencl': True, # Whether to use OpenCL acceleration
-        'use_huggingface': True, # Flag to use Hugging Face dataset
-        'max_samples': 10000
-  }
+        'use_opencl': True  # Whether to use OpenCL acceleration
+    }
 
-    if CONFIG['use_huggingface']:
-        try:
-            dataset = load_dataset('wikitext', 'wikitext-103-raw-v1', split="train") # Take a limited number of samples
-            if CONFIG.get('max_samples'):
-                full_samples = dataset.select(range(CONFIG['max_samples']))
-            else:
-                full_samples = dataset[:] # Load all samples into memory (if manageable)
-            print(f"Loaded {len(full_samples)} samples from the dataset.")
-            # Now 'full_samples' is a Dataset object containing all the loaded samples
-            # You can access the text data using full_samples['text']
-            text_data = " ".join(full_samples['text'])[:KB_limit] # Combine all text
-            print(f"Combined text data length: {len(text_data)} characters.")
+    print(f"--- Symbolic Markov Text Generator with OpenCL-accelerated LPC Decoding ---")
+    print(f"--- (Training: ∀λ±ε | Generation: ⊆⊗∃·Λρ∑ω·Σø² + OpenCL LPC) ---")
 
-        except Exception as e:
-            # Fallback to local file loading
-            print(f"Error loading Hugging Face dataset: {e}")
-            print("Falling back to default 'test.txt' for demonstration.")
-            try:
-                with open(CONFIG['input_filename'], 'r', encoding='utf-8') as file:
-                    text_data = ' '.join(file.read().lower().split()[:KB_limit])
-                    if not text_data:
-                        print(f"Error: Input file '{CONFIG['input_filename']}' is empty.")
-                        sys.exit(1)
-            except FileNotFoundError:
-                print(f"Error: Input file '{CONFIG['input_filename']}' not found.")
+    # Get filename from user input
+    try:
+        filename_to_use = input(f"Enter input filename (default: {CONFIG['input_filename']}): ")
+        if not filename_to_use:
+            filename_to_use = CONFIG['input_filename']
+        CONFIG['input_filename'] = filename_to_use
+
+        with open(CONFIG['input_filename'], 'r', encoding='utf-8') as file:
+            # Read, lower, and split robustly
+            txt = ' '.join(file.read().lower().split()[:KB_limit])
+            if not txt:
+                print(f"Error: Input file '{CONFIG['input_filename']}' is empty.")
                 sys.exit(1)
-            except Exception as e:
-                print(f"Error reading file: {e}")
-                sys.exit(1)
-    else:
-        # Get filename from user input
-        try:
-            filename_to_use = input(f"Enter input filename (default: {CONFIG['input_filename']}): ")
-            if not filename_to_use:
-                filename_to_use = CONFIG['input_filename']
-            CONFIG['input_filename'] = filename_to_use
 
-            with open(CONFIG['input_filename'], 'r', encoding='utf-8') as file:
-                text_data = ' '.join(file.read().lower().split()[:KB_limit])
-                if not text_data:
-                    print(f"Error: Input file '{CONFIG['input_filename']}' is empty.")
-                    sys.exit(1)
-
-        except FileNotFoundError:
-            print(f"Error: Input file '{CONFIG['input_filename']}' not found.")
-            sys.exit(1)
-        except Exception as e:
-            print(f"Error reading file: {e}")
-            sys.exit(1)
+    except FileNotFoundError:
+        print(f"Error: Input file '{CONFIG['input_filename']}' not found.")
+        # Simple fallback text for demonstration if file fails
+        print("Using sample text for demonstration.")
+        txt = ("this is a simple sample text for the markov chain generator it demonstrates "
+               "basic functionality and provides enough words for training with small ngrams "
+               "repeating some words is necessary for the model to learn transitions this sample "
+               "is quite short so results may be limited a larger corpus will yield better output")
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        sys.exit(1)
 
     # Allow user to configure parameters
     try:
         ngram_input = input(f"Enter n-gram size (default: {CONFIG['ngram_size']}): ")
         if ngram_input:
             CONFIG['ngram_size'] = int(ngram_input)
-
+            
         lpc_input = input(f"Enter LPC order (default: {CONFIG['lpc_order']}): ")
         if lpc_input:
             CONFIG['lpc_order'] = int(lpc_input)
-
+            
         use_lpc_input = input(f"Use LPC decoding? (y/n, default: {'y' if CONFIG['use_lpc'] else 'n'}): ")
         if use_lpc_input:
             CONFIG['use_lpc'] = use_lpc_input.lower() == 'y'
-
+            
         use_opencl_input = input(f"Use OpenCL acceleration? (y/n, default: {'y' if CONFIG['use_opencl'] else 'n'}): ")
         if use_opencl_input:
             CONFIG['use_opencl'] = use_opencl_input.lower() == 'y'
@@ -1046,7 +1017,7 @@ def main():
     # Initialize and train model
     try:
         model = SymbolicMarkovLPC(CONFIG['ngram_size'], CONFIG['lpc_order'], CONFIG['use_opencl'])
-        model.train(text_data)
+        model.train(txt)
     except ValueError as e:
         print(f"Error during initialization or training: {e}")
         sys.exit(1)
@@ -1074,10 +1045,10 @@ def main():
                 break
 
             CONFIG['words_to_generate'] = 250
-
+              
             # Generate text with the user's seed or random start
             start_time = time.time() if 'time' in sys.modules else None
-
+            
             generated_text = model.gen(
                 seed=user_input,
                 count=CONFIG['words_to_generate'],
@@ -1085,15 +1056,15 @@ def main():
                 word_filter=no_repetition_filter,
                 use_lpc=CONFIG['use_lpc']
             )
-
+            
             end_time = time.time() if 'time' in sys.modules else None
-
+            
             print("\nGENERATED:")
             print(generated_text)
-
+            
             if start_time and end_time:
                 print(f"\nGeneration took {end_time - start_time:.2f} seconds")
-
+           
 if __name__ == "__main__":
     import time  # Import time for performance measurement
     main()
