@@ -22,7 +22,7 @@ class SymbolicMarkov:
     ]
 
     # Added geom_p parameter to init
-    def __init__(self, n=2, geom_p=0.5): # Default geom_p = 0.5
+    def __init__(self, n=2, geom_p=0.1): # Default geom_p = 0.1
         if not isinstance(n, int) or n < 1: raise ValueError("n must be > 0")
         if not (isinstance(geom_p, float) and 0 < geom_p <= 1.0):
              raise ValueError("geom_p must be a float > 0 and <= 1.0")
@@ -461,9 +461,9 @@ def no_repetition_filter(word, window_words):
 if __name__ == "__main__":
     CONFIG = { # Defaults
         'input_filename': "test.txt", 'ngram_size': 2,
-        'words_to_generate': 100, # Reduced for quicker testing
-        'window_size': 10,
-        'geom_p': 0.5 # Default geometric distribution parameter
+        'words_to_generate': 250, # Reduced for quicker testing
+        'window_size': 100,
+        'geom_p': 0.1 # Default geometric distribution parameter
     }
     print(f"--- Symbolic Markov Generator (with Geometric Re-weighting) ---")
     try: # File/Input handling
