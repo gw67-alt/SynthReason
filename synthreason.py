@@ -1,13 +1,9 @@
-# MathML: <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>t</mi><mo>&#x2229;</mo><mo>&#x2203;</mo><mo>&#x2227;</mo><mo>&#x2283;</mo><mi>t</mi></math>
-# LaTeX equivalent: t \cap \exists \land \supset t
-
 import random
 import math
 import sys
 from collections import defaultdict, Counter
 from tqdm import tqdm
 import numpy as np
-# Removed matplotlib
 
 class SymbolicMarkov:
     """
@@ -565,12 +561,6 @@ if __name__ == "__main__":
                 print("\n--- Generated Text ---")
                 if user_input: print(f"(Seed: '{user_input}')")
                 print(generated_text)
-                # Optional: Print average metrics
-                if metrics_data.size > 0:
-                    avg_metrics = np.mean(metrics_data, axis=0)
-                    print("\n--- Average Metrics ---")
-                    for name, val in zip(model.METRIC_NAMES, avg_metrics):
-                        print(f"{name:>15}: {val:.3f}")
                 print("-" * 60)
 
             except KeyboardInterrupt: print("\nExiting."); break
