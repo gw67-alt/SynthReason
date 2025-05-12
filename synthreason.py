@@ -1,3 +1,6 @@
+# MathML: <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>t</mi><mo>&#x2229;</mo><mo>&#x2203;</mo><mo>&#x2227;</mo><mo>&#x2283;</mo><mi>t</mi></math>
+# LaTeX equivalent: t \cap \exists \land \supset t
+
 import random
 import math
 import sys
@@ -25,7 +28,7 @@ class SymbolicMarkov:
     def __init__(self, n=2, geom_p=0.1): # Default geom_p = 0.1
         if not isinstance(n, int) or n < 1: raise ValueError("n must be > 0")
         if not (isinstance(geom_p, float) and 0 < geom_p <= 1.0):
-             raise ValueError("geom_p must be a float > 0 and <= 1.0")
+            raise ValueError("geom_p must be a float > 0 and <= 1.0")
         self.n = n
         self.geom_p = geom_p # Store geometric distribution parameter
         self.m = {}
@@ -34,7 +37,6 @@ class SymbolicMarkov:
         self._overall_word_freqs = Counter()
 
     def train(self, t):
-        # ... (train remains the same) ...
         if not isinstance(t, str) or not t: raise TypeError("Training data empty")
         words = t.split(); num_words = len(words)
         if num_words <= self.n: raise ValueError(f"Need more words than n={self.n}")
@@ -48,14 +50,36 @@ class SymbolicMarkov:
             base_increment = 1.0
             global_freq_factor = 1.0 + math.log1p(self._overall_word_freqs[next_word] / total_word_count) * 0.5
             length_factor = 1.0 + math.log1p(len(next_word)) * 0.1
-            symbolic_factor = global_freq_factor * length_factor
+            symbolic_factor_base = global_freq_factor * length_factor
+
+            # --- Symbolic Logic Integration ---
+            # Define 't' - Example: words longer than 5 characters in the current n-gram context
+            t = set(w for w in g if len(w) > 5)
+            is_next_word_in_t = next_word in t
+
+            # Define Psi - Example: next word starts with a vowel
+            def psi(w):
+                return w and w[0].lower() in 'aeiou'
+            condition_psi = psi(next_word)
+            not_psi = not condition_psi
+
+            # Check for existence - Example: any word in the current n-gram context is longer than 7 characters
+            exists_long_word_in_context = any(len(w) > 7 for w in g)
+
+            symbolic_boost = 1.0
+            if is_next_word_in_t or exists_long_word_in_context or not_psi:
+                symbolic_boost = 1.2 # Apply a boost if the condition is met
+
+            symbolic_factor = symbolic_factor_base * symbolic_boost
+            # --- End Symbolic Logic Integration ---
+
             adjusted_increment = base_increment * symbolic_factor
             noise = random.uniform(-0.05, 0.05)
             final_increment = max(0.01, adjusted_increment + noise)
             # Identify potential sentence starts based on previous word ending punctuation
             # Ensure previous word exists (i>0) and check its last char
             if i == 0 or (words[i-1] and words[i-1][-1] in self.SENTENCE_END_CHARS):
-                 temp_s.add(g)
+                temp_s.add(g)
             temp_m[g][next_word] += final_increment # Use final_increment for adjusted count
         self.m = {g: dict(next_words) for g, next_words in temp_m.items()}
         # Filter starts to ensure they actually exist as keys in the model and have successors
@@ -67,6 +91,7 @@ class SymbolicMarkov:
         if not self.s and not self.m: print("Warning: Model training resulted in no transitions.")
         elif not self.s and self.m: print("Warning: Model trained but no valid starting points found.")
         print(f"Training complete. Model has {len(self.m)} contexts. Found {len(self.s)} valid sentence starts.")
+
 
 
     def _symbolic_probability(self, context, options):
@@ -143,11 +168,11 @@ class SymbolicMarkov:
 
         for i, original_weight in enumerate(adjustedWeights): # i is index within subset
             if original_weight <= 1e-9: # Skip zero/negligible weights
-                 continue
+                continue
             rank_k = ranks.get(i)
             if rank_k is None: # Should not happen
-                 print(f"Warning: Index {i} not found in ranks during geometric mod.")
-                 continue
+                print(f"Warning: Index {i} not found in ranks during geometric mod.")
+                continue
 
             # Calculate geometric factor P(X=k) = (1-p)^(k-1) * p
             geometric_factor = math.pow(1.0 - geom_p, rank_k - 1) * geom_p
@@ -166,15 +191,15 @@ class SymbolicMarkov:
 
         # Final sanity check
         if len(subsetWords) != len(normalizedWeights):
-             print(f"Warning:_symbolic_probability final mismatch. Fallback uniform.")
-             normalizedWeights = [1.0 / len(subsetWords)] * len(subsetWords) if subsetWords else []
+            print(f"Warning:_symbolic_probability final mismatch. Fallback uniform.")
+            normalizedWeights = [1.0 / len(subsetWords)] * len(subsetWords) if subsetWords else []
 
         # Return the original subset words and their NEW final normalized weights
         return subsetWords, normalizedWeights
 
 
     def _calculate_step_metrics(self, chosen_word, context, candidate_words,
-                                 candidate_weights, chosen_prob, filter_rejects, is_start):
+                                candidate_weights, chosen_prob, filter_rejects, is_start):
         # ... (calculate_step_metrics remains the same) ...
         metrics = [0.0] * 8 # Corresponds to METRIC_NAMES
         metrics[0] = float(len(chosen_word)) # Word Length
@@ -224,8 +249,8 @@ class SymbolicMarkov:
 
     # Keep original gen for compatibility if needed
     def gen(self, seed=None, count=100, window_size=20, word_filter=None):
-          generated_text, _ = self.generate_and_get_metrics(seed, count, window_size, word_filter)
-          return generated_text # Or return just the last 'count' words if preferred
+        generated_text, _ = self.generate_and_get_metrics(seed, count, window_size, word_filter)
+        return generated_text # Or return just the last 'count' words if preferred
 
     def generate_and_get_metrics(self, seed=None, count=100, window_size=20, word_filter=None):
         """
@@ -294,8 +319,8 @@ class SymbolicMarkov:
                 # Attempt reset to a known valid starting point
                 valid_starts = [s for s in self.s if s in self.m and self.m[s]] # Re-check validity of starts
                 if not valid_starts:
-                     print("DEBUG: No valid starting points left for reset. Breaking.")
-                     break
+                    print("DEBUG: No valid starting points left for reset. Breaking.")
+                    break
                 context = random.choice(valid_starts)
                 result.extend(list(context)) # Add the new context to result
                 print(f"DEBUG: Reset context to {context}")
@@ -389,10 +414,10 @@ class SymbolicMarkov:
                         print(f"DEBUG: Error during filter fallback choice: {e}. Trying uniform.")
                         # Ultimate fallback: uniform random choice if possible
                         if candidate_words:
-                             next_word = random.choice(candidate_words)
-                             chosen_prob_value = 1.0 / len(candidate_words) # Approximate probability
+                            next_word = random.choice(candidate_words)
+                            chosen_prob_value = 1.0 / len(candidate_words) # Approximate probability
                         else:
-                             print(f"DEBUG: No candidates even for uniform fallback."); next_word = None # Will trigger reset
+                            print(f"DEBUG: No candidates even for uniform fallback."); next_word = None # Will trigger reset
 
             else: # No filter applied
                 # print("DEBUG: No filter.")
@@ -410,7 +435,7 @@ class SymbolicMarkov:
                         next_word = random.choice(candidate_words)
                         chosen_prob_value = 1.0 / len(candidate_words) # Approximate probability
                     else:
-                         print(f"DEBUG: No candidates for uniform choice."); next_word = None # Will trigger reset
+                        print(f"DEBUG: No candidates for uniform choice."); next_word = None # Will trigger reset
 
             # --- Check selection outcome ---
             if next_word is None:
@@ -429,12 +454,12 @@ class SymbolicMarkov:
 
             # --- Selection successful: Calculate metrics and update ---
             step_metrics = self._calculate_step_metrics(
-                  chosen_word=next_word, context=context,
-                  candidate_words=candidate_words, # Full list from _symbolic
-                  candidate_weights=candidate_weights, # Weights from _symbolic
-                  chosen_prob=chosen_prob_value, # Probability of the actual chosen word
-                  filter_rejects=filter_rejections,
-                  is_start=is_start_word_flag
+                chosen_word=next_word, context=context,
+                candidate_words=candidate_words, # Full list from _symbolic
+                candidate_weights=candidate_weights, # Weights from _symbolic
+                chosen_prob=chosen_prob_value, # Probability of the actual chosen word
+                filter_rejects=filter_rejections,
+                is_start=is_start_word_flag
             )
             generated_metrics.append(step_metrics)
             # print(f"DEBUG: Chose: '{next_word}' (Prob: {chosen_prob_value:.4f}) Metrics: {[f'{m:.2f}' for m in step_metrics]}")
@@ -470,8 +495,8 @@ if __name__ == "__main__":
         fname = input(f"Input filename (def: {CONFIG['input_filename']}): ") or CONFIG['input_filename']
         CONFIG['input_filename'] = fname
         with open(fname, 'r', encoding='utf-8') as f:
-             # Read, lower, split into words, join back with single spaces to normalize whitespace
-             txt = ' '.join(f.read().lower().split())
+            # Read, lower, split into words, join back with single spaces to normalize whitespace
+            txt = ' '.join(f.read().lower().split())
         if not txt: print("Error: Input file empty."); sys.exit(1)
     except FileNotFoundError:
         print(f"Error: File '{CONFIG['input_filename']}' not found. Using sample text.")
@@ -487,11 +512,11 @@ if __name__ == "__main__":
     try: # Geometric P
         p_in = input(f"Geometric distribution P (0<p<=1, def: {CONFIG['geom_p']}): ")
         if p_in:
-             try:
-                 p_val = float(p_in)
-                 if 0 < p_val <= 1.0: CONFIG['geom_p'] = p_val
-                 else: print("Invalid P value, using default.")
-             except ValueError: print("Invalid P input, using default.")
+            try:
+                p_val = float(p_in)
+                if 0 < p_val <= 1.0: CONFIG['geom_p'] = p_val
+                else: print("Invalid P value, using default.")
+            except ValueError: print("Invalid P input, using default.")
     except ValueError: print("Invalid P, using default.")
 
 
@@ -542,17 +567,17 @@ if __name__ == "__main__":
                 print(generated_text)
                 # Optional: Print average metrics
                 if metrics_data.size > 0:
-                     avg_metrics = np.mean(metrics_data, axis=0)
-                     print("\n--- Average Metrics ---")
-                     for name, val in zip(model.METRIC_NAMES, avg_metrics):
-                         print(f"{name:>15}: {val:.3f}")
+                    avg_metrics = np.mean(metrics_data, axis=0)
+                    print("\n--- Average Metrics ---")
+                    for name, val in zip(model.METRIC_NAMES, avg_metrics):
+                        print(f"{name:>15}: {val:.3f}")
                 print("-" * 60)
 
             except KeyboardInterrupt: print("\nExiting."); break
             except ValueError as e: print(f"Generation Error: {e}") # Errors from model logic
             except Exception as e:
-                 print(f"Unexpected Error during generation: {e}")
-                 import traceback # Optional: Uncomment for full stack trace
-                 traceback.print_exc()
+                print(f"Unexpected Error during generation: {e}")
+                import traceback # Optional: Uncomment for full stack trace
+                traceback.print_exc()
 
     print("\n--- Run Complete ---")
