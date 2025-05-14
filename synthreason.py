@@ -7,7 +7,7 @@ class Environment:
     def __init__(self, state_size=3, text_ngram_size=2):
         self.state_size = state_size
         self.state = np.zeros(state_size)  # Initial state
-        self.goal_state = np.array([1, 1, 1])  # Example goal
+        self.goal_state = np.array([0, 0, 0, 1])  # Example goal
 
         # Text N-gram related attributes
         self.text_ngram_size = text_ngram_size
@@ -274,8 +274,8 @@ def calculate_objective_and_gradients(agent, environment, episodes=1):
 
 # 5. Main Training Loop
 def main():
-    state_size = 3
-    action_size = 3 # Must match state_size for current env.step: self.state = self.state + action
+    state_size = 4
+    action_size = 4 # Must match state_size for current env.step: self.state = self.state + action
     text_ngram_size = 2  # Using bigrams (context of 1 word)
 
     # Initialize Environment and train its n-gram model on a corpus
@@ -289,83 +289,84 @@ def main():
     agent = Agent(state_size, action_size, 
                   word_to_idx_map=environment.word_to_idx, 
                   idx_to_word_list=environment.idx_to_word,
-                  embedding_size=10) # Example embedding size
+                  embedding_size=100) # Example embedding size
 
-    episodes_per_iteration = 30 # Number of episodes for averaging gradients
-    optimization_steps = 60   # Number of times to update agent's matrices
+    episodes_per_iteration = 50 # Number of episodes for averaging gradients
+    optimization_steps = 25   # Number of times to update agent's matrices
 
     print(f"Agent initialized. Vocabulary size: {agent.vocab_size}.")
     if agent.vocab_size == 0:
         print("Warning: Agent vocabulary is empty. Text features may not work.")
         # return # Optionally exit if no vocab
+    while True:
+        initial_seed_words = input("USER: ").split()
+        seed_words = []
 
-    for i in range(optimization_steps):
-        avg_reward, grad_P, grad_text_embed = calculate_objective_and_gradients(agent, environment, episodes_per_iteration)
+        for i in range(optimization_steps):
+            avg_reward, grad_P, grad_text_embed = calculate_objective_and_gradients(agent, environment, episodes_per_iteration)
+            
+            if i % 10 == 0 : # Print status more frequently
+                print(f"Optimization Step {i}, Average Reward: {avg_reward:.4f}")
+            
+            agent.update_matrices(grad_P, grad_text_embed)
+
+        print(f"\n--- Testing Text Generation at Step {i} ---")
         
-        if i % 5 == 0 : # Print status more frequently
-            print(f"Optimization Step {i}, Average Reward: {avg_reward:.4f}")
+        test_env_for_generation = Environment(state_size, text_ngram_size)
+        # Crucially, give the test environment the n-gram model and vocabulary from the main trained environment
+        test_env_for_generation.ngram_counts = environment.ngram_counts
+        test_env_for_generation.word_to_idx = environment.word_to_idx
+        test_env_for_generation.idx_to_word = environment.idx_to_word
+        test_env_for_generation.vocabulary_set = environment.vocabulary_set
         
-        agent.update_matrices(grad_P, grad_text_embed)
-
-        # Periodically test text generation
-        if i % 20 == 0 or i == optimization_steps - 1:
-            print(f"\n--- Testing Text Generation at Step {i} ---")
+        
+        current_test_numeric_state = test_env_for_generation.reset()
+        
+        # Seed the text generation
+        for word in initial_seed_words: # If vocabulary exists
+            if word in agent.word_to_idx:
+                seed_words.append(word)
+            else:
+                seed_words.append(random.choice(agent.idx_to_word))
+        
+        test_env_for_generation.text_state = seed_words.copy()
+        generated_text_sequence = seed_words.copy()
+        
+        for _ in range(250):  # Generate a sequence of 10 additional words
+            numeric_action_for_test = agent.get_action(current_test_numeric_state)
             
-            test_env_for_generation = Environment(state_size, text_ngram_size)
-            # Crucially, give the test environment the n-gram model and vocabulary from the main trained environment
-            test_env_for_generation.ngram_counts = environment.ngram_counts
-            test_env_for_generation.word_to_idx = environment.word_to_idx
-            test_env_for_generation.idx_to_word = environment.idx_to_word
-            test_env_for_generation.vocabulary_set = environment.vocabulary_set
-
-
-            current_test_numeric_state = test_env_for_generation.reset()
+            generated_word_for_step = None
+            context_for_test_gen = None
+            # Determine context based on n-gram size and current text_state in test_env
+            if text_ngram_size > 1:
+                if len(test_env_for_generation.text_state) >= text_ngram_size - 1:
+                    context_for_test_gen = tuple(test_env_for_generation.text_state[-(text_ngram_size - 1):])
+            elif text_ngram_size == 1: # Unigram
+                context_for_test_gen = tuple()
             
-            # Seed the text generation
-            initial_seed_words = []
-            if agent.idx_to_word: # If vocabulary exists
-                if 'the' in agent.word_to_idx:
-                    initial_seed_words = ['the']
-                elif agent.idx_to_word: # Fallback to a random word from vocab if 'the' is not there
-                    initial_seed_words = [random.choice(agent.idx_to_word)]
+            # Get n-gram probabilities from the (primed) test_env
+            ngram_probs_for_test = test_env_for_generation.get_ngram_probabilities(context_for_test_gen)
             
-            test_env_for_generation.text_state = initial_seed_words.copy()
-            generated_text_sequence = initial_seed_words.copy()
-
-            for _ in range(250):  # Generate a sequence of 10 additional words
-                numeric_action_for_test = agent.get_action(current_test_numeric_state)
-                
-                generated_word_for_step = None
-                context_for_test_gen = None
-                # Determine context based on n-gram size and current text_state in test_env
-                if text_ngram_size > 1:
-                    if len(test_env_for_generation.text_state) >= text_ngram_size - 1:
-                        context_for_test_gen = tuple(test_env_for_generation.text_state[-(text_ngram_size - 1):])
-                elif text_ngram_size == 1: # Unigram
-                    context_for_test_gen = tuple()
-                
-                # Get n-gram probabilities from the (primed) test_env
-                ngram_probs_for_test = test_env_for_generation.get_ngram_probabilities(context_for_test_gen)
-                
-                if ngram_probs_for_test:
-                    generated_word_for_step = agent.get_text_action(
-                        current_test_numeric_state, 
-                        test_env_for_generation.text_state, 
-                        ngram_probs_for_test, 
-                        temperature=0.7 # Use a temperature for some randomness
-                    )
-                
-                # Step the test environment
-                current_test_numeric_state, _, _, _ = test_env_for_generation.step(numeric_action_for_test, generated_word_for_step)
-                # test_env_for_generation.text_state is updated internally by its step method
-
-                if generated_word_for_step:
-                    generated_text_sequence.append(generated_word_for_step)
-                else: # Stop generation if no word could be chosen
-                    break 
+            if ngram_probs_for_test:
+                generated_word_for_step = agent.get_text_action(
+                    current_test_numeric_state, 
+                    test_env_for_generation.text_state, 
+                    ngram_probs_for_test, 
+                    temperature=0.7 # Use a temperature for some randomness
+                )
             
-            print(f"Generated Text Sample: {' '.join(generated_text_sequence)}")
-            print("-------------------------------------------")
-
+            # Step the test environment
+            current_test_numeric_state, _, _, _ = test_env_for_generation.step(numeric_action_for_test, generated_word_for_step)
+            # test_env_for_generation.text_state is updated internally by its step method
+        
+            if generated_word_for_step:
+                generated_text_sequence.append(generated_word_for_step)
+            else: # Stop generation if no word could be chosen
+                break 
+        
+        print(f"Generated Text Sample: {' '.join(generated_text_sequence)}")
+        print("-------------------------------------------")
+        
+                
 if __name__ == "__main__":
     main()
