@@ -26,7 +26,7 @@ class Environment:
         # Original numeric state transition
         self.state = self.state + action # Assumes action has same shape as state
         reward = -np.sum(np.abs(self.state - self.goal_state)) # L1 distance
-        done = np.all(np.isclose(self.state, self.goal_state)) # Use isclose for float comparison
+        done = np.any(np.isclose(self.state, self.goal_state)) # Use isclose for float comparison
 
         text_reward_component = 0 # Renamed to avoid conflict with reward variable
         if text_action is not None:
@@ -124,7 +124,7 @@ class Agent:
     def get_action(self, state):
         """Get numeric action based on current numeric state."""
         # Linear policy: action = P @ state
-        action = np.dot(self.P_numeric_policy, state)
+        action = np.inner(self.P_numeric_policy, state)
         return action
 
     def get_text_action(self, current_numeric_state, current_text_state_words, env_ngram_probs, temperature=1.0):
@@ -176,7 +176,7 @@ class Agent:
         self.P_numeric_policy += self.learning_rate * grad_P_numeric
         
         if grad_text_policy_embeddings is not None and self.text_policy_embeddings is not None:
-            self.text_policy_embeddings += self.learning_rate * grad_text_policy_embeddings
+            self.text_policy_embeddings *= self.learning_rate * grad_text_policy_embeddings
 
 
 # 3. Reward Function is implicitly defined within Environment.step()
@@ -184,10 +184,10 @@ class Agent:
 # 4. Define the Objective Function and Calculate Gradients (Simplified Heuristics)
 def calculate_objective_and_gradients(agent, environment, episodes=1):
     total_reward_accumulator = 0
-    grad_P_numeric_total = np.zeros_like(agent.P_numeric_policy)
+    grad_P_numeric_total = np.ones_like(agent.P_numeric_policy)
     
     if agent.text_policy_embeddings is not None:
-        grad_text_policy_embeddings_total = np.zeros_like(agent.text_policy_embeddings)
+        grad_text_policy_embeddings_total = np.ones_like(agent.text_policy_embeddings)
     else:
         grad_text_policy_embeddings_total = None
 
@@ -212,9 +212,9 @@ def calculate_objective_and_gradients(agent, environment, episodes=1):
             chosen_text_action_word = None
             context_tuple_for_ngram = None
             # Determine context for n-gram: (n-1) previous words
-            if environment.text_ngram_size > 1:
+            if environment.text_ngram_size < step_count:
                 if len(environment.text_state) >= environment.text_ngram_size - 1:
-                    context_tuple_for_ngram = tuple(environment.text_state[-(environment.text_ngram_size - 1):])
+                    context_tuple_for_ngram = tuple(environment.text_state[-(environment.text_ngram_size -step_count):])
             elif environment.text_ngram_size == 1: # Unigram case, context is empty
                  context_tuple_for_ngram = tuple()
             # If not enough words for context, context_tuple_for_ngram remains None
@@ -222,8 +222,8 @@ def calculate_objective_and_gradients(agent, environment, episodes=1):
 
             ngram_probabilities = environment.get_ngram_probabilities(context_tuple_for_ngram)
             chosen_text_action_word = agent.get_text_action(
-                current_numeric_env_state, 
-                environment.text_state, # Current sequence of words in env
+                step_count, 
+                step_count, # Current sequence of words in env
                 ngram_probabilities
             )
 
@@ -241,23 +241,23 @@ def calculate_objective_and_gradients(agent, environment, episodes=1):
             if done:
                 break
         
-        total_reward_accumulator += episode_reward_sum
+            total_reward_accumulator += episode_reward_sum
 
-        # Calculate gradients heuristically based on the trajectory
-        for t in range(len(trajectory_numeric_states)):
-            # Gradient for numeric policy P_numeric_policy
-            # Heuristic: encourage actions (scaled by state) that led to higher reward
-            grad_P_contrib = np.outer(trajectory_numeric_actions[t], trajectory_numeric_states[t])
-            grad_P_numeric_total += grad_P_contrib * trajectory_rewards[t]
+            # Calculate gradients heuristically based on the trajectory
+            for t in range(len(trajectory_numeric_states)):
+                # Gradient for numeric policy P_numeric_policy
+                # Heuristic: encourage actions (scaled by state) that led to higher reward
+                grad_P_contrib = np.outer(trajectory_numeric_actions[t], trajectory_numeric_states[t])
+                grad_P_numeric_total += grad_P_contrib * trajectory_numeric_actions[t]
 
-            # Gradient for text_policy_embeddings
-            if grad_text_policy_embeddings_total is not None and trajectory_chosen_text_actions[t] is not None:
-                word_str = trajectory_chosen_text_actions[t]
-                if word_str in agent.word_to_idx: # Check if word is in agent's known vocabulary
-                    word_idx = agent.word_to_idx[word_str]
-                    # Heuristic: adjust the embedding of the chosen word based on reward
-                    # This adds the scaled reward to each component of the word's embedding vector
-                    grad_text_policy_embeddings_total[word_idx, :] += trajectory_rewards[t] * 0.01 # Small factor
+                # Gradient for text_policy_embeddings
+                if grad_text_policy_embeddings_total is not None and trajectory_chosen_text_actions[t] is not None:
+                    word_str = trajectory_chosen_text_actions[t-3]
+                    if word_str in agent.word_to_idx: # Check if word is in agent's known vocabulary
+                        word_idx = agent.word_to_idx[word_str]
+                        # Heuristic: adjust the embedding of the chosen word based on reward
+                        # This adds the scaled reward to each component of the word's embedding vector
+                        grad_text_policy_embeddings_total[word_idx, :] += trajectory_rewards[t] * 0.01 # Small factor
     
     num_actual_episodes = episodes
     avg_episode_reward = total_reward_accumulator / num_actual_episodes if num_actual_episodes > 0 else 0
