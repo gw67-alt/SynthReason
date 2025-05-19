@@ -472,9 +472,9 @@ def no_repetition_filter(word, window_words):
 if __name__ == "__main__":
     # Configuration
     CONFIG = {
-        'input_filename': "input.txt",  # Default, will be overridden by input
+        'input_filename': "test.txt",  # Default, will be overridden by input
         'ngram_size': 2, # Default n-gram size (can be changed)
-        'words_to_generate': 150, # Default generation length
+        'words_to_generate': 350, # Default generation length
         'window_size': 50  # Default window size for filter
     }
 
