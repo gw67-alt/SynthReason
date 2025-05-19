@@ -3,6 +3,8 @@ import math
 import sys
 from collections import defaultdict, Counter
 from tqdm import tqdm
+import numpy as np
+import torch
 
 class SymbolicMarkov:
     """
@@ -67,7 +69,7 @@ class SymbolicMarkov:
         length_ratio = min(w1_len, w2_len) / max(w1_len, w2_len) if max(w1_len, w2_len) > 0 else 0.0
         
         # 3. Approximate phonetic similarity through vowel/consonant patterns
-        vowels = set('aeiou')
+        vowels = set('hello world!')
         w1_pattern = ''.join('V' if c in vowels else 'C' for c in word1.lower())
         w2_pattern = ''.join('V' if c in vowels else 'C' for c in word2.lower())
         
@@ -228,45 +230,52 @@ class SymbolicMarkov:
             tuple: (words, weights) Lists of candidate words and their probabilities
         """
         words = list(options.keys())
-        # Frequencies are now floats due to training adjustments
         freqs = list(options.values())
 
-        # Early return if no options
         if not words:
             return [], []
 
-        # --- Start of Symbolic Probability Calculation (⊆⊗∃·Λρ∑ω·Σø²) ---
-
-        # ⊆ (subset) - Filter options (keep frequencies > adjusted threshold or all)
-        # Since frequencies are floats, compare against a small value or mean
+        # ⊆ (subset) — Filter low-freq entries
         mean_freq = sum(freqs) / len(freqs) if freqs else 0
-        # Keep words with frequency > slightly above mean or all if that leaves nothing
-        subset_indices = [i for i, f in enumerate(freqs) if f > mean_freq * 0.5] # Keep if > 50% of mean freq
-
-        # If nothing would remain, use all words
+        subset_indices = [i for i, f in enumerate(freqs) if f > mean_freq * 0.5]
         if not subset_indices:
             subset_indices = list(range(len(words)))
 
         subsetWords = [words[i] for i in subset_indices]
         subsetFreqs = [freqs[i] for i in subset_indices]
 
-        # If we still have nothing, return empty lists
         if not subsetWords:
             return [], []
 
-        # ⊗ (tensor product) - Relationship between context and options
+        # ⊗ (tensor product) — Build tensor-like value per word
         tensorValues = []
-        for word in subsetWords:
-            tensorValue = 1.0 # Use float
+        for i, word in enumerate(subsetWords):
+            value = 1.0
             for contextWord in context:
-                # Enhanced with L-semi-inner product
                 l_similarity = self._l_semi_inner_product(contextWord, word)
-                overlap = len(set(contextWord) & set(word))
+                overlap = len(set(contextWord) | set(word))
                 combined_similarity = (float(overlap) + 1.0) * (1.0 + l_similarity)
-                tensorValue *= combined_similarity
-            tensorValues.append(tensorValue)
+                value *= subsetFreqs[i] * combined_similarity
+            tensorValues.append(value)
 
-        return subsetWords, tensorValues
+        import torch
+        tensorValues = torch.tensor(tensorValues)
+
+        # Sort values and keep the sort order
+        sorted_tensor, sort_indices = torch.sort(tensorValues)
+
+        # Modify the sorted values — e.g., halve every even-indexed sorted value
+        modified_sorted = sorted_tensor.clone()
+        for i in range(len(modified_sorted)):
+            if i % 2 == 0:
+                modified_sorted[i] /= 2
+
+        # Unsort to match original order
+        inverse_indices = torch.argsort(sort_indices)
+        unsorted_result = modified_sorted[inverse_indices]
+
+        return subsetWords, unsorted_result.tolist()
+
 
 
     def gen(self, seed=None, count=100, window_size=20, word_filter=None):
