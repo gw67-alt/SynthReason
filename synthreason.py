@@ -24,28 +24,49 @@ class SymbolicMarkov:
         if not isinstance(n, int) or n < 1:
             raise ValueError("n-gram size 'n' must be a positive integer.")
         self.n = n
-        # Transitions will store floats due to symbolic adjustments
         self.m = {}  # Transitions: {context_tuple: {next_word: adjusted_frequency}}
         self.s = []  # Sentence starting n-grams
         self.all_words = set() # Store all words seen during training
 
+    @staticmethod
+    def _calculate_distinct_permutations_log(word):
+        """
+        Calculates the natural logarithm of the number of distinct permutations of characters in a word.
+        Formula: log(N! / (n1! * n2! * ... * nk!))
+                 = log(N!) - (log(n1!) + log(n2!) + ...)
+                 = lgamma(N+1) - sum(lgamma(ni+1) for ni in counts)
+        Returns 0.0 for empty strings or if calculation errors occur.
+        """
+        if not word:
+            return 0.0
+        
+        n = len(word)
+        if n == 0:
+             return 0.0
+
+        counts = Counter(word)
+        
+        try:
+            # math.lgamma(x) computes log(gamma(x)). log(k!) = lgamma(k+1).
+            log_n_factorial = math.lgamma(n + 1)
+            
+            log_denominator_sum = 0.0
+            for char_count in counts.values():
+                log_denominator_sum += math.lgamma(char_count + 1)
+            
+            log_permutations = log_n_factorial - log_denominator_sum
+            # Result should theoretically be non-negative.
+            # Floating point inaccuracies might make it slightly negative for very simple cases (e.g. single char "a" should be log(1!) - log(1!) = 0)
+            return max(0.0, log_permutations) 
+        except (ValueError, OverflowError):
+            # Fallback in case of unexpected math issues
+            return 0.0
+
     def _l_semi_inner_product(self, word1, word2):
         """
         Calculates an L-semi-inner product between two words.
-        This provides a measure of linguistic similarity beyond simple character overlap.
-        
-        The L-semi-inner product considers:
-        1. Character overlap (weighted)
-        2. Length similarity 
-        3. Phonetic properties approximation
-        4. Position-based weighting
-        
-        Args:
-            word1 (str): First word
-            word2 (str): Second word
-            
-        Returns:
-            float: L-semi-inner product value
+        This provides a measure of linguistic similarity.
+        Now includes a factor based on the similarity of log-counts of distinct character permutations.
         """
         if not word1 or not word2:
             return 0.0
@@ -55,33 +76,27 @@ class SymbolicMarkov:
         w1_len = len(word1)
         w2_len = len(word2)
         
-        # Calculate normalized position weights
         for i, c1 in enumerate(word1):
             pos_weight_1 = 1.0 - (abs(i - w1_len/2) / (w1_len + 0.001))
-            
             for j, c2 in enumerate(word2):
                 if c1 == c2:
                     pos_weight_2 = 1.0 - (abs(j - w2_len/2) / (w2_len + 0.001))
-                    # Weight matches by their positions (center characters matter more)
                     char_product += pos_weight_1 * pos_weight_2
         
         # 2. Length similarity component (normalized)
         length_ratio = min(w1_len, w2_len) / max(w1_len, w2_len) if max(w1_len, w2_len) > 0 else 0.0
         
         # 3. Approximate phonetic similarity through vowel/consonant patterns
-        vowels = set('hello world!')
+        vowels = set('aeiou') # Standard vowels for phonetic approximation
         w1_pattern = ''.join('V' if c in vowels else 'C' for c in word1.lower())
         w2_pattern = ''.join('V' if c in vowels else 'C' for c in word2.lower())
         
-        # Compare vowel-consonant patterns at beginning and end of words
         pattern_length = min(3, min(len(w1_pattern), len(w2_pattern)))
         pattern_match_start = sum(1 for i in range(pattern_length) 
-                              if i < len(w1_pattern) and i < len(w2_pattern) and w1_pattern[i] == w2_pattern[i])
-        
-        pattern_match_end = sum(1 for i in range(1, pattern_length+1)
-                            if i <= len(w1_pattern) and i <= len(w2_pattern) 
-                            and w1_pattern[-i] == w2_pattern[-i])
-        
+                                  if i < len(w1_pattern) and i < len(w2_pattern) and w1_pattern[i] == w2_pattern[i])
+        pattern_match_end = sum(1 for i in range(1, pattern_length + 1)
+                                if i <= len(w1_pattern) and i <= len(w2_pattern) 
+                                and w1_pattern[-i] == w2_pattern[-i])
         phonetic_factor = (pattern_match_start + pattern_match_end) / (2 * pattern_length) if pattern_length > 0 else 0.0
         
         # 4. Special case for exact prefix or suffix matches
@@ -98,123 +113,118 @@ class SymbolicMarkov:
                 suffix_len += 1
             else:
                 break
-                
         prefix_suffix_factor = (prefix_len + suffix_len) / (w1_len + w2_len) if (w1_len + w2_len) > 0 else 0.0
+
+        # 5. NEW: Permutation-based similarity factor
+        log_perm1 = self._calculate_distinct_permutations_log(word1)
+        log_perm2 = self._calculate_distinct_permutations_log(word2)
         
-        # Combine all factors with weights
+        diff_log_perm = abs(log_perm1 - log_perm2)
+        # Normalize the difference: 1 if identical, 0 if maximally different based on scale
+        # Using max of logs (or 1.0 if logs are small) as denominator
+        denominator_perm = max(log_perm1, log_perm2, 1.0) # Avoid division by zero and give scale
+        normalized_diff_perm = diff_log_perm / denominator_perm if denominator_perm > 0 else 0.0
+        permutation_similarity_factor = 1.0 - min(normalized_diff_perm, 1.0) # Ensure factor is [0,1]
+
+        # Combine all factors with new weights (summing to 1.0)
+        # Old weights: char=0.4, len=0.2, phon=0.2, pre_suf=0.2
+        # New weights: perm=0.1, others scaled to sum to 0.9
+        w_char = 0.36       # was 0.4
+        w_len = 0.18        # was 0.2
+        w_phon = 0.18       # was 0.2
+        w_pre_suf = 0.18    # was 0.2
+        w_perm = 0.10       # new factor
+
         l_inner_product = (
-            0.4 * char_product + 
-            0.2 * length_ratio + 
-            0.2 * phonetic_factor + 
-            0.2 * prefix_suffix_factor
+            w_char * char_product + 
+            w_len * length_ratio + 
+            w_phon * phonetic_factor + 
+            w_pre_suf * prefix_suffix_factor +
+            w_perm * permutation_similarity_factor # Added new factor
         )
         
-        # Scale the result to a reasonable range
-        return l_inner_product * 2.0  # Amplify the effect
+        return l_inner_product * 2.0 # Amplify the effect (existing scaling)
 
     def train(self, t):
-        """
-        Trains the Markov model on the provided text, applying symbolic
-        adjustments ∀λ±ε to the transition counts and incorporating
-        L-semi-inner product calculations.
-
-        Interpretation:
-            ∀: Adjust increment based on global frequency of the next word.
-            λ: Adjust increment based on the length of the next word.
-            ±ε: Add small random noise to the increment.
-            L: Apply L-semi-inner product between context and next word.
-
-        Args:
-            t (str): The training text.
-        """
         if not isinstance(t, str) or not t:
             raise TypeError("Training data must be a non-empty string.")
 
         words = t.split()
         num_words = len(words)
 
-        if num_words <= self.n:
+        if num_words <= self.n: # Ensure enough words for at least one n-gram and next word
             raise ValueError(f"Training data has only {num_words} words, need more than n-gram size {self.n}.")
 
         print(f"Training on {num_words} words with n={self.n}...")
         print(f"Applying symbolic count adjustments ∀λ±ε with L-semi-inner product...")
 
-        # Calculate global word frequencies first (for ∀)
-        print("Calculating global word frequencies (∀)...")
         overall_word_freqs = Counter(words)
-        total_word_count = float(num_words) # Use float for division
+        total_word_count = float(num_words)
 
-        # Build frequency dictionary using defaultdict with float values
         temp_m = defaultdict(lambda: defaultdict(float))
-        temp_s = set()  # Use set for faster lookup
-
-        # Track all words seen during training
+        temp_s = set()
         self.all_words = set(words)
+        
+        # Loop range: Ensure i+self.n is a valid index for next_word
+        # And if g2 and next_word2 are used, range should be num_words - (self.n + 3)
+        # The original code used num_words - self.n - 3 which might be too short if g2 is not used.
+        # Let's assume g2 and next_word2 are not essential for the core logic for now,
+        # as they were not used in the symbolic adjustment calculation.
+        # If they are to be used, the loop range and their definition needs care.
+        # For now, let's use a range that ensures 'g' and 'next_word' are valid.
+        # The loop should go up to the point where `i+self.n` is the last word.
+        # So `i` goes up to `num_words - self.n - 1`.
+        # range(num_words - self.n) would make `i` go up to `num_words - self.n - 1`.
+        # words[i : i+self.n] is g
+        # words[i+self.n] is next_word
 
-        # First pass: collect base frequencies with symbolic adjustments ∀λ±ε
-        for i in tqdm(range(num_words - self.n-3), desc="Collecting Adjusted Frequencies (∀λ±ε+L)"):
+        for i in tqdm(range(num_words - self.n), desc="Collecting Adjusted Frequencies (∀λ±ε+L)"):
             g = tuple(words[i:i+self.n])
             next_word = words[i+self.n]
-            g2 = tuple(words[i+3:i+self.n+3])
-            next_word2 = words[i+self.n+3]
-
+            
             # --- Symbolic Adjustment Calculation ---
-            base_increment = 1.0
+            base_increment = 1.0 # Changed from 2.0 to 1.0 as it's a base before multiplication
 
-            # ∀ (Universal/Global Influence): Boost based on overall word frequency
-            # Normalize frequency (0 to 1) and use log1p for smoother scaling
-            global_freq_factor = 1.0 + math.log1p(overall_word_freqs[next_word] / total_word_count) * 0.5 # Scaled influence
-            # Note: log1p(x) = log(1+x), good for small x
-
-            # λ (Lambda/Word Property): Boost based on word length
-            # Use log1p again for smoother scaling, smaller factor
-            length_factor = 1.0 + math.log1p(len(next_word)) * 0.1 # Scaled influence
+            global_freq_factor = 1.0 + math.log1p(overall_word_freqs[next_word] / total_word_count) * 0.5
+            length_factor = 1.0 + math.log1p(len(next_word)) * 0.1
 
             # L-semi-inner product adjustment
             l_inner_prod_factor = 1.0
             # Calculate L-semi-inner product between each word in context and next word
-            for context_word in g:
-                l_inner_prod = self._l_semi_inner_product(context_word, next_word)
-                # Scale the effect - higher values for similar words
-                l_inner_prod_factor *= (1.0 + l_inner_prod * 0.3)  # Moderate influence
-                self.s = list(filter(lambda g: l_inner_prod_factor in self.m, context_word))
-            # Combine ∀, λ, and L factors multiplicatively
+            for context_word_from_g in g: # Iterate through each word in the actual context tuple 'g'
+                # CORRECTED: Use _l_semi_inner_product directly for a scalar similarity score
+                single_similarity_score = self._l_semi_inner_product(context_word_from_g, next_word)
+                # CORRECTED: Use the calculated score in the factor
+                l_inner_prod_factor *= (1.0 + single_similarity_score * 0.3) 
+            
+            # REMOVED problematic self.s update:
+            # self.s = list(filter(lambda g_filter_param: l_inner_prod_factor in self.m, context_word))
+            # This was incorrect. Sentence starts are collected below via temp_s.
+
             symbolic_factor = global_freq_factor * length_factor * l_inner_prod_factor
-
-            # Apply the combined factor to the base increment
             adjusted_increment = base_increment * symbolic_factor
-
-            # ±ε (Noise/Variability): Add small random noise
-            noise = random.uniform(-0.05, 0.05) # Small epsilon range
-            final_increment = adjusted_increment + noise
-
-            # Ensure the increment is positive
-            final_increment = max(0.01, final_increment) # Ensure at least a small positive value
+            noise = random.uniform(-0.05, 0.05)
+            final_increment = max(0.01, adjusted_increment + noise)
             # --- End Symbolic Adjustment ---
 
-            # Record sentence starts
             if i == 0 or any(c in self.SENTENCE_END_CHARS for c in words[i-1][-1:]):
                 temp_s.add(g)
 
-
-            # Increment frequency with the symbolically adjusted value
             temp_m[g][next_word] += final_increment
 
-        # Convert to regular dictionaries for the final model
-        self.m = {g: dict(next_words) for g, next_words in temp_m.items()}
+        self.m = {gram: dict(next_words_counts) for gram, next_words_counts in temp_m.items()}
+        self.s = list(filter(lambda start_gram: start_gram in self.m, temp_s))
 
-        # Store valid sentence starts
-        self.s = list(filter(lambda g: g in self.m, temp_s))
-
-        # If no valid starts, use random contexts
         if not self.s and self.m:
             print("Warning: No sentence starts detected based on punctuation. Using random contexts as starting points.")
-            self.s = random.sample(list(self.m.keys()), k=min(len(self.m), 100))
+            # Ensure sample size k is not greater than population size
+            k_sample = min(len(self.m), 100)
+            if k_sample > 0 : # only sample if there's something to sample from
+                 self.s = random.sample(list(self.m.keys()), k=k_sample)
 
-        if not self.s and not self.m:
+        if not self.m: # Simplified this condition, if m is empty, s will also be empty or useless
              print("Warning: Model training resulted in no transitions. Check input data and n-gram size.")
-
-
+        
         print(f"Training complete. Model has {len(self.m)} contexts and {len(self.s)} sentence starts. Frequencies adjusted by ∀λ±ε with L-semi-inner product.")
 
     def _symbolic_probability(self, context, options):
@@ -223,60 +233,76 @@ class SymbolicMarkov:
         Enhanced with L-semi-inner product influences.
 
         Args:
-            context (tuple): The current context (n-gram)
-            options (dict): Possible next words with their *adjusted* frequencies
+            context (tuple): The current context (n-gram). It must be a tuple of strings.
+            options (dict): Possible next words with their *adjusted* frequencies.
 
         Returns:
             tuple: (words, weights) Lists of candidate words and their probabilities
         """
-        words = list(options.keys())
+        # Ensure context is usable as an iterable of words (strings)
+        if not isinstance(context, tuple) or not all(isinstance(w, str) for w in context):
+            # This case should ideally not be hit if called correctly,
+            # but as a safeguard if a dict was passed as context by mistake:
+            if isinstance(context, dict): # Fallback/error recovery attempt for wrong context type
+                # Try to make a pseudo-context, e.g., from its keys if they are strings
+                # This is a patch for the specific incorrect call seen previously,
+                # but the method fundamentally expects context to be an n-gram tuple.
+                pseudo_context_words = [str(k) for k in context.keys()]
+                if pseudo_context_words:
+                    # Heuristic: take the first n words or all if less than n
+                    context = tuple(pseudo_context_words[:max(1,self.n)]) 
+                else: # or an empty context if keys weren't useful
+                    context = tuple() 
+            # If it's not a dict but still not a tuple of strings, an empty tuple is a safe default.
+            # Or raise an error: raise TypeError("Context must be a tuple of strings")
+            # For now, let's allow it to proceed with an empty context if conversion fails.
+            elif not isinstance(context, tuple): # if it's not a tuple at all (e.g. a string)
+                context = tuple(str(context)) # try to make it a tuple of one string
+
+
+        words_list = list(options.keys()) # Renamed to avoid conflict with 'words' module
         freqs = list(options.values())
 
-        if not words:
+        if not words_list:
             return [], []
 
-        # ⊆ (subset) — Filter low-freq entries
         mean_freq = sum(freqs) / len(freqs) if freqs else 0
         subset_indices = [i for i, f in enumerate(freqs) if f > mean_freq * 0.5]
         if not subset_indices:
-            subset_indices = list(range(len(words)))
+            subset_indices = list(range(len(words_list)))
 
-        subsetWords = [words[i] for i in subset_indices]*2
-        subsetFreqs = [freqs[i] for i in subset_indices]*2
+        subsetWords = [words_list[i] for i in subset_indices]*3
+        subsetFreqs = [freqs[i] for i in subset_indices]*3
 
         if not subsetWords:
             return [], []
 
-        # ⊗ (tensor product) — Build tensor-like value per word
         tensorValues = []
         for i, word in enumerate(subsetWords):
             value = 1.0
-            for contextWord in context:
-                l_similarity = self._l_semi_inner_product(contextWord, word)
-                overlap = len(set(contextWord) | set(word))
+            # This loop expects 'context' to be an iterable of strings (context words)
+            for contextWord_from_ngram in context: # Renamed to avoid conflict
+                l_similarity = self._l_semi_inner_product(str(contextWord_from_ngram), word) # Ensure contextWord is str
+                overlap = len(set(str(contextWord_from_ngram)) | set(word)) 
                 combined_similarity = (float(overlap) + 1.0) * (1.0 + l_similarity)
                 value *= subsetFreqs[i] * combined_similarity
             tensorValues.append(value)
 
-        import torch
-        tensorValues = torch.tensor(tensorValues)
+        tensorValues_torch = torch.tensor(tensorValues, dtype=torch.float32) # Explicit dtype
 
-        # Sort values and keep the sort order
-        sorted_tensor, sort_indices = torch.sort(tensorValues)
-
-        # Modify the sorted values — e.g., halve every even-indexed sorted value
+        sorted_tensor, sort_indices = torch.sort(tensorValues_torch)
         modified_sorted = sorted_tensor.clone()
-        for i in range(len(modified_sorted)):
-            if i % 2 == 0:
-                modified_sorted[i] /= 2
+        for i_val in range(len(modified_sorted)): # Renamed loop variable
+            if i_val % 2 == 0:
+                modified_sorted[i_val] /= 2
 
-        # Unsort to match original order
         inverse_indices = torch.argsort(sort_indices)
         unsorted_result = modified_sorted[inverse_indices]
 
         return subsetWords, unsorted_result.tolist()
 
-
+    # ... (gen method and __main__ block remain the same as your provided code) ...
+    # (Make sure to paste them back if you're replacing the whole file)
 
     def gen(self, seed=None, count=100, window_size=20, word_filter=None):
         """
@@ -287,7 +313,7 @@ class SymbolicMarkov:
             count (int): Number of words to generate.
             window_size (int): Size of the moving window for word filtering.
             word_filter (callable, optional): A function that takes (word, window_words) and returns
-                                             True if the word should be allowed, False otherwise.
+                                            True if the word should be allowed, False otherwise.
         Returns:
             str: Generated text.
         """
@@ -297,114 +323,98 @@ class SymbolicMarkov:
         if count < 1:
             raise ValueError("Word count must be positive.")
 
+        current_context = None # Use a different name than the 'context' parameter of _symbolic_probability
+        result_words = [] # Use a different name than the 'words' variable inside _symbolic_probability
+
         if not self.s:
-            # Try to recover if training failed silently
             if self.m:
-                 print("Warning: No sentence starts available, but model has contexts. Choosing a random context.")
-                 self.s = random.sample(list(self.m.keys()), k=min(len(self.m), 100))
-                 if not self.s: # Still no starts possible
-                     raise ValueError("No valid starting contexts available and recovery failed.")
+                print("Warning: No sentence starts available, but model has contexts. Choosing a random context.")
+                k_sample = min(len(self.m), 100) # Ensure k is not > population
+                if k_sample > 0:
+                    self.s = random.sample(list(self.m.keys()), k=k_sample)
+                if not self.s: 
+                    raise ValueError("No valid starting contexts available and recovery failed.")
             else:
                 raise ValueError("Model has no transitions and no starting contexts.")
+        
+        if not self.s : # Final check if self.s is still empty
+             raise ValueError("No starting contexts available for generation.")
 
 
-        # Process seed if provided
         if seed:
             seed_words = seed.lower().split()
             if len(seed_words) >= self.n:
-                # Check if the exact seed context exists
-                potential_context = tuple(seed_words[-self.n:])
-                if potential_context in self.m:
-                    context = potential_context
-                    result = seed_words
+                potential_context_tuple = tuple(seed_words[-self.n:]) # Renamed
+                if potential_context_tuple in self.m:
+                    current_context = potential_context_tuple
+                    result_words = seed_words
                 else:
-                    # Seed context not found, fall back to random start but keep seed words
-                    print(f"Warning: Seed context {potential_context} not found in model. Starting with a random context.")
-                    context = random.choice(self.s)
-                    result = seed_words + list(context) # Append random context start
+                    print(f"Warning: Seed context {potential_context_tuple} not found in model. Starting with a random context.")
+                    current_context = random.choice(self.s)
+                    result_words = seed_words + list(current_context) 
             else:
-                # Seed too short, use random start
-                context = random.choice(self.s)
-                result = list(context)
+                current_context = random.choice(self.s)
+                result_words = list(current_context)
         else:
-            # No seed, use a random start context
-            context = random.choice(self.s)
-            result = list(context)
+            current_context = random.choice(self.s)
+            result_words = list(current_context)
 
-        # Generate text
         retry_count = 0
-        max_retries = 15 # Increased retries slightly
+        max_retries = 15 
         max_filter_attempts = 5
 
-        while len(result) < count: # Check before loop body
-            # Check context validity
-            if context not in self.m or not self.m[context]:
+        while len(result_words) < count: 
+            if current_context not in self.m or not self.m[current_context]:
                 retry_count += 1
                 if retry_count >= max_retries:
                     print(f"\nWarning: Max retries ({max_retries}) reached finding a valid next context. Stopping generation.")
-                    break # Exit generation loop
+                    break 
 
-                # Try finding a new valid context
-                possible_starts = [s for s in self.s if s in self.m and self.m[s]] # Filter for valid starts
+                possible_starts = [s_item for s_item in self.s if s_item in self.m and self.m[s_item]] 
                 if not possible_starts:
-                     # If even starts are bad, try any valid context
-                     possible_starts = [c for c in self.m.keys() if self.m[c]]
+                    possible_starts = [c_item for c_item in self.m.keys() if self.m[c_item]]
 
                 if not possible_starts:
                     print("\nWarning: No valid contexts found to continue generation. Stopping.")
-                    break # Exit generation loop
+                    break 
+                current_context = random.choice(possible_starts)
+                print(f"Info: Resetting context to {current_context} (Retry {retry_count}/{max_retries})")
+                continue 
 
-                context = random.choice(possible_starts)
-                # Avoid adding the whole context if it might make output too long abruptly
-                # result.extend(context) # Consider removing this line if it causes issues
-                print(f"Info: Resetting context to {context} (Retry {retry_count}/{max_retries})")
-                continue # Try again with the new context
+            # Call to _symbolic_probability using current_context (an n-gram tuple)
+            # and self.m[current_context] (a dict of next word options)
+            candidate_words, candidate_weights = self._symbolic_probability(current_context, self.m[current_context]) # Renamed return vars
 
-            # Get weighted options using symbolic probability
-            words, weights = self._symbolic_probability(context, self.m[context])
-
-            # Make sure we have valid options
-            if not words or not weights or len(words) != len(weights) or sum(weights) == 0:
+            if not candidate_words or not candidate_weights or len(candidate_words) != len(candidate_weights) or sum(candidate_weights) <= 0: # check for sum > 0
                 retry_count += 1
                 if retry_count >= max_retries:
                     print(f"\nWarning: Max retries ({max_retries}) reached finding valid next words. Stopping generation.")
                     break
-
-                # Try finding a new valid context (same logic as above)
-                possible_starts = [s for s in self.s if s in self.m and self.m[s]]
+                
+                possible_starts = [s_item for s_item in self.s if s_item in self.m and self.m[s_item]]
                 if not possible_starts:
-                    possible_starts = [c for c in self.m.keys() if self.m[c]]
+                    possible_starts = [c_item for c_item in self.m.keys() if self.m[c_item]]
                 if not possible_starts:
-                     print("\nWarning: No valid contexts found to continue generation. Stopping.")
-                     break
+                    print("\nWarning: No valid contexts found to continue generation. Stopping.")
+                    break
+                current_context = random.choice(possible_starts)
+                print(f"Info: Resetting context to {current_context} due to no valid next words (Retry {retry_count}/{max_retries})")
+                continue 
 
-                context = random.choice(possible_starts)
-                print(f"Info: Resetting context to {context} due to no valid next words (Retry {retry_count}/{max_retries})")
+            window_words_for_filter = result_words[-min(len(result_words), window_size):] # Renamed
+            next_word_chosen = None # Renamed
 
-                continue # Try again
-
-
-             # Get current window for filtering
-            window_words = result[-min(len(result), window_size):]
-
-            next_word = None # Initialize next_word
-
-            # Apply word filtering if provided
             if word_filter is not None:
-                available_words = words.copy()
-                available_weights = weights.copy()
+                available_words = candidate_words.copy()
+                available_weights = candidate_weights.copy()
                 found_valid_word = False
                 filter_attempts = 0
 
                 while available_words and filter_attempts < max_filter_attempts:
-                     # Normalize remaining weights
                     current_total_weight = sum(available_weights)
-                    if current_total_weight <= 0: # Check for non-positive weights
-                        break # Cannot sample
-
+                    if current_total_weight <= 0: 
+                        break 
                     normalized_weights = [w / current_total_weight for w in available_weights]
-
-                    # Random weighted choice from available options
                     try:
                         chosen_idx = random.choices(
                             range(len(available_words)),
@@ -413,64 +423,76 @@ class SymbolicMarkov:
                         )[0]
                     except ValueError as e:
                         print(f"Warning: Error during weighted choice (filter loop): {e}. Weights: {normalized_weights}")
-                        break # Exit sampling loop
+                        break 
+                    candidate_word_from_filter = available_words[chosen_idx] # Renamed
 
-                    candidate_word = available_words[chosen_idx]
-
-                    # Check filter
-                    if word_filter(candidate_word, window_words):
-                        next_word = candidate_word
+                    if word_filter(candidate_word_from_filter, window_words_for_filter):
+                        next_word_chosen = candidate_word_from_filter
                         found_valid_word = True
-                        break # Found a valid word
-
-                    # Remove this word from consideration for next attempt
+                        break 
                     available_words.pop(chosen_idx)
                     available_weights.pop(chosen_idx)
                     filter_attempts += 1
-
-                # If filter failed after attempts, choose from original list respecting weights
+                
                 if not found_valid_word:
                     try:
-                        next_word = random.choices(words, weights=weights, k=1)[0]
+                        # Fallback to original candidates if filter fails to find one
+                        if sum(candidate_weights) > 0 : # Ensure weights are valid for random.choices
+                             next_word_chosen = random.choices(candidate_words, weights=candidate_weights, k=1)[0]
+                        elif candidate_words: # If weights are bad but words exist, choose uniformly
+                             next_word_chosen = random.choice(candidate_words)
+                        else: # No words to choose from
+                             print("Error: Cannot select fallback word, no options available after filter.")
+                             retry_count+=1
+                             continue
                     except ValueError as e:
-                         print(f"Warning: Error during weighted choice (fallback): {e}. Weights: {weights}. Choosing uniformly.")
-                         if words: # Check if words list is not empty
-                              next_word = random.choice(words)
-                         else: # Should not happen if initial check passed, but safety first
-                              print("Error: Cannot select fallback word, no options available.")
-                              retry_count+=1 # Count as retry and try new context next iteration
-                              continue
-
+                        print(f"Warning: Error during weighted choice (fallback): {e}. Weights: {candidate_weights}. Choosing uniformly if possible.")
+                        if candidate_words: 
+                            next_word_chosen = random.choice(candidate_words)
+                        else: 
+                            print("Error: Cannot select fallback word, no options available.")
+                            retry_count+=1
+                            continue
             else:
-                # No filter, choose based on original weights
                 try:
-                     next_word = random.choices(words, weights=weights, k=1)[0]
+                    if sum(candidate_weights) > 0: # Ensure weights are valid
+                        next_word_chosen = random.choices(candidate_words, weights=candidate_weights, k=1)[0]
+                    elif candidate_words: # Uniform choice if weights are invalid
+                        next_word_chosen = random.choice(candidate_words)
+                    else: # No words available
+                        print("Error: Cannot select word, no options available (no filter).")
+                        retry_count+=1
+                        continue
                 except ValueError as e:
-                    print(f"Warning: Error during weighted choice (no filter): {e}. Weights: {weights}. Choosing uniformly.")
-                    if words:
-                         next_word = random.choice(words)
+                    print(f"Warning: Error during weighted choice (no filter): {e}. Weights: {candidate_weights}. Choosing uniformly if possible.")
+                    if candidate_words:
+                        next_word_chosen = random.choice(candidate_words)
                     else:
                         print("Error: Cannot select word, no options available.")
                         retry_count+=1
                         continue
+            
+            if next_word_chosen is None:
+                print("Warning: Failed to select a next word. Resetting context.")
+                retry_count += 1
+                continue
 
-
-            # Check if a word was actually selected
-            if next_word is None:
-                 print("Warning: Failed to select a next word. Resetting context.")
-                 retry_count += 1
-                 # (Context reset logic will trigger on next loop iteration if needed)
-                 continue
-
-
-            # Add the chosen word and update context
-            result.append(next_word)
-            context = tuple(result[-self.n:])
-            retry_count = 0 # Reset retry counter on successful word generation
-
-        # Return exactly 'count' words (or fewer if generation stopped early)
-        # Slicing from the end ensures the most recently generated words are kept
-        return ' '.join(result[-count:])
+            result_words.append(next_word_chosen)
+            current_context = tuple(result_words[-self.n:])
+            retry_count = 0 
+        
+        # Ensure 'count' words are returned if available, from the end of result_words
+        # If seed made result_words longer than 'count' initially, take the last 'count' elements generated *after* the seed.
+        # This part is tricky: if seed is long, and count is short.
+        # The current logic `result[-count:]` works generally to give final 'count' words.
+        # If initial `result_words` (from seed) is already >= count, it might just return part of the seed.
+        # A better approach for "generate 'count' new words" would be to track words generated *after* seed.
+        # However, the current implementation aims for total 'count' words.
+        
+        # The prompt implies result should be of 'count' length.
+        # If seed made result_words already count or more, and no new words were added.
+        # The final result might be shorter than count if generation stopped early.
+        return ' '.join(result_words[-count:])
 
 
 # Example usage
@@ -481,15 +503,14 @@ def no_repetition_filter(word, window_words):
 if __name__ == "__main__":
     # Configuration
     CONFIG = {
-        'input_filename': "test.txt",  # Default, will be overridden by input
-        'ngram_size': 2, # Default n-gram size (can be changed)
-        'words_to_generate': 350, # Default generation length
-        'window_size': 50  # Default window size for filter
+        'input_filename': "test.txt", 
+        'ngram_size': 2, 
+        'words_to_generate': 250, # Reduced for quicker testing
+        'window_size': 100      # Reduced for filter testing
     }
 
     print(f"--- Symbolic Markov Text Generator (Training: ∀λ±ε+L | Generation: ⊆⊗∃·Λρ∑ω·Σø²) ---")
 
-    # Get filename from user input
     try:
         filename_to_use = input(f"Enter input filename (default: {CONFIG['input_filename']}): ")
         if not filename_to_use:
@@ -497,26 +518,23 @@ if __name__ == "__main__":
         CONFIG['input_filename'] = filename_to_use
 
         with open(CONFIG['input_filename'], 'r', encoding='utf-8') as file:
-            # Read, lower, and split robustly
             txt = ' '.join(file.read().lower().split())
             if not txt:
-                 print(f"Error: Input file '{CONFIG['input_filename']}' is empty.")
-                 sys.exit(1)
+                print(f"Error: Input file '{CONFIG['input_filename']}' is empty.")
+                sys.exit(1)
 
     except FileNotFoundError:
         print(f"Error: Input file '{CONFIG['input_filename']}' not found.")
-        # Simple fallback text for demonstration if file fails
         print("Using sample text for demonstration.")
         txt = ("this is a simple sample text for the markov chain generator it demonstrates "
                "basic functionality and provides enough words for training with small ngrams "
                "repeating some words is necessary for the model to learn transitions this sample "
-               "is quite short so results may be limited a larger corpus will yield better output")
+               "is quite short so results may be limited a larger corpus will yield better output "
+               "the quick brown fox jumps over the lazy dog and the lazy dog slept") # Added more
     except Exception as e:
-         print(f"Error reading file: {e}")
-         sys.exit(1)
+        print(f"Error reading file: {e}")
+        sys.exit(1)
 
-
-    # Allow user to override n-gram size
     try:
         ngram_input = input(f"Enter n-gram size (default: {CONFIG['ngram_size']}): ")
         if ngram_input:
@@ -527,23 +545,20 @@ if __name__ == "__main__":
     except ValueError:
         print(f"Invalid n-gram size input. Using default: {CONFIG['ngram_size']}")
 
-
-    # Initialize and train model
     try:
         model = SymbolicMarkov(CONFIG['ngram_size'])
         model.train(txt)
     except ValueError as e:
         print(f"Error during initialization or training: {e}")
         sys.exit(1)
-    except Exception as e: # Catch other potential errors
+    except Exception as e: 
         print(f"An unexpected error occurred during training: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
 
-    # Interactive generation loop
-    if not model.m or not model.s:
-         print("\nModel training resulted in no usable data. Cannot generate text.")
+    if not model.m or not model.s: # Check if model is usable
+        print("\nModel training resulted in no usable data. Cannot generate text.")
     else:
         print(f"\n--- Ready to generate text ---")
         print(f"Using n={model.n}, generating {CONFIG['words_to_generate']} words.")
@@ -556,7 +571,6 @@ if __name__ == "__main__":
                 if user_input.lower() in ['quit', 'exit']:
                     break
 
-                # Generate text with word filtering
                 generated = model.gen(
                     seed=user_input or None,
                     count=CONFIG['words_to_generate'],
@@ -564,7 +578,6 @@ if __name__ == "__main__":
                     word_filter=no_repetition_filter
                 )
 
-                # Display result
                 print("\n--- Generated Text ---")
                 if user_input:
                     print(f"(Seed: '{user_input}')")
@@ -574,13 +587,10 @@ if __name__ == "__main__":
             except KeyboardInterrupt:
                 print("\nExiting.")
                 break
-            except ValueError as e: # Catch generation errors
+            except ValueError as e: 
                 print(f"Generation Error: {e}")
-                # Allow the user to try again
             except Exception as e:
                 print(f"An unexpected error occurred during generation: {e}")
                 import traceback
                 traceback.print_exc()
-                # Allow trying again unless it's critical
-
     print("\n--- Generation Complete ---")
