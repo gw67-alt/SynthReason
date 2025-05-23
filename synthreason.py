@@ -241,8 +241,8 @@ class SymbolicMarkov:
         if not subset_indices:
             subset_indices = list(range(len(words)))
 
-        subsetWords = [words[i] for i in subset_indices]
-        subsetFreqs = [freqs[i] for i in subset_indices]
+        subsetWords = [words[i] for i in subset_indices]*2
+        subsetFreqs = [freqs[i] for i in subset_indices]*2
 
         if not subsetWords:
             return [], []
