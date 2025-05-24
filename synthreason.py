@@ -632,7 +632,7 @@ if __name__ == "__main__":
             filename = CONFIG['input_filename']
 
         with open(filename, 'r', encoding='utf-8') as file:
-            txt = ' '.join(file.read().lower().split()[:9999])
+            txt = ' '.join(file.read().lower().split()[:-1])
             if not txt:
                 print(f"Error: Input file '{filename}' is empty.")
                 sys.exit(1)
