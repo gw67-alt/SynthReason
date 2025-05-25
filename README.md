@@ -13,19 +13,6 @@ SynthReason-2.0 is a generative AI model designed to create synthetic reasoning 
 - Context-aware responses
 - High-quality output
 
-## Installation
-
-To install SynthReason-2.0, follow these steps:
-
-1. Clone the repository:
-    ```bash
-    git clone https://github.com/gw67-alt/SynthReason-2.0.git
-    ```
-2. Navigate to the project directory:
-    ```bash
-    cd SynthReason-2.0
-    ```
-
 ## Usage
 
 To use SynthReason-2.0, follow these steps:
@@ -33,7 +20,7 @@ To use SynthReason-2.0, follow these steps:
 1. Ensure you have installed all dependencies.
 2. Run the main script:
     ```bash
-    python main.py
+    python synthreason.py
     ```
 3. Follow the on-screen instructions to interact with the model.
 
