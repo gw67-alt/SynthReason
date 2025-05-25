@@ -4,7 +4,16 @@ import sys
 from collections import defaultdict, Counter
 from tqdm import tqdm
 import numpy as np
-# import torch # Not used in the provided snippet, can be removed if not used elsewhere
+import pickle # NEW: For saving and loading the model
+
+# NEW: Import the Hugging Face datasets library
+try:
+    from datasets import load_dataset, get_dataset_split_names
+    HF_DATASETS_AVAILABLE = True
+except ImportError:
+    HF_DATASETS_AVAILABLE = False
+    print("Hugging Face 'datasets' library not found. Please install it to use Hugging Face datasets: pip install datasets")
+
 
 class RetrocausalSymbolicMarkov:
     """
@@ -127,9 +136,9 @@ class RetrocausalSymbolicMarkov:
             if norm > 1e-9 and norm < 1e6 : # Added check for very large norms before division
                 extra_dim = extra_dim / norm
             elif norm >= 1e6: # If norm is excessively large, cap it
-                 extra_dim = (extra_dim / norm) * 1e5 # Scale down to a large but manageable magnitude
+                extra_dim = (extra_dim / norm) * 1e5 # Scale down to a large but manageable magnitude
             elif norm <= 1e-9 and norm !=0 : # Very small norm, might be unstable
-                 extra_dim = np.random.normal(0, 0.01, self.extra_dim_depth * 2) # Reset to small random
+                extra_dim = np.random.normal(0, 0.01, self.extra_dim_depth * 2) # Reset to small random
             else: # Handles norm == 0 or other unexpected cases
                 extra_dim = np.random.normal(0, 0.1, self.extra_dim_depth * 2)
 
@@ -245,8 +254,8 @@ class RetrocausalSymbolicMarkov:
             # Simple word vector based on hash, ensure dimensionality matches extra_dim_vector
             word_vector_components = []
             for j in range(self.extra_dim_depth * 2):
-                 angle = (word_hash / 1000000.0) * 2 * math.pi + (j * math.pi / (self.extra_dim_depth * 2))
-                 word_vector_components.append(math.cos(angle)) # Example component generation
+                angle = (word_hash / 1000000.0) * 2 * math.pi + (j * math.pi / (self.extra_dim_depth * 2))
+                word_vector_components.append(math.cos(angle)) # Example component generation
             word_vector = np.array(word_vector_components)
 
 
@@ -610,7 +619,10 @@ class RetrocausalSymbolicMarkov:
             # Get 500 most common words from current training data + existing all_words
             # This is a simplification; true "most common" would involve global counts.
             # For now, use a random sample of all known words if too many.
-            sample_words_for_k_update = random.sample(list(self.all_words), 500)
+            try:
+                sample_words_for_k_update = random.sample(list(self.all_words), 500)
+            except ValueError: # Handles case where len(self.all_words) < 500
+                sample_words_for_k_update = list(self.all_words)
         else:
             sample_words_for_k_update = list(self.all_words)
 
@@ -665,7 +677,7 @@ class RetrocausalSymbolicMarkov:
                 )
                 # Limit K matrix size to prevent memory overflow
                 if len(self.K) < 50000: # Example limit, adjust based on memory
-                     self.K[(epoch_for_k, current_ngram, candidate_word_for_k)] = k_new_val
+                    self.K[(epoch_for_k, current_ngram, candidate_word_for_k)] = k_new_val
                 # else: could implement LRU or periodic pruning for K
 
 
@@ -785,13 +797,13 @@ class RetrocausalSymbolicMarkov:
             # In a full system, K retrieval during generation might be more complex
             # (e.g. time-decayed, averaged over relevant past K entries for this context-word pair)
             if self.K:
-                 # Try finding K for this context-word pair at the k_lookup_epoch.
-                 # If context_tuple is not in K for that epoch, this will default.
-                 k_val = self.K.get((k_lookup_epoch, context_tuple, word_cand))
-                 if k_val is not None:
-                     retrocausal_k_weight = k_val
-                 # else: # If specific epoch key not found, could try other strategies or use default 0.5
-                      # pass
+                # Try finding K for this context-word pair at the k_lookup_epoch.
+                # If context_tuple is not in K for that epoch, this will default.
+                k_val = self.K.get((k_lookup_epoch, context_tuple, word_cand))
+                if k_val is not None:
+                    retrocausal_k_weight = k_val
+                # else: # If specific epoch key not found, could try other strategies or use default 0.5
+                    # pass
 
             # Cascade boost from recent generation memory (if any)
             cascade_mem_boost = 1.0
@@ -879,15 +891,21 @@ class RetrocausalSymbolicMarkov:
 
         if current_gram_tuple is None: # If no valid start_context or it was too short/invalid
             if not self.s: # No sentence starts defined at all
-                 # Fallback: pick any key from self.m if s is empty
-                 if self.m:
-                     # Ensure k is not greater than population if self.m is small
-                     sample_k = min(1, len(self.m))
-                     if sample_k > 0:
-                        self.s = random.sample(list(self.m.keys()), k=sample_k)
-                 if not self.s: return "Cannot start generation: no valid start points in the model."
+                # Fallback: pick any key from self.m if s is empty
+                if self.m:
+                    # Ensure k is not greater than population if self.m is small
+                    sample_k = min(1, len(self.m))
+                    if sample_k > 0:
+                        try: # Add try block for random.sample
+                            self.s = random.sample(list(self.m.keys()), k=sample_k)
+                        except ValueError: # Should not happen if sample_k <= len(self.m)
+                             return "Cannot start generation: error selecting random start."
+                if not self.s: return "Cannot start generation: no valid start points in the model."
 
-            current_gram_tuple = random.choice(self.s)
+            try: # Add try block for random.choice
+                current_gram_tuple = random.choice(self.s)
+            except IndexError: # self.s might be empty if the above logic failed
+                return "Cannot start generation: no sentence starts available."
             generated_words_list = list(current_gram_tuple)
 
 
@@ -898,11 +916,11 @@ class RetrocausalSymbolicMarkov:
 
         # Clear or manage generation-specific state like self.retrocausal_loops
         self.retrocausal_loops = [] # Reset for this generation run
-        
+
         # Adjust loop iterations based on how many words are already in generated_words_list
         # The goal is for the *final* length of generated_words_list to be 'length'.
         # If generated_words_list starts with 'k' words, we need 'length - k' more words.
-        
+
         num_words_to_generate = length - len(generated_words_list)
 
         for _ in range(num_words_to_generate): # Iterate for the number of additional words needed
@@ -912,7 +930,9 @@ class RetrocausalSymbolicMarkov:
                 # Dead end: try to restart from a random sentence start
                 # print(f"Stuck at context {current_gram_tuple}. Attempting restart.")
                 if not self.s: break # Cannot restart
-                current_gram_tuple = random.choice(self.s)
+                try: # Add try block for random.choice
+                    current_gram_tuple = random.choice(self.s)
+                except IndexError: break # Cannot restart if self.s is empty
                 if current_gram_tuple not in self.m or not self.m[current_gram_tuple]: break # Still stuck, end.
                 # When restarting, decide if the restart n-gram itself should be appended.
                 # Current logic: the loop will pick the *next* word based on this new current_gram_tuple.
@@ -932,7 +952,9 @@ class RetrocausalSymbolicMarkov:
             if not candidate_words: # No candidates from symbolic_probability
                 # print(f"No candidates from symbolic_probability for {current_gram_tuple}. Attempting restart.")
                 if not self.s: break
-                current_gram_tuple = random.choice(self.s)
+                try: # Add try block for random.choice
+                    current_gram_tuple = random.choice(self.s)
+                except IndexError: break
                 local_generation_history_ngrams.append(current_gram_tuple)
                 if len(local_generation_history_ngrams) > MAX_GEN_HIST_LEN: local_generation_history_ngrams.pop(0)
                 continue # Retry word choice with new context
@@ -986,86 +1008,185 @@ class RetrocausalSymbolicMarkov:
 
         return " ".join(generated_words_list)
 
+    # NEW: Method to save the model
+    def save_model(self, filepath):
+        """Saves the current model instance to a file using pickle."""
+        try:
+            with open(filepath, 'wb') as f:
+                pickle.dump(self, f)
+            print(f"Model saved successfully to {filepath}")
+        except Exception as e:
+            print(f"Error saving model to {filepath}: {e}")
+
+    # NEW: Static method to load the model
+    @staticmethod
+    def load_model(filepath):
+        """Loads a model instance from a file using pickle."""
+        try:
+            with open(filepath, 'rb') as f:
+                model = pickle.load(f)
+            print(f"Model loaded successfully from {filepath}")
+            return model
+        except FileNotFoundError:
+            print(f"Error: Model file not found at {filepath}")
+            return None
+        except Exception as e:
+            print(f"Error loading model from {filepath}: {e}")
+            return None
+
 
 if __name__ == "__main__":
     print("Initializing Retrocausal Symbolic Markov Model...")
-    # Parameters can be tuned:
-    # n: n-gram size (context window)
-    # alpha: learning rate for K updates
-    # cascade_threshold: for detecting retrocausal integration
-    # extra_dim_depth: for extra-dimensional computation
-    model = RetrocausalSymbolicMarkov(n=2, alpha=0.1, cascade_threshold=0.75, extra_dim_depth=2)
+    model = None # Initialize model to None
 
-    # Simple sample training data
-    try:
-        filename = input("Enter filename (or press Enter for default training data): ")
-        if filename.strip() == "":
-            print("No filename entered, using default short training data.")
-            training_text = (
-                "The quick brown fox jumps over the lazy dog. "
-                "A lazy dog sleeps all day. The quick cat also jumps. "
-                "Foxes are quick and dogs can be lazy. Cats are nimble. "
-                "What does the fox say? The dog barks. The cat meows. "
-                "Retrocausality is a complex concept in theoretical physics. "
-                "Symbolic AI and machine learning can create interesting text. "
-                "This model attempts to blend Markov chains with advanced ideas. "
-                "The future influences the past in this framework. "
-                "Knowledge is updated based on future states. This is a test. "
-                "Let's see how well it generates coherent sentences. "
-                "The brown fox is very quick. The dog remains lazy. "
-                "Jumping is fun for the fox and the cat. "
-                "Physics concepts are hard to model. AI is evolving. "
-                "Markov models predict the next state. Retrocausal models look back. "
-                "This sentence provides more data for training. This is the end of the training data."
-            )
+    # --- Ask to load or train new model ---
+    load_choice = input("Do you want to (L)oad a saved model or (T)rain a new one? [L/T]: ").strip().upper()
+
+    if load_choice == 'L':
+        model_filepath = input("Enter the filepath of the saved model: ").strip()
+        model = RetrocausalSymbolicMarkov.load_model(model_filepath)
+        if model is None:
+            print("Failed to load model. Will proceed to train a new one if training data is provided.")
+    
+    if model is None: # If not loaded or loading failed, proceed to train
+        print("Proceeding to train a new model.")
+        # Default model parameters if a new one is being created
+        model = RetrocausalSymbolicMarkov(n=2, alpha=0.1, cascade_threshold=0.75, extra_dim_depth=2)
+        training_text = None
+        default_training_text = (
+            "The quick brown fox jumps over the lazy dog. "
+            "A lazy dog sleeps all day. The quick cat also jumps. "
+            "Foxes are quick and dogs can be lazy. Cats are nimble. "
+            "What does the fox say? The dog barks. The cat meows. "
+            "Retrocausality is a complex concept in theoretical physics. "
+            "Symbolic AI and machine learning can create interesting text. "
+            "This model attempts to blend Markov chains with advanced ideas. "
+            "The future influences the past in this framework. "
+            "Knowledge is updated based on future states. This is a test. "
+            "Let's see how well it generates coherent sentences. "
+            "The brown fox is very quick. The dog remains lazy. "
+            "Jumping is fun for the fox and the cat. "
+            "Physics concepts are hard to model. AI is evolving. "
+            "Markov models predict the next state. Retrocausal models look back. "
+            "This sentence provides more data for training. This is the end of the training data."
+        )
+
+        data_source_choice = input("Load training data from (1) File, (2) Hugging Face, or (3) Default text? [1/2/3]: ").strip()
+
+        if data_source_choice == '1':
+            filename = input("Enter filename for training data: ")
+            try:
+                with open(filename, 'r', encoding='utf-8') as file:
+                    raw_text = file.read().lower()
+                    training_text = ' '.join(raw_text.split())
+                print(f"Loaded training data from file: {filename}")
+            except FileNotFoundError:
+                print(f"Error: File '{filename}' not found. Using default short training data.")
+                training_text = default_training_text
+            except Exception as e:
+                print(f"An error occurred while reading the file: {e}. Using default short training data.")
+                training_text = default_training_text
+
+        elif data_source_choice == '2':
+            if not HF_DATASETS_AVAILABLE:
+                print("Hugging Face 'datasets' library is not available. Falling back to default text.")
+                training_text = default_training_text
+            else:
+                hf_dataset_name = input("Enter Hugging Face dataset name (e.g., 'wikitext', 'sg_news_cs'): ").strip()
+                hf_config_name = input("Enter dataset configuration (e.g., 'wikitext-2-raw-v1', 'sg_news_cs_en', or leave blank for default): ").strip() or None
+                print(f"Fetching available splits for {hf_dataset_name} (config: {hf_config_name})...")
+                try:
+                    available_splits = get_dataset_split_names(hf_dataset_name, config_name=hf_config_name)
+                    print(f"Available splits: {available_splits}")
+                    hf_split = input(f"Enter dataset split (e.g., 'train', 'test', or one of the above): ").strip()
+                    hf_text_column = input("Enter the name of the column containing text (e.g., 'text', 'content', 'news'): ").strip()
+                    hf_num_rows_str = input("Enter max number of rows to use from dataset (e.g., 1000, or leave blank for all in split): ").strip()
+                    hf_num_rows = int(hf_num_rows_str) if hf_num_rows_str else None
+
+
+                    print(f"Loading dataset: {hf_dataset_name}, config: {hf_config_name}, split: {hf_split}, column: {hf_text_column}")
+                    dataset_args = {"path": hf_dataset_name}
+                    if hf_config_name:
+                        dataset_args["name"] = hf_config_name
+                    dataset_args["split"] = hf_split
+
+                    ds = load_dataset(**dataset_args)
+
+                    print(f"Dataset loaded. Available columns: {list(ds.features)}")
+                    if hf_text_column not in ds.features:
+                        print(f"Error: Text column '{hf_text_column}' not found in dataset features. Available columns: {list(ds.features)}")
+                        print("Using default training data.")
+                        training_text = default_training_text
+                    else:
+                        all_texts = []
+                        if hf_num_rows is not None:
+                            print(f"Processing up to {hf_num_rows} rows...")
+                            for i, example in enumerate(ds):
+                                if i >= hf_num_rows:
+                                    break
+                                text_content = example.get(hf_text_column)
+                                if text_content and isinstance(text_content, str):
+                                    all_texts.append(text_content.lower())
+                                if (i + 1) % (hf_num_rows // 10 if hf_num_rows > 10 else 1) == 0: # Progress update
+                                    print(f"Processed {i+1}/{hf_num_rows} rows...")
+                        else: # Process all rows in the split
+                            print("Processing all rows in the split...")
+                            for i, example in enumerate(tqdm(ds, desc="Extracting text from dataset")):
+                                text_content = example.get(hf_text_column)
+                                if text_content and isinstance(text_content, str):
+                                    all_texts.append(text_content.lower())
+
+                        if not all_texts:
+                            print("No text data extracted from Hugging Face dataset. Using default.")
+                            training_text = default_training_text
+                        else:
+                            training_text = " ".join(all_texts)
+                            training_text = ' '.join(training_text.split()) # Normalize whitespace
+                            print(f"Successfully loaded and processed text from Hugging Face dataset '{hf_dataset_name}'. Total words: {len(training_text.split())}")
+
+                except Exception as e:
+                    print(f"An error occurred while loading or processing Hugging Face dataset: {e}")
+                    print("Using default training data.")
+                    training_text = default_training_text
         else:
-            with open(filename, 'r', encoding='utf-8') as file:
-                # Simple text cleaning: lowercasing and splitting by sentences (periods)
-                # then joining sentences to ensure words are space-separated properly.
-                # More sophisticated cleaning might be needed for real-world text.
-                raw_text = file.read().lower()
-                # Replace multiple spaces/newlines with single space
-                raw_text = ' '.join(raw_text.split())
-                # Simple sentence splitting and rejoining for now, might need better tokenization.
-                # The original ' '.join(file.read().lower().split(".")) could lose words if a sentence didn't end with '.'
-                # or create double spaces if user had "word. word".
-                # A simple split by space is often safer for Markov chains if sentence structure isn't strictly used.
-                training_text = raw_text # Using the cleaned raw_text
+            print("Using default short training data.")
+            training_text = default_training_text
 
-    except FileNotFoundError:
-        print(f"Error: File '{filename}' not found. Using default short training data.")
-        training_text = (
-            "The quick brown fox jumps over the lazy dog. "
-            "A lazy dog sleeps all day. The quick cat also jumps. "
-            "This is a fallback text because the file was not found."
-        )
-    except Exception as e:
-        print(f"An error occurred while reading the file: {e}. Using default short training data.")
-        training_text = (
-            "The quick brown fox jumps over the lazy dog. "
-            "A lazy dog sleeps all day. The quick cat also jumps. "
-            "This is another fallback text due to a file reading error."
-        )
+        if training_text:
+            print("\nTraining the model...")
+            model.train(training_text)
+        else:
+            print("No training data loaded. Model cannot be trained and was not loaded.")
+    
+    # --- Ask to save the model ---
+    if model: # Only ask to save if a model object exists
+        save_choice = input("\nDo you want to save the current model? [Y/N]: ").strip().upper()
+        if save_choice == 'Y':
+            save_filepath = input("Enter filepath to save the model (e.g., retro_model.pkl): ").strip()
+            if save_filepath:
+                model.save_model(save_filepath)
+            else:
+                print("No filepath provided. Model not saved.")
+                
+    # --- Interactive Generation Mode ---
+    if model and model.m: # Check if model is trained/loaded and has transitions
+        print("\nInteractive Generation Mode (type 'quit' or 'exit' to stop):")
+        while True:
+            seed = input("USER: ")
+            if seed.lower() in ['quit', 'exit']:
+                break
+            if not seed.strip():
+                print("AI: (No input provided, try seeding with some text or type 'quit')")
+                continue
+
+            gen_length = 250
+            generated_text = model.generate(length=gen_length, start_context_str=seed)
+            print(f"AI: {generated_text}")
+    elif model:
+        print("Model is loaded/initialized but appears to have no training data/transitions. Cannot start generation.")
+    else:
+        print("Model could not be initialized or loaded. Exiting.")
 
 
-    print("\nTraining the model...")
-    model.train(training_text)
-
-    print("\nInteractive Generation Mode (type 'quit' or 'exit' to stop):")
-    while True:
-        seed = input("USER: ")
-        if seed.lower() in ['quit', 'exit']:
-            break
-        if not seed.strip(): # If user just presses enter, maybe provide a default prompt or random start
-            print("AI: (No input provided, try seeding with some text or type 'quit')")
-            continue
-
-        # Determine generation length. Can be fixed or adaptive.
-        # For very short seeds, might want longer generation.
-        gen_length = 250 # Default length
-      
-
-        generated_text = model.generate(length=gen_length, start_context_str=seed)
-        print(f"AI: {generated_text}")
 
     print("\nModel demonstration finished.")
