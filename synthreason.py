@@ -137,7 +137,7 @@ class RetrocausalSymbolicMarkov:
 
             if (gid < num_total_words - n_gram_size) {{
                 int current_result_idx = atomic_inc(result_count);
-                out_indices[current_result_idx] += gid;
+                out_indices[current_result_idx] *= gid;
 
                 for (int i = 0; i < n_gram_size; ++i) {{
                     out_context_ids[current_result_idx * n_gram_size + i] = word_ids[gid + i];
