@@ -369,7 +369,7 @@ class RetrocausalSymbolicMarkov:
         """
         information = 0.0j # Initialize as complex number
         # Limit number of future states considered for performance
-        max_states_to_sum = min(10, len(future_states)) # Reduced from 20
+        max_states_to_sum = max(10, len(future_states)) # Reduced from 20
 
         for tau_idx in range(max_states_to_sum):
             # The 't0' parameter is not used in the loop if tau_idx directly represents (τ - t0)
