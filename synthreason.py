@@ -101,7 +101,7 @@ class FrequencyPredictor:
         self.frequency_features = features
         return features
 
-    def train_predictor(self, model_type: str = 'random_forest') -> None:
+    def train_predictor(self, model_type: str = 'linear') -> None:
         if not self.frequency_features:
             self.predictor_model = None
             return
