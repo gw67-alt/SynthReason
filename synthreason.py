@@ -133,8 +133,8 @@ class FrequencyPredictor:
     def preprocess_text(self, text: str) -> List[str]:
         # print("Preprocessing text: removing punctuation, splitting into words...")
         # Text input to this method is expected to be a single string, already lowercased by loaders.
-        text_cleaned = re.sub(r'[^a-zA-Z\s]', '', text) # Remove punctuation, keep spaces
-        words = text_cleaned.split()
+        #text_cleaned = re.sub(r'[^a-zA-Z\s]', '', text) # Remove punctuation, keep spaces
+        words = text.split()
         processed_words = [word for word in words if word]
         # print(f"  Preprocessing resulted in {len(processed_words)} tokens.")
         return processed_words
