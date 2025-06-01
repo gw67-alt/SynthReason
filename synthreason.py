@@ -745,7 +745,7 @@ if __name__ == "__main__":
             else:
                 with open(filename, 'r', encoding='utf-8') as file:
                     raw_text = file.read().lower()
-                    training_text = ' '.join(raw_text.split()[:9999])
+                    training_text = ' '.join(raw_text.split())
         except FileNotFoundError:
             print(f"Error: File '{filename}' not found. Using default short training data.")
             training_text = (
