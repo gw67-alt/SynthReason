@@ -49,7 +49,7 @@ class FrequencyPredictor:
         self.scaler = StandardScaler()
         self.sorted_bigrams: List[Tuple[str, str]] = []
         self.unigram_counts: Dict[str, int] = Counter()
-        self.num_base_features: int = 66
+        self.num_base_features: int = 80
         self.feature_operations: Optional[List[Optional[Callable[[np.ndarray], np.ndarray]]]] = None
 
     def set_feature_operations(self, operations: Optional[List[Optional[Callable[[np.ndarray], np.ndarray]]]]) -> None:
@@ -132,7 +132,7 @@ class FrequencyPredictor:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                words = content.lower().split()
+                words = content.lower().split()[:999]
                 print(f"VERBOSE: Successfully loaded {len(words)} words from {file_path}.")
                 return ' '.join(words)
         except FileNotFoundError:
@@ -203,16 +203,114 @@ class FrequencyPredictor:
             self.frequency_features = []; return []
 
         for bigram_idx, bigram in enumerate(self.sorted_bigrams):
-            word1, word2 = bigram
+            y, x = bigram
+            x = len(x)
+            y = len(y)
             freq = self.bigram_frequencies[bigram]
             bigram_features_vector = [
-                float(freq), 
-                float(len(word1)), float(len(word2)), float(len(set(word1))), float(len(set(word2))),
-                float(word1.count('e')), float(word2.count('e')), float(word1.count('a')), float(word2.count('a')),
-                float(self.unigram_counts.get(word1, 0)), float(self.unigram_counts.get(word2, 0)),
-                1.0 if word1.endswith('ing') else 0.0, 1.0 if word2.endswith('ing') else 0.0,
-                1.0 if word1.endswith('ed') else 0.0, 1.0 if word2.endswith('ed') else 0.0,
-                1.0 if word1.startswith('un') else 0.0, 1.0 if word2.startswith('un') else 0.0,
+                # Original functions
+        np.log1p(y),
+        np.log1p(y),
+        np.log1p(y),
+        np.log1p(y),
+        np.square(y),
+        np.square(y),
+        None, 
+        np.sqrt(np.maximum(0, x)),
+        np.log1p(y),
+        np.log1p(y),
+        None, 
+        None, 
+        None, 
+        None, 
+        x * 2.0, 
+        None,
+        
+        # Additional math functions
+        # Basic arithmetic
+        x + 1.0,
+        x - 1.0,
+        x * 3.0,
+        x / 2.0,
+        x ** 3,
+        x ** 0.5,
+        x ** (1/3),
+        1 / np.maximum(x, 1e-8),  # reciprocal with safety
+        
+        # Exponential and logarithmic
+        np.exp(y),
+        np.exp2(y),
+        np.expm1(y),
+        np.log(np.maximum(x, 1e-8)),
+        np.log2(np.maximum(x, 1e-8)),
+        np.log10(np.maximum(x, 1e-8)),
+        
+        # Trigonometric
+        np.sin(y),
+        np.cos(y),
+        np.tan(y),
+        np.arcsin(np.clip(x, -1, 1)),
+        np.arccos(np.clip(x, -1, 1)),
+        np.arctan(y),
+        
+        # Hyperbolic
+        np.sinh(y),
+        np.cosh(y),
+        np.tanh(y),
+        np.arcsinh(y),
+        np.arccosh(np.maximum(x, 1)),
+        np.arctanh(np.clip(x, -0.99, 0.99)),
+        
+        # Rounding and ceiling/floor
+        np.round(y),
+        np.floor(y),
+        np.ceil(y),
+        np.trunc(x),
+        
+        # Sign and absolute
+        np.abs(x),
+        np.sign(x),
+        np.positive(x),
+        np.negative(x),
+        
+        # Power and roots
+        np.cbrt(x),  # cube root
+        np.power(x, 4),
+        np.power(x, 0.25),  # 4th root
+        np.power(x, 1.5),
+        
+        # Special functions
+        np.maximum(x, 0),  # ReLU
+        np.minimum(x, 0),  # negative part
+        np.maximum(x, 1),  # max with 1
+        np.minimum(x, 1),  # min with 1
+        
+        # Statistical transforms
+        (x - np.mean(x)) / (np.std(x) + 1e-8),  # standardize
+        x / (np.max(np.abs(x)) + 1e-8),  # normalize by max
+        np.clip(x, 0, 1),  # clip to [0,1]
+        np.clip(x, -1, 1),  # clip to [-1,1]
+        
+        # Complex transformations
+        x / (1 + np.abs(x)),  # soft sign
+        np.where(x > 0, x, 0.01 * x),  # leaky ReLU
+        np.log(1 + np.exp(-np.abs(x))) + np.maximum(x, 0),  # softplus
+        x * (1 / (1 + np.exp(-x))),  # swish activation
+        # Additional basic features
+        x,  # identity
+        np.sqrt(np.abs(x) + 1e-8),  # sqrt(abs(x))
+        1 / (np.sqrt(np.abs(x) + 1e-8)),  # reciprocal sqrt
+        1 / (x ** 2 + 1e-8),  # inverse square
+        np.clip(x, 0, None),  # zero out negative values
+        np.clip(x, None, 0),  # zero out positive values
+        None , # binary indicator: positive
+        None,  # binary indicator: negative
+        None,  # binary indicator: zero
+        x - np.mean(x),  # zero-mean
+        (x - np.min(x)) / (np.max(x) - np.min(x) + 1e-8),  # min-max scaling
+        np.exp(-x**2),  # Gaussian basis
+        1 / (1 + np.exp(-x)),  # sigmoid
+        np.heaviside(x, 0.0),  # Heaviside step
             ]
             features.append(bigram_features_vector)
             # if bigram_idx < 2: # Print features for first 2 bigrams
@@ -237,7 +335,7 @@ class FrequencyPredictor:
 
         if X_raw.shape[0] <= 1 or X_raw.ndim != 2 or X_raw.shape[0] != y.shape[0] or X_raw.shape[1] != self.num_base_features:
             print(f"VERBOSE: Warning: Shape of X_raw ({X_raw.shape}) or y ({y.shape}) is unsuitable for training. Num base features: {self.num_base_features}. Skipping training.")
-            self.predictor_model = None; return
+            #self.predictor_model = None; return
         
         X_transformed = self._apply_feature_operations(X_raw) # This method now has its own verbose prints
         print(f"VERBOSE: Transformed features X_transformed shape: {X_transformed.shape}.")
@@ -571,6 +669,21 @@ def core_text_generation_flow():
         lambda x: np.where(x > 0, x, 0.01 * x),  # leaky ReLU
         lambda x: np.log(1 + np.exp(-np.abs(x))) + np.maximum(x, 0),  # softplus
         lambda x: x * (1 / (1 + np.exp(-x))),  # swish activation
+        # Additional basic features
+        lambda x: x,  # identity
+        lambda x: np.sqrt(np.abs(x) + 1e-8),  # sqrt(abs(x))
+        lambda x: 1 / (np.sqrt(np.abs(x) + 1e-8)),  # reciprocal sqrt
+        lambda x: 1 / (x ** 2 + 1e-8),  # inverse square
+        lambda x: np.clip(x, 0, None),  # zero out negative values
+        lambda x: np.clip(x, None, 0),  # zero out positive values
+        lambda x: (x > 0).astype(float),  # binary indicator: positive
+        lambda x: (x < 0).astype(float),  # binary indicator: negative
+        lambda x: (x == 0).astype(float),  # binary indicator: zero
+        lambda x: x - np.mean(x),  # zero-mean
+        lambda x: (x - np.min(x)) / (np.max(x) - np.min(x) + 1e-8),  # min-max scaling
+        lambda x: np.exp(-x**2),  # Gaussian basis
+        lambda x: 1 / (1 + np.exp(-x)),  # sigmoid
+        lambda x: np.heaviside(x, 0.0),  # Heaviside step
     ]
     predictor.set_feature_operations(custom_feature_operations) # add more as desired
 
