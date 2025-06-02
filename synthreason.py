@@ -434,7 +434,7 @@ class FrequencyPredictor:
             nn_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss='mean_squared_error')
             
             print(f"VERBOSE: Training Neural Network model on {X_train_scaled.shape[0]} samples for 100 epochs...")
-            history = nn_model.fit(X_train_scaled, y_train, epochs=100, batch_size=32, verbose=0)
+            history = nn_model.fit(X_train_scaled, y_train, epochs=100, batch_size=32, verbose=1)
             self.predictor_model = nn_model
             print(f"VERBOSE: Neural Network predictor trained. Final training loss: {history.history['loss'][-1]:.4f}")
         else:
