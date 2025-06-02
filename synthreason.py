@@ -11,6 +11,7 @@ from sklearn.model_selection import train_test_split
 # import json # No longer used for saving/loading in main flow
 from typing import Dict, List, Tuple, Optional, Any, Callable
 
+KB_LENGTH = -1
 # Attempt to import datasets
 try:
     from datasets import load_dataset
@@ -132,7 +133,7 @@ class FrequencyPredictor:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                words = content.lower().split()[:999]
+                words = content.lower().split()[:KB_LENGTH]
                 print(f"VERBOSE: Successfully loaded {len(words)} words from {file_path}.")
                 return ' '.join(words)
         except FileNotFoundError:
@@ -224,6 +225,8 @@ class FrequencyPredictor:
         None, 
         None, 
         x * 2.0, 
+        None,
+
         None,
         
         # Additional math functions
@@ -329,23 +332,67 @@ class FrequencyPredictor:
             print("VERBOSE: No frequency features available. Skipping training.")
             self.predictor_model = None; return
 
-        X_raw = np.array([f[1:] for f in self.frequency_features]) 
-        y = np.array([f[0] for f in self.frequency_features])  
+        try:
+            # Assuming self.frequency_features rows are [target, feat1, feat2, ...]
+            X_raw = np.array([f[1:] for f in self.frequency_features], dtype=float) 
+            y = np.array([f[0] for f in self.frequency_features], dtype=float)  
+        except Exception as e:
+            print(f"VERBOSE: Error converting features to NumPy array: {e}. Check feature creation. Skipping training.")
+            self.predictor_model = None; return
+            
         print(f"VERBOSE: Raw features X_raw shape: {X_raw.shape}, Target y shape: {y.shape}.")
 
+        # This check is important. If it fails, _apply_feature_operations might skip,
+        # or if it proceeds, it might operate on incorrectly shaped data.
         if X_raw.shape[0] <= 1 or X_raw.ndim != 2 or X_raw.shape[0] != y.shape[0] or X_raw.shape[1] != self.num_base_features:
-            print(f"VERBOSE: Warning: Shape of X_raw ({X_raw.shape}) or y ({y.shape}) is unsuitable for training. Num base features: {self.num_base_features}. Skipping training.")
-            #self.predictor_model = None; return
+            print(f"VERBOSE: Warning: Shape of X_raw ({X_raw.shape}) or y ({y.shape}) is unsuitable for training/transformation. Num base features: {self.num_base_features}. Skipping actual model training.")
+            # If you commented out the 'return' here previously, ensure X_raw is what _apply_feature_operations expects
+            # or that _apply_feature_operations handles the shape mismatch by returning X_raw untransformed.
+            # For now, let's assume if this warning hits, X_transformed might just be X_raw.
+            # self.predictor_model = None; return # Original line commented out by user.
         
-        X_transformed = self._apply_feature_operations(X_raw) # This method now has its own verbose prints
+        X_transformed = self._apply_feature_operations(X_raw) 
         print(f"VERBOSE: Transformed features X_transformed shape: {X_transformed.shape}.")
         
-        test_size_for_split = 0.2 if X_transformed.shape[0] >= 10 else 0.0 # adjust if too small
+        # --- MODIFICATION TO "SKIP" (REPLACE) INFINITIES AND NANS ---
+        # Check if X_transformed contains any NaN or Inf values before proceeding
+        has_nan = np.isnan(X_transformed).any()
+        has_inf = np.isinf(X_transformed).any()
+
+        if has_nan or has_inf:
+            if has_nan and has_inf:
+                print("VERBOSE: X_transformed contains both NaNs and infinities.")
+            elif has_nan:
+                print("VERBOSE: X_transformed contains NaNs.")
+            elif has_inf:
+                print("VERBOSE: X_transformed contains infinities.")
+            
+            print("VERBOSE: Applying np.nan_to_num to replace NaNs/infinities.")
+            # Replace NaN with 0.0
+            # Replace positive infinity with the largest positive number for the dtype
+            # Replace negative infinity with the smallest negative number for the dtype
+            X_transformed = np.nan_to_num(X_transformed, 
+                                          nan=0.0, 
+                                          posinf=np.finfo(X_transformed.dtype).max, 
+                                          neginf=np.finfo(X_transformed.dtype).min)
+            print(f"VERBOSE: X_transformed after np.nan_to_num. Shape: {X_transformed.shape}.")
+            # Verify again (optional)
+            # if np.isnan(X_transformed).any() or np.isinf(X_transformed).any():
+            #    print("VERBOSE: Warning: NaNs or infinities still present after np.nan_to_num.")
+        # --- END MODIFICATION ---
+        
+        # Ensure X_transformed is not empty before proceeding
+        if X_transformed.shape[0] == 0:
+            print("VERBOSE: X_transformed is empty after operations and/or cleaning. Skipping training.")
+            self.predictor_model = None; return
+
+        test_size_for_split = 0.2 if X_transformed.shape[0] >= 10 else 0.0
         if X_transformed.shape[0] < 10:
-             print(f"VERBOSE: Dataset too small ({X_transformed.shape[0]} samples), using all data for training and testing.")
-             X_train, X_test, y_train, y_test = (X_transformed, X_transformed, y, y)
+            print(f"VERBOSE: Dataset too small ({X_transformed.shape[0]} samples), using all data for training and testing.")
+            # Ensure y matches X_transformed's sample size if filtering happened (not in this nan_to_num)
+            X_train, X_test, y_train, y_test = (X_transformed, X_transformed, y[:X_transformed.shape[0]], y[:X_transformed.shape[0]])
         else:
-             X_train, X_test, y_train, y_test = train_test_split(X_transformed, y, test_size=test_size_for_split, random_state=42)
+            X_train, X_test, y_train, y_test = train_test_split(X_transformed, y, test_size=test_size_for_split, random_state=42)
         
         print(f"VERBOSE: Data split. X_train shape: {X_train.shape}, X_test shape: {X_test.shape}, y_train shape: {y_train.shape}, y_test shape: {y_test.shape}.")
         
@@ -354,16 +401,27 @@ class FrequencyPredictor:
             self.predictor_model = None; return
 
         print("VERBOSE: Fitting StandardScaler on X_train.")
-        self.scaler.fit(X_train)
-        X_train_scaled = self.scaler.transform(X_train)
-        print(f"VERBOSE: X_train scaled. Shape: {X_train_scaled.shape}. Scaler mean: {self.scaler.mean_[:3]}..., Scaler scale: {self.scaler.scale_[:3]}...")
-        
+        try:
+            self.scaler.fit(X_train)
+            X_train_scaled = self.scaler.transform(X_train)
+            # X_test_scaled = self.scaler.transform(X_test) # Also scale X_test for evaluation
+            print(f"VERBOSE: X_train scaled. Shape: {X_train_scaled.shape}. Scaler mean (first 3): {self.scaler.mean_[:3] if self.scaler.mean_.size >=3 else self.scaler.mean_}..., Scaler scale (first 3): {self.scaler.scale_[:3] if self.scaler.scale_.size >=3 else self.scaler.scale_}...")
+        except ValueError as e:
+            print(f"VERBOSE: ValueError during StandardScaler fit/transform: {e}. This might happen if data still contains NaNs/infs or all features are constant after nan_to_num.")
+            self.predictor_model = None; return
+
+        # ... (rest of the neural network training code) ...
         if model_type == 'neural_network':
             if not TENSORFLOW_AVAILABLE:
                 print("VERBOSE: TensorFlow not available. Cannot train neural network model.")
                 self.predictor_model = None; return
             
             print("VERBOSE: Defining Keras Sequential model.")
+            # Ensure input_shape matches X_train_scaled.shape[1]
+            if X_train_scaled.shape[1] == 0:
+                 print("VERBOSE: X_train_scaled has 0 features. Cannot define model input layer.")
+                 self.predictor_model = None; return
+
             nn_model = tf.keras.Sequential([
                 tf.keras.layers.InputLayer(input_shape=(X_train_scaled.shape[1],)),
                 tf.keras.layers.Dense(128, activation='relu'),
@@ -374,10 +432,9 @@ class FrequencyPredictor:
                 tf.keras.layers.Dense(1) 
             ])
             nn_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss='mean_squared_error')
-            # nn_model.summary(print_fn=lambda x: print(f"VERBOSE: NN Model Summary: {x}")) # For very detailed model structure
             
             print(f"VERBOSE: Training Neural Network model on {X_train_scaled.shape[0]} samples for 100 epochs...")
-            history = nn_model.fit(X_train_scaled, y_train, epochs=100, batch_size=32, verbose=0) # verbose=0 for TF's own prints
+            history = nn_model.fit(X_train_scaled, y_train, epochs=100, batch_size=32, verbose=0)
             self.predictor_model = nn_model
             print(f"VERBOSE: Neural Network predictor trained. Final training loss: {history.history['loss'][-1]:.4f}")
         else:
@@ -396,9 +453,17 @@ class FrequencyPredictor:
 
         new_frequency_sets = []
         original_total_frequency_sum = sum(self.bigram_frequencies.values())
+        if original_total_frequency_sum == 0 : original_total_frequency_sum = 1.0 # Avoid division by zero
         print(f"VERBOSE: Original total frequency sum for scaling: {original_total_frequency_sum}")
 
-        base_X_for_prediction = np.array([f[1:] for f in self.frequency_features])
+        try:
+            base_X_for_prediction = np.array([f[1:] for f in self.frequency_features], dtype=float)
+        except Exception as e:
+            print(f"VERBOSE: Error preparing base_X_for_prediction from self.frequency_features: {e}. Cannot generate.")
+            return []
+
+        # This check is crucial and must pass for the rest of the function to be valid.
+        # Assuming this passes based on the error occurring later at self.scaler.transform().
         if base_X_for_prediction.shape[1] != self.num_base_features:
             print(f"VERBOSE: Error: Mismatch in feature dimensions ({base_X_for_prediction.shape[1]} vs {self.num_base_features}) for generation. Cannot proceed.")
             return []
@@ -406,56 +471,96 @@ class FrequencyPredictor:
 
         for variation in range(num_variations):
             print(f"VERBOSE: Generating variation {variation + 1}/{num_variations}.")
-            X_noised = base_X_for_prediction.astype(float).copy()
+            X_noised = base_X_for_prediction.astype(float).copy() # Ensure it's float for operations
             noise_factor = 0.1 + (variation * 0.02)
-            # print(f"VERBOSE: Applying noise with factor {noise_factor:.3f}.")
+            
             for j in range(X_noised.shape[1]):
-                noise = np.random.normal(0, noise_factor * np.abs(X_noised[:, j] + 0.01))
-                X_noised[:, j] = np.maximum(0, X_noised[:, j] + noise)
-            # print(f"VERBOSE: Noised features X_noised shape: {X_noised.shape}. Sample (1st row, 1st 3 vals): {X_noised[0, :3] if X_noised.size > 0 else 'N/A'}")
+                # Adding noise based on column's std dev might be more stable than abs value if scales vary wildly
+                col_std = np.std(X_noised[:, j])
+                if col_std == 0: col_std = 0.1 # Add small noise even to constant columns to potentially break constancy
+                
+                # Or use the user's original noise logic if preferred, but be mindful of X_noised values
+                # noise = np.random.normal(0, noise_factor * np.abs(X_noised[:, j] + 1e-8)) # Added epsilon to abs
+                noise = np.random.normal(0, noise_factor * col_std, size=X_noised.shape[0])
+                X_noised[:, j] = X_noised[:, j] + noise
+                # Optional: If certain features should remain non-negative (e.g. counts, lengths after noise)
+                # X_noised[:, j] = np.maximum(0, X_noised[:, j])
             
             X_transformed_noised = self._apply_feature_operations(X_noised)
-            # print(f"VERBOSE: Transformed noised features X_transformed_noised shape: {X_transformed_noised.shape}. Sample: {X_transformed_noised[0, :3] if X_transformed_noised.size > 0 else 'N/A'}")
             
-            if X_transformed_noised.shape[0] == 0:
-                print("VERBOSE: Transformed noised features are empty. Skipping this variation.")
+            if X_transformed_noised.shape[0] == 0: # Should not happen if X_noised is not empty
+                print("VERBOSE: Transformed noised features are unexpectedly empty. Skipping this variation.")
                 continue
+            
+            # --- ADDED SECTION TO HANDLE INFINITIES/LARGE VALUES/NANS ---
+            has_problematic_values = False
+            if np.isnan(X_transformed_noised).any():
+                print("VERBOSE: X_transformed_noised contains NaNs before scaling.")
+                has_problematic_values = True
+            if np.isinf(X_transformed_noised).any():
+                print("VERBOSE: X_transformed_noised contains infinities before scaling.")
+                has_problematic_values = True
+            
+            # Check for values too large for float64, though np.nan_to_num might not fix these if they are already finite but huge
+            # Scikit-learn's check is more stringent. Replacing inf might create numbers that are still "too large".
+            # However, this step primarily targets np.inf and np.nan.
+            if has_problematic_values:
+                print("VERBOSE: Applying np.nan_to_num to X_transformed_noised.")
+                try:
+                    # Replace NaN with 0, inf with large finite numbers
+                    X_transformed_noised = np.nan_to_num(X_transformed_noised, 
+                                                          nan=0.0, 
+                                                          posinf=np.finfo(X_transformed_noised.dtype).max / 2, # Use a slightly smaller max to avoid edge issues
+                                                          neginf=np.finfo(X_transformed_noised.dtype).min / 2) # Use a slightly smaller min
+                    print(f"VERBOSE: X_transformed_noised after nan_to_num. Shape: {X_transformed_noised.shape}.")
+                except Exception as e:
+                    print(f"VERBOSE: Error during np.nan_to_num on X_transformed_noised: {e}. Skipping variation.")
+                    continue
+            # --- END ADDED SECTION ---
 
-            X_scaled = self.scaler.transform(X_transformed_noised)
-            # print(f"VERBOSE: Scaled features for prediction shape: {X_scaled.shape}. Sample: {X_scaled[0, :3] if X_scaled.size > 0 else 'N/A'}")
+            # Line 480 where the error occurred:
+            try:
+                X_scaled = self.scaler.transform(X_transformed_noised)
+            except ValueError as ve:
+                print(f"VERBOSE: ValueError during scaler.transform: {ve}. This means X_transformed_noised still has problematic values (likely too large for float64 even if not strictly inf after nan_to_num, or all NaNs in a column). Skipping variation.")
+                # You might want to print a sample of X_transformed_noised here for debugging
+                # print(f"VERBOSE: Sample of X_transformed_noised that caused error: {X_transformed_noised[:5, :5]}")
+                continue # Skip this variation if scaling fails
             
             print("VERBOSE: Predicting new counts with the model...")
             predicted_new_counts = self.predictor_model.predict(X_scaled)
             
+            # ... (rest of the function for processing predicted_new_counts)
             if isinstance(predicted_new_counts, tf.Tensor):
                 predicted_new_counts = predicted_new_counts.numpy()
             predicted_new_counts = predicted_new_counts.flatten()
-            # print(f"VERBOSE: Raw predicted counts (first 5): {predicted_new_counts[:5] if predicted_new_counts.size > 0 else 'N/A'}")
             
             predicted_new_counts = np.maximum(predicted_new_counts, 0.01) 
-            # print(f"VERBOSE: Predicted counts after np.maximum(0.01) (first 5): {predicted_new_counts[:5] if predicted_new_counts.size > 0 else 'N/A'}")
             
             current_sum_predicted_counts = np.sum(predicted_new_counts)
             if current_sum_predicted_counts == 0:
                 if len(predicted_new_counts) > 0:
-                    predicted_new_counts = np.full(len(predicted_new_counts), 0.01)
+                    predicted_new_counts = np.full_like(predicted_new_counts, 0.01)
                     print("VERBOSE: Sum of predicted counts was 0, filled with 0.01.")
                 else:
                     new_frequency_sets.append({});
                     print("VERBOSE: Predicted counts array is empty for this variation.")
                     continue 
-            current_sum_predicted_counts = np.sum(predicted_new_counts) # Recalculate
+            current_sum_predicted_counts = np.sum(predicted_new_counts)
             
             scaled_predicted_counts = predicted_new_counts
             if original_total_frequency_sum > 0 and current_sum_predicted_counts > 0:
-                scaled_predicted_counts = (predicted_new_counts / current_sum_predicted_counts) * original_total_frequency_sum
-                # print(f"VERBOSE: Scaled predicted counts to match original sum. Current sum: {current_sum_predicted_counts:.2f}, Target sum: {original_total_frequency_sum:.2f}. First 5 scaled: {scaled_predicted_counts[:5] if scaled_predicted_counts.size > 0 else 'N/A'}")
+                scale_factor = original_total_frequency_sum / current_sum_predicted_counts
+                scaled_predicted_counts = predicted_new_counts * scale_factor
             
             new_freq_dict: Dict[Tuple[str, str], float] = {
-                bigram: float(scaled_predicted_counts[i]) for i, bigram in enumerate(self.sorted_bigrams) if i < len(scaled_predicted_counts)
+                bigram: float(scaled_predicted_counts[i]) 
+                for i, bigram in enumerate(self.sorted_bigrams) 
+                if i < len(scaled_predicted_counts)
             }
             new_frequency_sets.append(new_freq_dict)
             print(f"VERBOSE: Generated frequency dictionary for variation {variation + 1} with {len(new_freq_dict)} entries.")
+        
         print(f"VERBOSE: Finished generating {len(new_frequency_sets)} new frequency sets.")
         return new_frequency_sets
 
@@ -598,6 +703,7 @@ def core_text_generation_flow():
         None, 
         lambda x: x * 2.0, 
         None,
+        
         
         # Additional math functions
         # Basic arithmetic
