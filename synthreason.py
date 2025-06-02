@@ -588,7 +588,7 @@ def core_text_generation_flow():
         text_content = predictor.load_text_from_hf_dataset(
             dataset_name=hf_dataset_config["name"], config_name=hf_dataset_config["config"],
             split=hf_dataset_config["split"], text_column=hf_dataset_config["text_column"],
-            max_total_words=10000 # Reduced for faster verbose testing
+            max_total_words=1000000 # Reduced for faster verbose testing
         )
     
     if text_content is None:
