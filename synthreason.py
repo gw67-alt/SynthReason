@@ -802,7 +802,7 @@ def core_text_generation_flow():
     print(f"VERBOSE: Hugging Face dataset config: {'Active' if hf_dataset_config else 'Inactive'}")
 
 
-    if hf_dataset_config and DATASETS_AVAILABLE:
+    if not hf_dataset_config and DATASETS_AVAILABLE:
         print("VERBOSE: Attempting to load content from Hugging Face dataset.")
         text_content = predictor.load_text_from_hf_dataset(
             dataset_name=hf_dataset_config["name"], config_name=hf_dataset_config["config"],
