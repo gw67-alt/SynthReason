@@ -11,7 +11,7 @@ from sklearn.model_selection import train_test_split
 # import json # No longer used for saving/loading in main flow
 from typing import Dict, List, Tuple, Optional, Any, Callable
 
-KB_LENGTH = 99999
+KB_LENGTH = 9999
 # Attempt to import datasets
 try:
     from datasets import load_dataset
@@ -97,7 +97,7 @@ class FrequencyPredictor:
                                   config_name: Optional[str] = None,
                                   split: str = 'train',
                                   text_column: str = 'text',
-                                  max_total_words: int = 20000) -> Optional[str]:
+                                  max_total_words: int = KB_LENGTH) -> Optional[str]:
         print(f"VERBOSE: Attempting to load text from Hugging Face dataset: {dataset_name} (Config: {config_name}, Split: {split}, Column: {text_column}).")
         if not DATASETS_AVAILABLE:
             print("VERBOSE: Hugging Face 'datasets' library not available. Cannot load from Hub.")
