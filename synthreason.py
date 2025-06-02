@@ -240,76 +240,125 @@ class FrequencyPredictor:
             self.frequency_features = []; return []
 
         for bigram_idx, bigram in enumerate(self.sorted_bigrams):
-            first_word_len = len(bigram[0])
-            second_word_len = len(bigram[1])
+            y, x = bigram
+            x = len(x)
+            y = len(y)
             freq = self.bigram_frequencies[bigram]
-
-            x_val = float(second_word_len)
-            y_val = float(first_word_len)
-            freq_val = float(freq) # This will be the target variable
-
-            # Feature definitions (ensure they return scalar floats and handle edge cases safely)
             bigram_features_vector = [
-                freq_val, # Target variable
+                # Original functions
+        np.log1p(y),
+        np.log1p(y),
+        np.log1p(y),
+        np.log1p(y),
+        np.square(y),
+        np.square(y),
+        None, 
+        np.sqrt(np.maximum(0, x)),
+        np.log1p(y),
+        np.log1p(y),
+        None, 
+        None, 
+        None, 
+        None, 
+        x * 2.0, 
+        None,
 
-                # Base word length features (len of first word `y_val`, len of second word `x_val`)
-                # Each lambda operates on a single feature (e.g., all `x_val`s for a column)
-                y_val, x_val, # raw lengths
-                np.log1p(y_val), np.log1p(x_val), # log transformed lengths
-                np.square(y_val), np.square(x_val), # squared lengths
-                np.sqrt(np.maximum(0, y_val)), np.sqrt(np.maximum(0, x_val)), # sqrt lengths
-
-                # Combinations/Interactions (examples)
-                x_val + y_val,      # Sum of lengths
-                x_val - y_val,      # Difference of lengths
-                x_val * y_val,      # Product of lengths
-                y_val / (x_val + 1e-8), # Ratio of lengths (safe division)
-                (x_val + y_val) / 2.0, # Average length
-
-                # More diverse mathematical transformations
-                np.exp(y_val), np.exp(x_val),
-                np.log(np.maximum(y_val, 1e-8)), np.log(np.maximum(x_val, 1e-8)), # Natural log
-                np.log10(np.maximum(y_val, 1e-8)), np.log10(np.maximum(x_val, 1e-8)), # Log10
-                np.sin(y_val), np.sin(x_val),
-                np.cos(y_val), np.cos(x_val),
-                np.tanh(y_val), np.tanh(x_val), # Hyperbolic tangent
-                np.round(y_val), np.round(x_val),
-                np.ceil(y_val), np.ceil(x_val),
-                np.floor(y_val), np.floor(x_val),
-                np.abs(y_val), np.abs(x_val), # Absolute value (identity for non-negative)
-
-                np.power(y_val, 1.5), np.power(x_val, 1.5), # Power 1.5
-                np.power(y_val, 0.25), np.power(x_val, 0.25), # 4th root
-                np.cbrt(y_val), np.cbrt(x_val), # Cube root
-
-                1 / np.maximum(y_val, 1e-8), 1 / np.maximum(x_val, 1e-8), # Reciprocal
-                1 / (y_val**2 + 1e-8), 1 / (x_val**2 + 1e-8), # Inverse square
-
-                np.maximum(y_val, 0), np.maximum(x_val, 0), # ReLU (identity for non-negative)
-                np.minimum(y_val, 1), np.minimum(x_val, 1), # Min with 1
-                np.clip(y_val, 0, 1), np.clip(x_val, 0, 1), # Clip to [0,1]
-
-                # Binary indicators (cast to float)
-                float(y_val > 0), float(x_val > 0),
-                float(y_val == 0), float(x_val == 0),
-
-                # More complex activations/transforms
-                y_val * (1 / (1 + np.exp(-y_val))), # Swish activation
-                x_val * (1 / (1 + np.exp(-x_val))),
-                1 / (1 + np.exp(-y_val)), # Sigmoid
-                1 / (1 + np.exp(-x_val)),
-                np.exp(-y_val**2), # Gaussian basis function
-                np.exp(-x_val**2),
+        None,
+        
+        # Additional math functions
+        # Basic arithmetic
+        x + 1.0,
+        x - 1.0,
+        x * 3.0,
+        x / 2.0,
+        x ** 3,
+        x ** 0.5,
+        x ** (1/3),
+        1 / np.maximum(x, 1e-8),  # reciprocal with safety
+        
+        # Exponential and logarithmic
+        np.exp(y),
+        np.exp2(y),
+        np.expm1(y),
+        np.log(np.maximum(x, 1e-8)),
+        np.log2(np.maximum(x, 1e-8)),
+        np.log10(np.maximum(x, 1e-8)),
+        
+        # Trigonometric
+        np.sin(y),
+        np.cos(y),
+        np.tan(y),
+        np.arcsin(np.clip(x, -1, 1)),
+        np.arccos(np.clip(x, -1, 1)),
+        np.arctan(y),
+        
+        # Hyperbolic
+        np.sinh(y),
+        np.cosh(y),
+        np.tanh(y),
+        np.arcsinh(y),
+        np.arccosh(np.maximum(x, 1)),
+        np.arctanh(np.clip(x, -0.99, 0.99)),
+        
+        # Rounding and ceiling/floor
+        np.round(y),
+        np.floor(y),
+        np.ceil(y),
+        np.trunc(x),
+        
+        # Sign and absolute
+        np.abs(x),
+        np.sign(x),
+        np.positive(x),
+        np.negative(x),
+        
+        # Power and roots
+        np.cbrt(x),  # cube root
+        np.power(x, 4),
+        np.power(x, 0.25),  # 4th root
+        np.power(x, 1.5),
+        
+        # Special functions
+        np.maximum(x, 0),  # ReLU
+        np.minimum(x, 0),  # negative part
+        np.maximum(x, 1),  # max with 1
+        np.minimum(x, 1),  # min with 1
+        
+        # Statistical transforms
+        (x - np.mean(x)) / (np.std(x) + 1e-8),  # standardize
+        x / (np.max(np.abs(x)) + 1e-8),  # normalize by max
+        np.clip(x, 0, 1),  # clip to [0,1]
+        np.clip(x, -1, 1),  # clip to [-1,1]
+        
+        # Complex transformations
+        x / (1 + np.abs(x)),  # soft sign
+        np.where(x > 0, x, 0.01 * x),  # leaky ReLU
+        np.log(1 + np.exp(-np.abs(x))) + np.maximum(x, 0),  # softplus
+        x * (1 / (1 + np.exp(-x))),  # swish activation
+        # Additional basic features
+        x,  # identity
+        np.sqrt(np.abs(x) + 1e-8),  # sqrt(abs(x))
+        1 / (np.sqrt(np.abs(x) + 1e-8)),  # reciprocal sqrt
+        1 / (x ** 2 + 1e-8),  # inverse square
+        np.clip(x, 0, None),  # zero out negative values
+        np.clip(x, None, 0),  # zero out positive values
+        None , # binary indicator: positive
+        None,  # binary indicator: negative
+        None,  # binary indicator: zero
+        x - np.mean(x),  # zero-mean
+        (x - np.min(x)) / (np.max(x) - np.min(x) + 1e-8),  # min-max scaling
+        np.exp(-x**2),  # Gaussian basis
+        1 / (1 + np.exp(-x)),  # sigmoid
+        np.heaviside(x, 0.0),  # Heaviside step
             ]
             features.append(bigram_features_vector)
+            # if bigram_idx < 2: # Print features for first 2 bigrams
+            #     print(f"VERBOSE: Features for bigram {bigram}: {bigram_features_vector}")
 
         self.frequency_features = features
         if features:
-            # Set num_base_features based on the actual created feature vector length (excluding the target)
-            self.num_base_features = len(features[0]) - 1
             print(f"VERBOSE: Created {len(features)} feature vectors, each with {len(features[0])} elements (1 target + {self.num_base_features} inputs).")
         else:
-            self.num_base_features = 0 # No features created
             print("VERBOSE: No features were created.")
         return features
 
@@ -696,81 +745,110 @@ def core_text_generation_flow():
     print("VERBOSE: Defining custom feature operations...")
 
     custom_feature_operations: List[Optional[Callable[[np.ndarray], np.ndarray]]] = [
-        # Base word length features (len of first word `y_val`, len of second word `x_val`)
-        # Each lambda operates on a single feature (e.g., all `x_val`s for a column)
-        lambda x: x, # Identity (raw value)
-        lambda x: np.log1p(x), # log(1+x) - good for skewed data
-        lambda x: np.square(x), # x^2
-        lambda x: np.sqrt(np.maximum(0, x)), # sqrt(x), clamped at 0
-        lambda x: x * 2.0, # 2 * x
-        lambda x: x / (2.0 + 1e-8), # x / 2 (safe division)
-        lambda x: x ** 3, # x^3
-        lambda x: x ** 0.5, # sqrt(x)
-        lambda x: x ** (1/3), # cube root
-        lambda x: 1 / np.maximum(x, 1e-8), # reciprocal (safe)
-
-        # Exponential and Logarithmic
+        # Original functions
+        lambda x: np.log1p(x),
+        lambda x: np.log1p(x),
+        lambda x: np.log1p(x),
+        lambda x: np.log1p(x),
+        lambda x: np.square(x),
+        lambda x: np.square(x),
+        None, 
+        lambda x: np.sqrt(np.maximum(0, x)),
+        lambda x: np.log1p(x),
+        lambda x: np.log1p(x),
+        None, 
+        None, 
+        None, 
+        None, 
+        lambda x: x * 2.0, 
+        None,
+        
+        
+        # Additional math functions
+        # Basic arithmetic
+        lambda x: x + 1.0,
+        lambda x: x - 1.0,
+        lambda x: x * 3.0,
+        lambda x: x / 2.0,
+        lambda x: x ** 3,
+        lambda x: x ** 0.5,
+        lambda x: x ** (1/3),
+        lambda x: 1 / np.maximum(x, 1e-8),  # reciprocal with safety
+        
+        # Exponential and logarithmic
         lambda x: np.exp(x),
         lambda x: np.exp2(x),
         lambda x: np.expm1(x),
         lambda x: np.log(np.maximum(x, 1e-8)),
         lambda x: np.log2(np.maximum(x, 1e-8)),
         lambda x: np.log10(np.maximum(x, 1e-8)),
-
-        # Trigonometric (can map lengths to cyclical patterns, though interpretation is abstract)
+        
+        # Trigonometric
         lambda x: np.sin(x),
         lambda x: np.cos(x),
         lambda x: np.tan(x),
-        # Adjusted for potential all-zero column from np.max(x)
-        lambda x: np.arcsin(np.clip(x / (np.max(x) + 1e-8), -1, 1)) if x.size > 0 and np.max(x) > 0 else np.zeros_like(x),
-        lambda x: np.arccos(np.clip(x / (np.max(x) + 1e-8), -1, 1)) if x.size > 0 and np.max(x) > 0 else np.zeros_like(x),
+        lambda x: np.arcsin(np.clip(x, -1, 1)),
+        lambda x: np.arccos(np.clip(x, -1, 1)),
         lambda x: np.arctan(x),
-
+        
         # Hyperbolic
         lambda x: np.sinh(x),
         lambda x: np.cosh(x),
         lambda x: np.tanh(x),
         lambda x: np.arcsinh(x),
-        lambda x: np.arccosh(np.maximum(x, 1.0)), # Input must be >= 1
-        # Adjusted for potential all-zero column from np.max(x)
-        lambda x: np.arctanh(np.clip(x / (np.max(x) + 1e-8), -0.99, 0.99)) if x.size > 0 and np.max(x) > 0 else np.zeros_like(x),
-
-        # Rounding and Ceiling/Floor
+        lambda x: np.arccosh(np.maximum(x, 1)),
+        lambda x: np.arctanh(np.clip(x, -0.99, 0.99)),
+        
+        # Rounding and ceiling/floor
         lambda x: np.round(x),
         lambda x: np.floor(x),
         lambda x: np.ceil(x),
         lambda x: np.trunc(x),
-
-        # Sign and Absolute
+        
+        # Sign and absolute
         lambda x: np.abs(x),
         lambda x: np.sign(x),
-        lambda x: np.positive(x), # Identity for positive numbers
+        lambda x: np.positive(x),
         lambda x: np.negative(x),
-
-        # More Power and Roots
+        
+        # Power and roots
+        lambda x: np.cbrt(x),  # cube root
         lambda x: np.power(x, 4),
+        lambda x: np.power(x, 0.25),  # 4th root
         lambda x: np.power(x, 1.5),
-
-        # Special functions/Activation functions
-        lambda x: np.maximum(x, 0), # ReLU
-        lambda x: np.minimum(x, 0), # Negative part (will be 0 for word lengths)
-        lambda x: np.maximum(x, 1), # Max with 1
-        lambda x: np.minimum(x, 1), # Min with 1
-        lambda x: np.clip(x, 0, 1), # Clip to [0,1]
-        lambda x: np.clip(x, -1, 1), # Clip to [-1,1]
-
-        # More Complex Transformations (common in neural networks)
-        lambda x: x / (1 + np.abs(x)), # Soft sign
-        lambda x: np.where(x > 0, x, 0.01 * x), # Leaky ReLU
-        lambda x: np.log(1 + np.exp(-np.abs(x))) + np.maximum(x, 0), # Softplus
-        lambda x: x * (1 / (1 + np.exp(-x))), # Swish activation
-        lambda x: 1 / (1 + np.exp(-x)), # Sigmoid
-        lambda x: np.heaviside(x, 0.0), # Heaviside step
-        lambda x: np.exp(-x**2), # Gaussian basis function
-
-        # Binary indicators
-        lambda x: (x > 0).astype(float),
-        lambda x: (x == 0).astype(float),
+        
+        # Special functions
+        lambda x: np.maximum(x, 0),  # ReLU
+        lambda x: np.minimum(x, 0),  # negative part
+        lambda x: np.maximum(x, 1),  # max with 1
+        lambda x: np.minimum(x, 1),  # min with 1
+        
+        # Statistical transforms
+        lambda x: (x - np.mean(x)) / (np.std(x) + 1e-8),  # standardize
+        lambda x: x / (np.max(np.abs(x)) + 1e-8),  # normalize by max
+        lambda x: np.clip(x, 0, 1),  # clip to [0,1]
+        lambda x: np.clip(x, -1, 1),  # clip to [-1,1]
+        
+        # Complex transformations
+        lambda x: x / (1 + np.abs(x)),  # soft sign
+        lambda x: np.where(x > 0, x, 0.01 * x),  # leaky ReLU
+        lambda x: np.log(1 + np.exp(-np.abs(x))) + np.maximum(x, 0),  # softplus
+        lambda x: x * (1 / (1 + np.exp(-x))),  # swish activation
+        # Additional basic features
+        lambda x: x,  # identity
+        lambda x: np.sqrt(np.abs(x) + 1e-8),  # sqrt(abs(x))
+        lambda x: 1 / (np.sqrt(np.abs(x) + 1e-8)),  # reciprocal sqrt
+        lambda x: 1 / (x ** 2 + 1e-8),  # inverse square
+        lambda x: np.clip(x, 0, None),  # zero out negative values
+        lambda x: np.clip(x, None, 0),  # zero out positive values
+        lambda x: (x > 0).astype(float),  # binary indicator: positive
+        lambda x: (x < 0).astype(float),  # binary indicator: negative
+        lambda x: (x == 0).astype(float),  # binary indicator: zero
+        lambda x: x - np.mean(x),  # zero-mean
+        lambda x: (x - np.min(x)) / (np.max(x) - np.min(x) + 1e-8),  # min-max scaling
+        lambda x: np.exp(-x**2),  # Gaussian basis
+        lambda x: 1 / (1 + np.exp(-x)),  # sigmoid
+        lambda x: np.heaviside(x, 0.0),  # Heaviside step
     ]
 
     predictor.set_feature_operations(custom_feature_operations)
