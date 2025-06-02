@@ -11,7 +11,7 @@ from sklearn.model_selection import train_test_split
 # import json # No longer used for saving/loading in main flow
 from typing import Dict, List, Tuple, Optional, Any, Callable
 
-KB_LENGTH = -1
+KB_LENGTH = 99999
 # Attempt to import datasets
 try:
     from datasets import load_dataset
@@ -802,7 +802,7 @@ def core_text_generation_flow():
     print(f"VERBOSE: Hugging Face dataset config: {'Active' if hf_dataset_config else 'Inactive'}")
 
 
-    if not hf_dataset_config and DATASETS_AVAILABLE:
+    if hf_dataset_config and DATASETS_AVAILABLE:
         print("VERBOSE: Attempting to load content from Hugging Face dataset.")
         text_content = predictor.load_text_from_hf_dataset(
             dataset_name=hf_dataset_config["name"], config_name=hf_dataset_config["config"],
