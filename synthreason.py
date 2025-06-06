@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-KB_LENGTH = 10000 # Keep as -1 to load all available, or set to a specific number (e.g., 500000) for testing large datasets
+KB_LENGTH = -1 # Keep as -1 to load all available, or set to a specific number (e.g., 500000) for testing large datasets
 
 # Attempt to import datasets
 try:
