@@ -166,7 +166,7 @@ class FrequencyPredictor:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-            words = self.preprocess_text(content) # Use internal preprocessor
+            words = self.preprocess_text(content.lower()) # Use internal preprocessor
             if KB_LENGTH != -1:
                 words = words[:KB_LENGTH]
             print(f"VERBOSE: Successfully loaded {len(words)} words from {file_path}.")
@@ -724,7 +724,7 @@ class FrequencyPredictor:
                     break
 
             possible_next_words, weights = zip(*transitions[current_word])
-            next_word = random.choices(possible_next_words, weights=weights, k=1)[0]
+            next_word = random.choices(possible_next_words, weights=weights, k=1)[-1]
             generated_text_list.append(next_word)
             current_word = next_word
 
