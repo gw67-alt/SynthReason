@@ -241,8 +241,8 @@ class FrequencyPredictor:
 
         for bigram_idx, bigram in enumerate(self.sorted_bigrams):
             y, x = bigram
-            x = len(x)
-            y = len(y)
+            x = bigram_idx
+            y = bigram_idx+1
             freq = self.bigram_frequencies[bigram]
             bigram_features_vector = [
                 # Original functions
