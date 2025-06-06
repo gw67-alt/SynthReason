@@ -724,7 +724,7 @@ class FrequencyPredictor:
                     break
 
             possible_next_words, weights = zip(*transitions[current_word])
-            next_word = random.choices(possible_next_words, weights=weights, k=1)[-1]
+            next_word = random.choices(possible_next_words, weights=weights, k=1)[0]
             generated_text_list.append(next_word)
             current_word = next_word
 
