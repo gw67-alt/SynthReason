@@ -657,7 +657,7 @@ def demonstrate_interstitial_markovian():
             
         generated_text = predictor.generate_text_with_interstitial_values(
             interstitial_transitions, 
-            length=50,
+            length=250,
             seed=input_
         )
     
