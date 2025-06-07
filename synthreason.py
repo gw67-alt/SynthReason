@@ -204,6 +204,7 @@ class EnhancedInterstitialMarkovianPredictor:
                 ]
                 feature_vector = (np.array(feature_vector) - self.feature_mean) / self.feature_std
                 features.append(feature_vector)
+            features = np.array(features)  # Convert list to a single numpy array
             features = torch.FloatTensor(features)
             with torch.no_grad():
                 interstitial_values = self.predictor_model(features).squeeze().numpy()
