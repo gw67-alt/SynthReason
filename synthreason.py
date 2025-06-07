@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from concurrent.futures import ThreadPoolExecutor
-KB_LEN = 10000
+KB_LEN = 20000
 class EnhancedInterstitialMarkovianPredictor:
     def __init__(self, n_threads: Optional[int] = None):
         self.bigram_frequencies: Dict[Tuple[str, str], int] = {}
@@ -91,7 +91,7 @@ class EnhancedInterstitialMarkovianPredictor:
             self.unigram_counts[word1] / sum(self.unigram_counts.values()) if sum(self.unigram_counts.values()) > 0 else 0.0,
         ]
         # Add any other features you want here
-        target = self._calculate_interstitial_value(state)
+        target = self._calculate_interstitial_value((self.unigram_counts[word1],self._calculate_interstitial_value(state)))
         return feature_vector, target
 
     def create_interstitial_features(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -222,45 +222,17 @@ class EnhancedInterstitialMarkovianPredictor:
         """Generate text using interstitial Markovian values and two-step transitions"""
         if not self.unigram_counts:
             return "No data to generate text"
-
-        # Choose starting words
-        if seed:
-            seed_words = seed.lower().split()
-            if len(seed_words) >= 2:
-                prev_word, current_word = seed_words[-2], seed_words[-1]
-            elif len(seed_words) == 1:
-                prev_word, current_word = "", seed_words[0]
-            else:
-                prev_word, current_word = "", ""
-        else:
-            prev_word, current_word = "", ""
-
-        if not current_word or current_word not in self.unigram_counts:
-            valid_starters = [w for w in self.unigram_counts.keys() if w in self.transition_matrix]
-            if valid_starters:
-                starter_probs = [self.unigram_counts[w] for w in valid_starters]
-                total_prob = sum(starter_probs)
-                starter_probs = [p/total_prob for p in starter_probs]
-                current_word = np.random.choice(valid_starters, p=starter_probs)
-            else:
-                current_word = random.choice(list(self.unigram_counts.keys()))
-
-        words = []
-        if seed and len(seed_words) >= 2:
-            words.extend(seed_words[:-1])
-            words.append(current_word)
-        elif seed and len(seed_words) == 1:
-            words.append(current_word)
-        else:
-            words.append(current_word)
-
-        # Generate remaining words
-        for _ in range(length - len(words)):
-            next_word = self.generate_next_word(prev_word, current_word)
-            words.append(next_word)
-            prev_word, current_word = current_word, next_word
-
-        return ' '.join(words)
+        try:
+            prev_word, current_word = seed.split()[-2],seed.split()[-1]
+            # Generate words
+            words = []
+            for _ in range(length):
+                next_word = self.generate_next_word(prev_word, current_word)
+                words.append(next_word)
+                prev_word, current_word = current_word, next_word
+            return ' '.join(words)
+        except:
+            print("Please enter atleast 2 seed words")
 
 # Example usage
 if __name__ == "__main__":
