@@ -244,3 +244,4 @@ if __name__ == "__main__":
     while True:
         generated_text = predictor.generate_text(length=250, seed=input("USER: "))
         print("Generated text:", generated_text)
+        print()
