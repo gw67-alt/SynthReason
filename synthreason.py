@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-KB_LENGTH = -1 # Keep as -1 to load all available, or set to a specific number (e.g., 500000) for testing large datasets
+KB_LENGTH = 10000 # Keep as -1 to load all available, or set to a specific number (e.g., 500000) for testing large datasets
 
 # Attempt to import datasets
 try:
@@ -232,135 +232,42 @@ class FrequencyPredictor:
         print(f"VERBOSE: Bigrams sorted by frequency. Top 3: {self.sorted_bigrams[:3] if len(self.sorted_bigrams) >=3 else self.sorted_bigrams}")
         return self.bigram_frequencies
 
+
     def create_bigram_frequency_features(self) -> List[List[float]]:
         print("VERBOSE: Starting creation of bigram frequency features.")
         features = []
         if not self.sorted_bigrams:
             print("VERBOSE: No sorted bigrams available to create features.")
-            self.frequency_features = []; return []
+            self.frequency_features = []
+            return []
 
         for bigram_idx, bigram in enumerate(self.sorted_bigrams):
-            y, x = bigram
-            x = bigram_idx
-            y = bigram_idx+1
-            freq = self.bigram_frequencies[bigram]
-            bigram_features_vector = [
-                # Original functions
-        np.log1p(y),
-        np.log1p(y),
-        np.log1p(y),
-        np.log1p(y),
-        np.square(y),
-        np.square(y),
-        None, 
-        np.sqrt(np.maximum(0, x)),
-        np.log1p(y),
-        np.log1p(y),
-        None, 
-        None, 
-        None, 
-        None, 
-        x * 2.0, 
-        None,
+            # Assume bigram is a tuple (token1, token2)
+            # Extract frequencies for bigram and its neighbors (if they exist)
+            freq_features = []
+            for offset in range(400):
+                neighbor_idx = bigram_idx + offset
+                if neighbor_idx < len(self.sorted_bigrams):
+                    neighbor_bigram = self.sorted_bigrams[neighbor_idx]
+                    freq = self.bigram_frequencies.get(neighbor_bigram, 0.0)
+                else:
+                    freq = 0.0  # Or some default value
+                freq_features.append(freq)
+                # Optionally, add index-based features
+                freq_features.append(bigram_idx + offset)
 
-        None,
-        
-        # Additional math functions
-        # Basic arithmetic
-        x + 1.0,
-        x - 1.0,
-        x * 3.0,
-        x / 2.0,
-        x ** 3,
-        x ** 0.5,
-        x ** (1/3),
-        1 / np.maximum(x, 1e-8),  # reciprocal with safety
-        
-        # Exponential and logarithmic
-        np.exp(y),
-        np.exp2(y),
-        np.expm1(y),
-        np.log(np.maximum(x, 1e-8)),
-        np.log2(np.maximum(x, 1e-8)),
-        np.log10(np.maximum(x, 1e-8)),
-        
-        # Trigonometric
-        np.sin(y),
-        np.cos(y),
-        np.tan(y),
-        np.arcsin(np.clip(x, -1, 1)),
-        np.arccos(np.clip(x, -1, 1)),
-        np.arctan(y),
-        
-        # Hyperbolic
-        np.sinh(y),
-        np.cosh(y),
-        np.tanh(y),
-        np.arcsinh(y),
-        np.arccosh(np.maximum(x, 1)),
-        np.arctanh(np.clip(x, -0.99, 0.99)),
-        
-        # Rounding and ceiling/floor
-        np.round(y),
-        np.floor(y),
-        np.ceil(y),
-        np.trunc(x),
-        
-        # Sign and absolute
-        np.abs(x),
-        np.sign(x),
-        np.positive(x),
-        np.negative(x),
-        
-        # Power and roots
-        np.cbrt(x),  # cube root
-        np.power(x, 4),
-        np.power(x, 0.25),  # 4th root
-        np.power(x, 1.5),
-        
-        # Special functions
-        np.maximum(x, 0),  # ReLU
-        np.minimum(x, 0),  # negative part
-        np.maximum(x, 1),  # max with 1
-        np.minimum(x, 1),  # min with 1
-        
-        # Statistical transforms
-        (x - np.mean(x)) / (np.std(x) + 1e-8),  # standardize
-        x / (np.max(np.abs(x)) + 1e-8),  # normalize by max
-        np.clip(x, 0, 1),  # clip to [0,1]
-        np.clip(x, -1, 1),  # clip to [-1,1]
-        
-        # Complex transformations
-        x / (1 + np.abs(x)),  # soft sign
-        np.where(x > 0, x, 0.01 * x),  # leaky ReLU
-        np.log(1 + np.exp(-np.abs(x))) + np.maximum(x, 0),  # softplus
-        x * (1 / (1 + np.exp(-x))),  # swish activation
-        # Additional basic features
-        x,  # identity
-        np.sqrt(np.abs(x) + 1e-8),  # sqrt(abs(x))
-        1 / (np.sqrt(np.abs(x) + 1e-8)),  # reciprocal sqrt
-        1 / (x ** 2 + 1e-8),  # inverse square
-        np.clip(x, 0, None),  # zero out negative values
-        np.clip(x, None, 0),  # zero out positive values
-        None , # binary indicator: positive
-        None,  # binary indicator: negative
-        None,  # binary indicator: zero
-        x - np.mean(x),  # zero-mean
-        (x - np.min(x)) / (np.max(x) - np.min(x) + 1e-8),  # min-max scaling
-        np.exp(-x**2),  # Gaussian basis
-        1 / (1 + np.exp(-x)),  # sigmoid
-        np.heaviside(x, 0.0),  # Heaviside step
-            ]
-            features.append(bigram_features_vector)
-            # if bigram_idx < 2: # Print features for first 2 bigrams
-            #     print(f"VERBOSE: Features for bigram {bigram}: {bigram_features_vector}")
+
+
+           
+            features.append(freq_features)
 
         self.frequency_features = features
         if features:
-            print(f"VERBOSE: Created {len(features)} feature vectors, each with {len(features[0])} elements (1 target + {self.num_base_features} inputs).")
+            print(f"VERBOSE: Created {len(features)} feature vectors, each with {len(features[0])} elements.")
         else:
             print("VERBOSE: No features were created.")
         return features
+
 
     def train_predictor(self, model_type: str = 'neural_network') -> None:
         print(f"VERBOSE: Starting predictor training with model_type: {model_type}.")
@@ -618,39 +525,70 @@ class FrequencyPredictor:
                 scaled_predicted_counts = predicted_new_counts * scale_factor
 
             new_freq_dict: Dict[Tuple[str, str], float] = {
-                bigram: float(scaled_predicted_counts[i])
-                for i, bigram in enumerate(self.sorted_bigrams)
-                if i < len(scaled_predicted_counts)
+            bigram: float(max(0.001, predicted_new_counts[i]))  # Ensure positive values
+            for i, bigram in enumerate(self.sorted_bigrams)
+            if i < len(predicted_new_counts)
             }
-            new_frequency_sets.append(new_freq_dict)
-            print(f"VERBOSE: Generated frequency dictionary for variation {variation + 1} with {len(new_freq_dict)} entries.")
-
-        print(f"VERBOSE: Finished generating {len(new_frequency_sets)} new frequency sets.")
+            
+            # Normalize to ensure proper Markovian probabilities
+            word_totals = defaultdict(float)
+            for (w1, w2), count in new_freq_dict.items():
+                word_totals[w1] += count
+            
+            # Convert to proper probability distribution
+            markovian_freq_dict = {}
+            for (w1, w2), count in new_freq_dict.items():
+                if word_totals[w1] > 0:
+                    # Keep as counts but ensure they represent proper proportions
+                    markovian_freq_dict[(w1, w2)] = count
+                else:
+                    markovian_freq_dict[(w1, w2)] = 0.001  # Minimum probability
+            
+            
+            new_frequency_sets.append(markovian_freq_dict)
+            print(f"VERBOSE: Generated Markovian frequency dictionary for variation {variation + 1} with {len(markovian_freq_dict)} entries.")
+        
+        print(f"VERBOSE: Finished generating {len(new_frequency_sets)} new Markovian frequency sets.")
         return new_frequency_sets
 
+    
+
+    # 1. Modified expand_text_from_bigrams method to use proper Markovian probability
     def expand_text_from_bigrams(self,
                                  frequency_dict: Dict[Tuple[str, str], float],
                                  text_length: int = 100,
                                  seed_phrase: Optional[str] = None) -> str:
-        print(f"VERBOSE: Starting text expansion. Target length: {text_length}. Seed: '{seed_phrase if seed_phrase else 'None'}'")
+        print(f"VERBOSE: Starting Markovian text expansion. Target length: {text_length}. Seed: '{seed_phrase if seed_phrase else 'None'}'")
+        
         if not frequency_dict:
             print("VERBOSE: Error: No frequency data provided for text expansion.")
             return "Error: No frequency data provided."
-
+        
+        # Build Markovian transition probabilities
         transitions = defaultdict(list)
+        word_totals = defaultdict(float)  # Total count for each first word
+        
+        # First pass: calculate totals for each starting word
         for (w1, w2), count in frequency_dict.items():
             if count > 0:
-                transitions[w1].append((w2, count))
-
+                word_totals[w1] += count
+        
+        # Second pass: convert counts to probabilities
+        for (w1, w2), count in frequency_dict.items():
+            if count > 0 and word_totals[w1] > 0:
+                probability = count / word_totals[w1]  # Markovian probability
+                transitions[w1].append((w2, probability))
+        
         if not transitions:
             print("VERBOSE: Error: Frequency data has no usable transitions.")
             return "Error: Frequency data has no usable transitions."
-
+        
         generated_text_list = []
         current_word: Optional[str] = None
         num_words_to_generate = text_length
         start_word_selected_from_seed = False
-
+        
+        # Handle seed phrase
         if seed_phrase:
             seed_words = self.preprocess_text(seed_phrase)
             if seed_words:
@@ -666,40 +604,31 @@ class FrequencyPredictor:
                         final_text = ' '.join(generated_text_list[:text_length])
                         print(f"VERBOSE: Seed phrase already meets/exceeds target length. Generated text: '{final_text[:50]}...'")
                         return final_text
-                else:
-                    print(f"VERBOSE: Last word of seed ('{potential_start_node}') not found as a valid start in transitions or has no continuations. Will select a new start word.")
-            else:
-                print("VERBOSE: Seed phrase was empty after preprocessing. Will select a new start word.")
-
-
+        
+        # Select starting word if not from seed
         if not start_word_selected_from_seed:
-            print("VERBOSE: Selecting a starting word (seed not used or invalid).")
-            valid_starting_unigrams = {w:c for w,c in self.unigram_counts.items() if w in transitions and transitions[w]}
+            print("VERBOSE: Selecting a starting word using unigram probabilities.")
+            valid_starting_unigrams = {w: c for w, c in self.unigram_counts.items() 
+                                     if w in transitions and transitions[w]}
             if valid_starting_unigrams:
-                sorted_starters = sorted(valid_starting_unigrams.items(), key=lambda item: item[1], reverse=True)
-                starters = [item[0] for item in sorted_starters]
-                weights = [item[1] for item in sorted_starters]
+                total_unigram_count = sum(valid_starting_unigrams.values())
+                unigram_probs = {w: c/total_unigram_count for w, c in valid_starting_unigrams.items()}
+                
+                starters = list(unigram_probs.keys())
+                weights = list(unigram_probs.values())
                 current_word = random.choices(starters, weights=weights, k=1)[0]
-                print(f"VERBOSE: Selected start word '{current_word}' based on weighted unigram counts.")
+                print(f"VERBOSE: Selected start word '{current_word}' based on unigram probabilities.")
             elif any(transitions.values()):
                 possible_starters = [w1 for w1, w2_list in transitions.items() if w2_list]
                 if possible_starters:
                     current_word = random.choice(possible_starters)
                     print(f"VERBOSE: Selected start word '{current_word}' randomly from possible transition starters.")
-                else:
-                    print("VERBOSE: Error: Cannot determine any valid starting word from transitions.")
-                    return "Error: Cannot determine any valid starting word."
-            else:
-                print("VERBOSE: Error: Cannot determine a starting word (no valid transitions).")
-                return "Error: Cannot determine a starting word (no valid transitions)."
-
+            
             if current_word:
                 generated_text_list.append(current_word)
                 num_words_to_generate = text_length - 1
-            else:
-                print("VERBOSE: Error: Failed to select a starting word.")
-                return "Error: Failed to select a starting word."
-
+        
+        # Generate text using Markovian probabilities
         for i in range(max(0, num_words_to_generate)):
             if not current_word or current_word not in transitions or not transitions[current_word]:
                 print(f"VERBOSE: Current word '{current_word}' has no further transitions. Attempting to restart sequence.")
@@ -707,30 +636,37 @@ class FrequencyPredictor:
                 if not valid_restart_candidates:
                     print("VERBOSE: No valid restart candidates found. Ending generation.")
                     break
-
-                restart_options = {w:c for w,c in self.unigram_counts.items() if w in valid_restart_candidates}
+                
+                # Use unigram probabilities for restart
+                restart_options = {w: c for w, c in self.unigram_counts.items() 
+                                 if w in valid_restart_candidates}
                 if restart_options:
-                    sorted_restart_options = sorted(restart_options.items(), key=lambda item: item[1], reverse=True)
-                    starters = [item[0] for item in sorted_restart_options]
-                    weights = [item[1] for item in sorted_restart_options]
+                    total_restart_count = sum(restart_options.values())
+                    restart_probs = {w: c/total_restart_count for w, c in restart_options.items()}
+                    starters = list(restart_probs.keys())
+                    weights = list(restart_probs.values())
                     current_word = random.choices(starters, weights=weights, k=1)[0]
-                    print(f"VERBOSE: Restarted with word '{current_word}' (weighted choice).")
+                    print(f"VERBOSE: Restarted with word '{current_word}' (probability-based choice).")
                 else:
                     current_word = random.choice(valid_restart_candidates)
                     print(f"VERBOSE: Restarted with word '{current_word}' (random choice).")
-
-                if not current_word:
-                    print("VERBOSE: Failed to select a restart word. Ending generation.")
-                    break
-
-            possible_next_words, weights = zip(*transitions[current_word])
-            next_word = random.choices(possible_next_words, weights=weights, k=1)[0]
+            
+            # Select next word using Markovian probability
+            possible_next_words, probabilities = zip(*transitions[current_word])
+            
+            # Ensure probabilities sum to 1.0 (normalize if needed due to floating point errors)
+            total_prob = sum(probabilities)
+            if abs(total_prob - 1.0) > 1e-6:
+                probabilities = [p/total_prob for p in probabilities]
+            
+            next_word = random.choices(possible_next_words, weights=probabilities, k=1)[0]
             generated_text_list.append(next_word)
             current_word = next_word
-
+        
         final_text = ' '.join(generated_text_list)
-        print(f"VERBOSE: Text expansion complete. Generated {len(generated_text_list)} words. Preview: '{final_text[:70]}...'")
+        print(f"VERBOSE: Markovian text expansion complete. Generated {len(generated_text_list)} words. Preview: '{final_text[:70]}...'")
         return final_text
+
 
 
 def core_text_generation_flow():
@@ -744,112 +680,127 @@ def core_text_generation_flow():
 
     print("VERBOSE: Defining custom feature operations...")
 
+  
+
+    # Define custom feature operations
     custom_feature_operations: List[Optional[Callable[[np.ndarray], np.ndarray]]] = [
-        # Original functions
-        lambda x: np.log1p(x),
-        lambda x: np.log1p(x),
-        lambda x: np.log1p(x),
-        lambda x: np.log1p(x),
-        lambda x: np.square(x),
-        lambda x: np.square(x),
-        None, 
-        lambda x: np.sqrt(np.maximum(0, x)),
-        lambda x: np.log1p(x),
-        lambda x: np.log1p(x),
-        None, 
-        None, 
-        None, 
-        None, 
-        lambda x: x * 2.0, 
-        None,
+        # Basic mathematical operations
+        lambda x: np.log1p(x),                    # log(1 + x)
+        lambda x: np.sqrt(np.abs(x) + 1e-8),      # sqrt(|x|)
+        lambda x: np.square(x),                   # x^2
+        lambda x: np.exp(np.clip(x, -50, 50)),    # exp(x) with clipping
+        lambda x: np.cbrt(x),                     # cube root
+        lambda x: 1 / (np.abs(x) + 1e-8),        # reciprocal with safety
         
-        
-        # Additional math functions
-        # Basic arithmetic
-        lambda x: x + 1.0,
-        lambda x: x - 1.0,
-        lambda x: x * 3.0,
-        lambda x: x / 2.0,
-        lambda x: x ** 3,
-        lambda x: x ** 0.5,
-        lambda x: x ** (1/3),
-        lambda x: 1 / np.maximum(x, 1e-8),  # reciprocal with safety
-        
-        # Exponential and logarithmic
-        lambda x: np.exp(x),
-        lambda x: np.exp2(x),
-        lambda x: np.expm1(x),
-        lambda x: np.log(np.maximum(x, 1e-8)),
-        lambda x: np.log2(np.maximum(x, 1e-8)),
-        lambda x: np.log10(np.maximum(x, 1e-8)),
-        
-        # Trigonometric
+        # Trigonometric functions
         lambda x: np.sin(x),
         lambda x: np.cos(x),
-        lambda x: np.tan(x),
-        lambda x: np.arcsin(np.clip(x, -1, 1)),
-        lambda x: np.arccos(np.clip(x, -1, 1)),
+        lambda x: np.tan(np.clip(x, -np.pi/2.1, np.pi/2.1)),  # tan with clipping
         lambda x: np.arctan(x),
         
-        # Hyperbolic
-        lambda x: np.sinh(x),
-        lambda x: np.cosh(x),
+        # Hyperbolic functions
         lambda x: np.tanh(x),
-        lambda x: np.arcsinh(x),
-        lambda x: np.arccosh(np.maximum(x, 1)),
-        lambda x: np.arctanh(np.clip(x, -0.99, 0.99)),
+        lambda x: np.sinh(np.clip(x, -50, 50)),
+        lambda x: np.cosh(np.clip(x, -50, 50)),
         
-        # Rounding and ceiling/floor
+        # Statistical operations
+        lambda x: (x - np.mean(x)) / (np.std(x) + 1e-8),  # standardization
+        lambda x: x / (np.max(np.abs(x)) + 1e-8),         # normalization
+        lambda x: np.clip(x, 0, 1),                       # clip to [0,1]
+        lambda x: np.clip(x, -1, 1),                      # clip to [-1,1]
+        
+        # Activation functions
+        lambda x: np.maximum(x, 0),                       # ReLU
+        lambda x: np.where(x > 0, x, 0.01 * x),          # Leaky ReLU
+        lambda x: x / (1 + np.abs(x)),                   # Soft sign
+        lambda x: 1 / (1 + np.exp(-np.clip(x, -50, 50))), # Sigmoid
+        lambda x: np.log(1 + np.exp(-np.abs(x))) + np.maximum(x, 0), # Softplus
+        
+        # Power functions
+        lambda x: np.power(np.abs(x) + 1e-8, 1/3) * np.sign(x),  # cube root preserving sign
+        lambda x: np.power(np.abs(x) + 1e-8, 1/4) * np.sign(x),  # 4th root preserving sign
+        lambda x: np.power(np.abs(x) + 1e-8, 1.5) * np.sign(x),  # 1.5 power preserving sign
+        lambda x: np.power(np.abs(x) + 1e-8, 2/3) * np.sign(x),  # 2/3 power preserving sign
+        
+        # Logarithmic variations
+        lambda x: np.log2(np.abs(x) + 1e-8) * np.sign(x),
+        lambda x: np.log10(np.abs(x) + 1e-8) * np.sign(x),
+        lambda x: np.expm1(np.clip(x, -50, 50)),          # exp(x) - 1
+        
+        # Rounding operations
         lambda x: np.round(x),
         lambda x: np.floor(x),
         lambda x: np.ceil(x),
         lambda x: np.trunc(x),
         
-        # Sign and absolute
+        # Sign and absolute operations
         lambda x: np.abs(x),
         lambda x: np.sign(x),
-        lambda x: np.positive(x),
-        lambda x: np.negative(x),
+        lambda x: np.heaviside(x, 0.5),
         
-        # Power and roots
-        lambda x: np.cbrt(x),  # cube root
-        lambda x: np.power(x, 4),
-        lambda x: np.power(x, 0.25),  # 4th root
-        lambda x: np.power(x, 1.5),
+        # Frequency-specific operations (assuming frequency data)
+        lambda x: np.diff(np.concatenate([[0], x])),      # differences
+        lambda x: np.cumsum(x),                           # cumulative sum
+        lambda x: np.gradient(x),                         # gradient
+        lambda x: np.roll(x, 1) - x,                     # lagged difference
+        lambda x: np.convolve(x, [0.25, 0.5, 0.25], mode='same'), # smoothing
         
-        # Special functions
-        lambda x: np.maximum(x, 0),  # ReLU
-        lambda x: np.minimum(x, 0),  # negative part
-        lambda x: np.maximum(x, 1),  # max with 1
-        lambda x: np.minimum(x, 1),  # min with 1
+        # Percentile-based operations
+        lambda x: x - np.median(x),                       # median centering
+        lambda x: (x - np.percentile(x, 25)) / (np.percentile(x, 75) - np.percentile(x, 25) + 1e-8),
         
-        # Statistical transforms
-        lambda x: (x - np.mean(x)) / (np.std(x) + 1e-8),  # standardize
-        lambda x: x / (np.max(np.abs(x)) + 1e-8),  # normalize by max
-        lambda x: np.clip(x, 0, 1),  # clip to [0,1]
-        lambda x: np.clip(x, -1, 1),  # clip to [-1,1]
+        # Gaussian and exponential basis functions
+        lambda x: np.exp(-np.square(x)),                  # Gaussian
+        lambda x: np.exp(-np.abs(x)),                     # Laplacian
         
         # Complex transformations
-        lambda x: x / (1 + np.abs(x)),  # soft sign
-        lambda x: np.where(x > 0, x, 0.01 * x),  # leaky ReLU
-        lambda x: np.log(1 + np.exp(-np.abs(x))) + np.maximum(x, 0),  # softplus
-        lambda x: x * (1 / (1 + np.exp(-x))),  # swish activation
-        # Additional basic features
-        lambda x: x,  # identity
-        lambda x: np.sqrt(np.abs(x) + 1e-8),  # sqrt(abs(x))
-        lambda x: 1 / (np.sqrt(np.abs(x) + 1e-8)),  # reciprocal sqrt
-        lambda x: 1 / (x ** 2 + 1e-8),  # inverse square
-        lambda x: np.clip(x, 0, None),  # zero out negative values
-        lambda x: np.clip(x, None, 0),  # zero out positive values
-        lambda x: (x > 0).astype(float),  # binary indicator: positive
-        lambda x: (x < 0).astype(float),  # binary indicator: negative
-        lambda x: (x == 0).astype(float),  # binary indicator: zero
-        lambda x: x - np.mean(x),  # zero-mean
-        lambda x: (x - np.min(x)) / (np.max(x) - np.min(x) + 1e-8),  # min-max scaling
-        lambda x: np.exp(-x**2),  # Gaussian basis
-        lambda x: 1 / (1 + np.exp(-x)),  # sigmoid
-        lambda x: np.heaviside(x, 0.0),  # Heaviside step
+        lambda x: x * np.exp(-np.square(x)),              # x * Gaussian
+        lambda x: np.where(x != 0, x / np.abs(x) * np.log(np.abs(x) + 1), 0), # signed log
+        
+        # Placeholder operations (None values)
+        None,  # Can be filled with custom operations later
+        None,
+        None,
+        None,
+        None,
     ]
+
+    # Usage in your bigram processing loop:
+    for bigram_idx, bigram in enumerate(predictor.sorted_bigrams):
+        # Extract frequencies for bigram and its neighbors
+        freq_features = []
+        for offset in range(400):
+            neighbor_idx = bigram_idx + offset
+            if neighbor_idx < len(predictor.sorted_bigrams):
+                neighbor_bigram = predictor.sorted_bigrams[neighbor_idx]
+                freq = predictor.bigram_frequencies.get(neighbor_bigram, 0.0)
+            else:
+                freq = 0.0
+            freq_features.append(freq)
+            freq_features.append(bigram_idx + offset)  # Add index-based features
+        
+        # Convert to numpy array for operations
+        freq_array = np.array(freq_features)
+        
+        # Apply custom operations
+        transformed_features = []
+        for operation in custom_feature_operations:
+            if operation is not None:
+                try:
+                    transformed_feature = operation(freq_array)
+                    # Handle scalar results
+                    if np.isscalar(transformed_feature):
+                        transformed_features.append(transformed_feature)
+                    else:
+                        transformed_features.extend(transformed_feature.flatten())
+                except Exception as e:
+                    print(f"Warning: Operation failed for bigram {bigram}: {e}")
+                    # Add zeros or skip
+                    transformed_features.append(0.0)
+            
+        # Combine original and transformed features
+        final_features = freq_features + transformed_features
+        features.append(final_features)
 
     predictor.set_feature_operations(custom_feature_operations)
 
