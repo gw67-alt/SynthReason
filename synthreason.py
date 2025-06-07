@@ -138,6 +138,7 @@ class EnhancedInterstitialMarkovianPredictor:
                     nn.Dropout(0.2),
                     nn.Linear(64, 32),
                     nn.ReLU(),
+                    nn.Softmax(),
                     nn.Dropout(0.2),
                     nn.Linear(32, 16),
                     nn.ReLU(),
@@ -177,7 +178,9 @@ class EnhancedInterstitialMarkovianPredictor:
             outputs = self.predictor_model(X_tensor)
             loss = criterion(outputs, y_tensor)
             loss.backward()
+
             optimizer.step()
+
             print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.6f}", end="\r")
         print("\nTraining completed!")
 
@@ -201,6 +204,7 @@ class EnhancedInterstitialMarkovianPredictor:
                     self._calculate_interstitial_value((current_word, w)),
                     len(self.transition_matrix[w]) / self.vocab_size if self.vocab_size > 0 else 0.0,
                     self.unigram_counts[w] / sum(self.unigram_counts.values()) if sum(self.unigram_counts.values()) > 0 else 0.0,
+
                 ]
                 feature_vector = (np.array(feature_vector) - self.feature_mean) / self.feature_std
                 features.append(feature_vector)
