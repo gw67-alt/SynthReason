@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from concurrent.futures import ThreadPoolExecutor
-KB_LEN = -1
+KB_LEN = 10000
 class EnhancedInterstitialMarkovianPredictor:
     def __init__(self, n_threads: Optional[int] = None):
         self.bigram_frequencies: Dict[Tuple[str, str], int] = {}
