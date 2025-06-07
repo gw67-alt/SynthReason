@@ -268,7 +268,7 @@ if __name__ == "__main__":
     with open("test.txt", 'r', encoding='utf-8') as f:
         content = ' '.join(f.read().split()[:KB_LEN])
     predictor.extract_transition_probabilities(content)
-    predictor.train_interstitial_predictor(epochs=1000)
+    predictor.train_interstitial_predictor(epochs=100)
     while True:
         generated_text = predictor.generate_text(length=250, seed=input("USER: "))
         print("Generated text:", generated_text)
