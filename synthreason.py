@@ -138,7 +138,7 @@ class EnhancedInterstitialMarkovianPredictor:
                     nn.Dropout(0.2),
                     nn.Linear(64, 32),
                     nn.ReLU(),
-                    nn.Softmax(),
+                    nn.Softmax(dim=0),
                     nn.Dropout(0.2),
                     nn.Linear(32, 16),
                     nn.ReLU(),
