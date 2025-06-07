@@ -265,7 +265,7 @@ class EnhancedInterstitialMarkovianPredictor:
 # Example usage
 if __name__ == "__main__":
     predictor = EnhancedInterstitialMarkovianPredictor()
-    with open("test.txt", 'r', encoding='utf-8') as f:
+    with open(input("Filename: "), 'r', encoding='utf-8') as f:
         content = ' '.join(f.read().split()[:KB_LEN])
     predictor.extract_transition_probabilities(content)
     predictor.train_interstitial_predictor(epochs=100)
