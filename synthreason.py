@@ -91,7 +91,7 @@ class EnhancedInterstitialMarkovianPredictor:
             self.unigram_counts[word1] / sum(self.unigram_counts.values()) if sum(self.unigram_counts.values()) > 0 else 0.0,
         ]
         # Add any other features you want here
-        target = self._calculate_interstitial_value((self.unigram_counts[word1],self._calculate_interstitial_value(state)))
+        target = self._calculate_interstitial_value((self._calculate_interstitial_value(state),self.unigram_counts[word1]))
         return feature_vector, target
 
     def create_interstitial_features(self) -> Tuple[np.ndarray, np.ndarray]:
