@@ -426,7 +426,7 @@ if __name__ == "__main__":
             seed_input = input("USER: ")
             if seed_input.lower() == 'quit':
                 break
-            generated_text = predictor.generate_text(length=50, seed=seed_input)
+            generated_text = predictor.generate_text(length=250, seed=seed_input)
             print("Generated text:", generated_text)
             print()
             
