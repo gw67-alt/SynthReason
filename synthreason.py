@@ -283,10 +283,35 @@ class EnhancedInterstitialMarkovianPredictor:
             bool: True if successful, False otherwise
         """
         try:
+            # Convert bigram frequencies (tuple keys to strings)
+            bigram_frequencies_str = {}
+            for (w1, w2), count in self.bigram_frequencies.items():
+                key_str = f"{w1}|||{w2}"
+                bigram_frequencies_str[key_str] = count
+            
+            # Convert trigram frequencies (tuple keys to strings)
+            trigram_frequencies_str = {}
+            for (w1, w2, w3), count in self.trigram_frequencies.items():
+                key_str = f"{w1}|||{w2}|||{w3}"
+                trigram_frequencies_str[key_str] = count
+            
+            # Convert defaultdicts to regular dicts for JSON serialization
+            transition_matrix_dict = {}
+            for k, v in self.transition_matrix.items():
+                transition_matrix_dict[k] = dict(v)
+            
+            trigram_transition_matrix_dict = {}
+            for k, v in self.trigram_transition_matrix.items():
+                # Convert tuple keys to strings for JSON
+                key_str = f"{k[0]}|||{k[1]}"
+                trigram_transition_matrix_dict[key_str] = dict(v)
+            
             # Prepare data for saving
             save_data = {
-                'bigram_frequencies': dict(self.bigram_frequencies),
-                'trigram_frequencies': dict(self.trigram_frequencies),
+                'bigram_frequencies': bigram_frequencies_str,
+                'trigram_frequencies': trigram_frequencies_str,
+                'transition_matrix': transition_matrix_dict,
+                'trigram_transition_matrix': trigram_transition_matrix_dict,
                 'word_to_idx': self.word_to_idx,
                 'idx_to_word': self.idx_to_word,
                 'unigram_counts': dict(self.unigram_counts),
@@ -296,19 +321,6 @@ class EnhancedInterstitialMarkovianPredictor:
                 'feature_std': self.feature_std.tolist() if self.feature_std is not None else None,
                 'n_threads': self.n_threads
             }
-            
-            # Convert defaultdicts to regular dicts for JSON serialization
-            transition_matrix_dict = {}
-            for k, v in self.transition_matrix.items():
-                transition_matrix_dict[k] = dict(v)
-            save_data['transition_matrix'] = transition_matrix_dict
-            
-            trigram_transition_matrix_dict = {}
-            for k, v in self.trigram_transition_matrix.items():
-                # Convert tuple keys to strings for JSON
-                key_str = f"{k[0]}|||{k[1]}"
-                trigram_transition_matrix_dict[key_str] = dict(v)
-            save_data['trigram_transition_matrix'] = trigram_transition_matrix_dict
             
             # Save main data as JSON
             with open(f"{filepath}.json", 'w', encoding='utf-8') as f:
@@ -352,11 +364,19 @@ class EnhancedInterstitialMarkovianPredictor:
             self.feature_mean = np.array(save_data['feature_mean']) if save_data['feature_mean'] is not None else None
             self.feature_std = np.array(save_data['feature_std']) if save_data['feature_std'] is not None else None
             
-            # Restore frequency dictionaries
-            self.bigram_frequencies = {tuple(k) if isinstance(k, list) else eval(k): v 
-                                     for k, v in save_data['bigram_frequencies'].items()}
-            self.trigram_frequencies = {tuple(k) if isinstance(k, list) else eval(k): v 
-                                      for k, v in save_data['trigram_frequencies'].items()}
+            # Restore bigram frequencies (convert string keys back to tuples)
+            self.bigram_frequencies = {}
+            for key_str, count in save_data['bigram_frequencies'].items():
+                parts = key_str.split('|||')
+                if len(parts) == 2:
+                    self.bigram_frequencies[(parts[0], parts[1])] = count
+            
+            # Restore trigram frequencies (convert string keys back to tuples)
+            self.trigram_frequencies = {}
+            for key_str, count in save_data['trigram_frequencies'].items():
+                parts = key_str.split('|||')
+                if len(parts) == 3:
+                    self.trigram_frequencies[(parts[0], parts[1], parts[2])] = count
             
             # Restore transition matrices
             self.transition_matrix = defaultdict(lambda: defaultdict(float))
