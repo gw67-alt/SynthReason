@@ -2,6 +2,8 @@ import numpy as np
 from collections import Counter, defaultdict
 import random
 import os
+import pickle
+import json
 from typing import Dict, List, Tuple, Optional, Any
 import torch
 import torch.nn as nn
@@ -270,23 +272,179 @@ class EnhancedInterstitialMarkovianPredictor:
             print(f"Error generating text: {e}")
             return "Error in text generation"
 
+    def save_model(self, filepath: str) -> bool:
+        """
+        Save the complete model state to disk
+        
+        Args:
+            filepath: Path where to save the model (without extension)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Prepare data for saving
+            save_data = {
+                'bigram_frequencies': dict(self.bigram_frequencies),
+                'trigram_frequencies': dict(self.trigram_frequencies),
+                'word_to_idx': self.word_to_idx,
+                'idx_to_word': self.idx_to_word,
+                'unigram_counts': dict(self.unigram_counts),
+                'vocab_size': self.vocab_size,
+                'model_features_shape': self.model_features_shape,
+                'feature_mean': self.feature_mean.tolist() if self.feature_mean is not None else None,
+                'feature_std': self.feature_std.tolist() if self.feature_std is not None else None,
+                'n_threads': self.n_threads
+            }
+            
+            # Convert defaultdicts to regular dicts for JSON serialization
+            transition_matrix_dict = {}
+            for k, v in self.transition_matrix.items():
+                transition_matrix_dict[k] = dict(v)
+            save_data['transition_matrix'] = transition_matrix_dict
+            
+            trigram_transition_matrix_dict = {}
+            for k, v in self.trigram_transition_matrix.items():
+                # Convert tuple keys to strings for JSON
+                key_str = f"{k[0]}|||{k[1]}"
+                trigram_transition_matrix_dict[key_str] = dict(v)
+            save_data['trigram_transition_matrix'] = trigram_transition_matrix_dict
+            
+            # Save main data as JSON
+            with open(f"{filepath}.json", 'w', encoding='utf-8') as f:
+                json.dump(save_data, f, indent=2, ensure_ascii=False)
+            
+            # Save PyTorch model separately if it exists
+            if self.predictor_model is not None:
+                torch.save(self.predictor_model.state_dict(), f"{filepath}_model.pth")
+            
+            print(f"Model saved successfully to {filepath}")
+            return True
+            
+        except Exception as e:
+            print(f"Error saving model: {e}")
+            return False
+
+    def load_model(self, filepath: str) -> bool:
+        """
+        Load a complete model state from disk
+        
+        Args:
+            filepath: Path to the saved model (without extension)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Load main data
+            with open(f"{filepath}.json", 'r', encoding='utf-8') as f:
+                save_data = json.load(f)
+            
+            # Restore basic attributes
+            self.vocab_size = save_data['vocab_size']
+            self.word_to_idx = save_data['word_to_idx']
+            self.idx_to_word = save_data['idx_to_word']
+            self.unigram_counts = Counter(save_data['unigram_counts'])
+            self.model_features_shape = save_data['model_features_shape']
+            self.n_threads = save_data.get('n_threads', min(8, os.cpu_count()))
+            
+            # Restore numpy arrays
+            self.feature_mean = np.array(save_data['feature_mean']) if save_data['feature_mean'] is not None else None
+            self.feature_std = np.array(save_data['feature_std']) if save_data['feature_std'] is not None else None
+            
+            # Restore frequency dictionaries
+            self.bigram_frequencies = {tuple(k) if isinstance(k, list) else eval(k): v 
+                                     for k, v in save_data['bigram_frequencies'].items()}
+            self.trigram_frequencies = {tuple(k) if isinstance(k, list) else eval(k): v 
+                                      for k, v in save_data['trigram_frequencies'].items()}
+            
+            # Restore transition matrices
+            self.transition_matrix = defaultdict(lambda: defaultdict(float))
+            for k, v in save_data['transition_matrix'].items():
+                self.transition_matrix[k] = defaultdict(float, v)
+            
+            self.trigram_transition_matrix = defaultdict(lambda: defaultdict(float))
+            for k_str, v in save_data['trigram_transition_matrix'].items():
+                # Convert string keys back to tuples
+                k_parts = k_str.split('|||')
+                if len(k_parts) == 2:
+                    k = (k_parts[0], k_parts[1])
+                    self.trigram_transition_matrix[k] = defaultdict(float, v)
+            
+            # Load PyTorch model if it exists
+            model_path = f"{filepath}_model.pth"
+            if os.path.exists(model_path) and self.model_features_shape is not None:
+                self._create_model(self.model_features_shape)
+                self.predictor_model.load_state_dict(torch.load(model_path))
+                self.predictor_model.eval()
+            
+            print(f"Model loaded successfully from {filepath}")
+            return True
+            
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            return False
+
+    def get_model_info(self) -> Dict[str, Any]:
+        """Get information about the current model state"""
+        return {
+            'vocab_size': self.vocab_size,
+            'bigram_count': len(self.bigram_frequencies),
+            'trigram_count': len(self.trigram_frequencies),
+            'has_neural_model': self.predictor_model is not None,
+            'model_trained': self.feature_mean is not None,
+            'features_shape': self.model_features_shape,
+            'n_threads': self.n_threads
+        }
+
 # Example usage
 if __name__ == "__main__":
     predictor = EnhancedInterstitialMarkovianPredictor()
+    
     try:
-        filename = input("Filename: ")
-        with open(filename, 'r', encoding='utf-8') as f:
-            content = ' '.join(f.read().split()[:KB_LEN])
-        predictor.extract_transition_probabilities(content)
-        predictor.train_interstitial_predictor(epochs=50)
+        # Check if user wants to load existing model
+        load_choice = input("Load existing model? (y/n): ").lower().strip()
         
+        if load_choice == 'y':
+            model_path = input("Enter model path (without extension): ").strip()
+            if predictor.load_model(model_path):
+                print("Model loaded successfully!")
+                print("Model info:", predictor.get_model_info())
+            else:
+                print("Failed to load model. Starting fresh...")
+                predictor = EnhancedInterstitialMarkovianPredictor()
+        
+        # If no model loaded or loading failed, train new model
+        if not predictor.unigram_counts:
+            filename = input("Filename: ")
+            with open(filename, 'r', encoding='utf-8') as f:
+                content = ' '.join(f.read().split()[:KB_LEN])
+            predictor.extract_transition_probabilities(content)
+            predictor.train_interstitial_predictor(epochs=50)
+            
+            # Ask if user wants to save the model
+            save_choice = input("Save trained model? (y/n): ").lower().strip()
+            if save_choice == 'y':
+                save_path = input("Enter save path (without extension): ").strip()
+                predictor.save_model(save_path)
+        
+        # Interactive text generation
         while True:
             seed_input = input("USER: ")
             if seed_input.lower() == 'quit':
                 break
+            elif seed_input.lower() == 'save':
+                save_path = input("Enter save path (without extension): ").strip()
+                predictor.save_model(save_path)
+                continue
+            elif seed_input.lower() == 'info':
+                print("Model info:", predictor.get_model_info())
+                continue
+                
             generated_text = predictor.generate_text(length=250, seed=seed_input)
             print("Generated text:", generated_text)
             print()
+            
     except KeyboardInterrupt:
         print("\nExiting...")
     except Exception as e:
