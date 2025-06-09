@@ -27,6 +27,7 @@ class EnhancedInterstitialMarkovianPredictor:
         self.feature_mean = None
         self.feature_std = None
         self.predictor_model: Optional[nn.Module] = None
+        self.text_data_length = 0  # Track text data length for proper split
 
     def extract_transition_probabilities(self, text: str) -> None:
         """Extract and normalize transition probabilities from text (bigrams and trigrams)"""
@@ -82,6 +83,28 @@ class EnhancedInterstitialMarkovianPredictor:
         interstitial_value = sum(w * f for w, f in zip(weights, features))
         return interstitial_value
 
+    def generate_sine_wave_features(self, length: int = 1000, frequency: float = 0.1, 
+                                   amplitude: float = 1.0, phase: float = 0.0) -> np.ndarray:
+        """Generate sine wave features for training data augmentation"""
+        t = np.linspace(0, length, length)
+        sine_wave = amplitude * np.sin(2 * np.pi * frequency * t + phase)
+        
+        # Create features from sine wave properties
+        features = []
+        for i in range(len(sine_wave) - 1):
+            current_val = sine_wave[i]
+            next_val = sine_wave[i + 1]
+            
+            # Extract meaningful features from sine wave
+            slope = next_val - current_val
+            magnitude = abs(current_val)
+            phase_position = (i % (1/frequency)) / (1/frequency) if frequency > 0 else 0
+            
+            feature_vector = [current_val, slope, magnitude, phase_position]
+            features.append(feature_vector)
+        
+        return np.array(features)
+
     def _process_word_features(self, word_data: Tuple[str, int]) -> Tuple[List[float], float]:
         """Process features for a single word (thread-safe)"""
         word1, w1_idx = word_data
@@ -132,6 +155,109 @@ class EnhancedInterstitialMarkovianPredictor:
 
         return np.array(features), np.array(targets)
 
+    def create_enhanced_interstitial_features(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Enhanced version that includes sine wave data"""
+        # Get original text-based features
+        text_features, text_targets = self.create_interstitial_features()
+        
+        if len(text_features) == 0:
+            return np.array([]), np.array([])
+        
+        # Store text data length for proper split tracking
+        self.text_data_length = len(text_features)
+        
+        # Generate sine wave features with multiple frequencies
+        sine_features_list = []
+        sine_targets_list = []
+        
+        frequencies = [0.05, 0.1, 0.2, 0.5]  # Different sine wave frequencies
+        for freq in frequencies:
+            sine_features = self.generate_sine_wave_features(
+                length=len(text_features), 
+                frequency=freq,
+                amplitude=np.random.uniform(0.5, 2.0),
+                phase=np.random.uniform(0, 2*np.pi)
+            )
+            
+            # Create targets based on sine wave predictability
+            sine_targets = np.array([
+                abs(np.sin(2 * np.pi * freq * i)) for i in range(len(sine_features))
+            ])
+            
+            sine_features_list.append(sine_features)
+            sine_targets_list.append(sine_targets)
+        
+        # Combine all sine wave features
+        all_sine_features = np.vstack(sine_features_list)
+        all_sine_targets = np.hstack(sine_targets_list)
+        
+        # Pad features to match dimensions
+        text_feature_dim = text_features.shape[1]
+        sine_feature_dim = all_sine_features.shape[1]
+        
+        if text_feature_dim > sine_feature_dim:
+            # Pad sine features
+            padding = np.zeros((all_sine_features.shape[0], text_feature_dim - sine_feature_dim))
+            all_sine_features = np.hstack([all_sine_features, padding])
+        elif sine_feature_dim > text_feature_dim:
+            # Pad text features
+            padding = np.zeros((text_features.shape[0], sine_feature_dim - text_feature_dim))
+            text_features = np.hstack([text_features, padding])
+        
+        # Combine text and sine wave features
+        combined_features = np.vstack([text_features, all_sine_features])
+        combined_targets = np.hstack([text_targets, all_sine_targets])
+        
+        return combined_features, combined_targets
+
+    def _create_enhanced_model(self, input_size: int):
+        """Enhanced model that can handle both text and sine wave features"""
+        class EnhancedInterstitialNet(nn.Module):
+            def __init__(self, input_size):
+                super().__init__()
+                
+                # Separate pathways for different feature types
+                self.text_pathway = nn.Sequential(
+                    nn.Linear(input_size, 128),
+                    nn.ReLU(),
+                    nn.Dropout(0.2)
+                )
+                
+                self.sine_pathway = nn.Sequential(
+                    nn.Linear(input_size, 64),
+                    nn.ReLU(),
+                    nn.Dropout(0.1)
+                )
+                
+                # Combined processing
+                self.combined_layers = nn.Sequential(
+                    nn.Linear(128 + 64, 256),
+                    nn.ReLU(),
+                    nn.BatchNorm1d(256),
+                    nn.Dropout(0.3),
+                    
+                    # Convolutional processing for pattern recognition
+                    nn.Unflatten(1, (16, 16)),
+                    nn.Conv1d(16, 32, 3, padding=1),
+                    nn.ReLU(),
+                    nn.Conv1d(32, 16, 3, padding=1),
+                    nn.ReLU(),
+                    nn.Flatten(),
+                    
+                    nn.Linear(16 * 16, 64),
+                    nn.ReLU(),
+                    nn.Linear(64, 1),
+                    nn.Sigmoid()
+                )
+                
+            def forward(self, x):
+                text_out = self.text_pathway(x)
+                sine_out = self.sine_pathway(x)
+                combined = torch.cat([text_out, sine_out], dim=1)
+                return self.combined_layers(combined)
+        
+        self.predictor_model = EnhancedInterstitialNet(input_size)
+
     def _create_model(self, input_size: int):
         """Create the neural network model for interstitial prediction"""
         class InterstitialNet(nn.Module):
@@ -172,6 +298,65 @@ class EnhancedInterstitialMarkovianPredictor:
                 return self.layers(x)
                 
         self.predictor_model = InterstitialNet(input_size)
+
+    def train_enhanced_interstitial_predictor(self, epochs: int = 100, sine_weight: float = 0.3):
+        """Train with both text and sine wave features - FIXED VERSION"""
+        features, targets = self.create_enhanced_interstitial_features()
+        if len(features) == 0:
+            print("No features created for training")
+            return
+
+        # Store feature normalization parameters
+        self.feature_mean = np.mean(features, axis=0)
+        self.feature_std = np.std(features, axis=0) + 1e-8
+        features_normalized = (features - self.feature_mean) / self.feature_std
+        self.model_features_shape = features.shape[1]
+
+        # Convert to tensors
+        X_tensor = torch.FloatTensor(features_normalized)
+        y_tensor = torch.FloatTensor(targets).unsqueeze(1)
+
+        # Create enhanced model
+        self._create_enhanced_model(features.shape[1])
+        
+        # Use different loss weights for text vs sine wave data
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.predictor_model.parameters(), lr=0.001, weight_decay=1e-5)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5)
+
+        # Training loop with sine wave integration
+        for epoch in range(epochs):
+            optimizer.zero_grad()
+            outputs = self.predictor_model(X_tensor)
+            
+            # Calculate loss with potential weighting
+            loss = criterion(outputs, y_tensor)
+            
+            # FIXED: Add regularization for sine wave learning with proper tensor sizing
+            if len(targets) > self.text_data_length:
+                # Calculate the split point using stored text_data_length
+                sine_data_start = self.text_data_length
+                sine_data_end = len(targets)
+                sine_data_length = sine_data_end - sine_data_start
+                
+                if sine_data_length > 0:
+                    # Create sine wave target with exact matching size
+                    sine_outputs = outputs[sine_data_start:sine_data_end]
+                    sine_reference = torch.sin(torch.linspace(0, 4*np.pi, sine_data_length)).unsqueeze(1)
+                    
+                    # Ensure tensors have the same size
+                    if sine_outputs.shape[0] == sine_reference.shape[0]:
+                        sine_reg = torch.mean(torch.abs(sine_outputs - sine_reference))
+                        loss += sine_weight * sine_reg
+            
+            loss.backward()
+            optimizer.step()
+            scheduler.step(loss)
+
+            if (epoch + 1) % 10 == 0:
+                print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.6f}")
+        
+        print("Enhanced training completed!")
 
     def train_interstitial_predictor(self, epochs: int = 100):
         """Train neural network to predict interstitial markovian values"""
@@ -227,14 +412,35 @@ class EnhancedInterstitialMarkovianPredictor:
                     len(self.transition_matrix[w]) / self.vocab_size if self.vocab_size > 0 else 0.0,
                     self.unigram_counts[w] / sum(self.unigram_counts.values()) if sum(self.unigram_counts.values()) > 0 else 0.0,
                 ]
-                feature_vector = (np.array(feature_vector) - self.feature_mean) / self.feature_std
+                
+                # Debug: Check dimensions before normalization
+                feature_vector = np.array(feature_vector)
+                
+                # Ensure dimensions match
+                if feature_vector.shape[0] != self.feature_mean.shape[0]:
+                    # Pad or truncate to match expected dimensions
+                    expected_dim = self.feature_mean.shape[0]
+                    if feature_vector.shape[0] < expected_dim:
+                        # Pad with zeros
+                        padding = np.zeros(expected_dim - feature_vector.shape[0])
+                        feature_vector = np.concatenate([feature_vector, padding])
+                    else:
+                        # Truncate
+                        feature_vector = feature_vector[:expected_dim]
+                
+                feature_vector = (feature_vector - self.feature_mean) / self.feature_std
                 features.append(feature_vector)
             
-            features_tensor = torch.FloatTensor(np.array(features))
-            with torch.no_grad():
-                interstitial_values = self.predictor_model(features_tensor).squeeze().numpy()
-                if interstitial_values.ndim == 0:  # Handle single prediction
-                    interstitial_values = np.array([interstitial_values])
+            try:
+                features_tensor = torch.FloatTensor(np.array(features))
+                with torch.no_grad():
+                    interstitial_values = self.predictor_model(features_tensor).squeeze().numpy()
+                    if interstitial_values.ndim == 0:  # Handle single prediction
+                        interstitial_values = np.array([interstitial_values])
+            except Exception as e:
+                print(f"Model prediction failed: {e}")
+                # Fallback to direct calculation
+                interstitial_values = np.array([self._calculate_interstitial_value((current_word, w)) for w in next_words])
         else:
             # Fallback to direct calculation
             interstitial_values = np.array([self._calculate_interstitial_value((current_word, w)) for w in next_words])
@@ -272,16 +478,9 @@ class EnhancedInterstitialMarkovianPredictor:
             print(f"Error generating text: {e}")
             return "Error in text generation"
 
+
     def save_model(self, filepath: str) -> bool:
-        """
-        Save the complete model state to disk
-        
-        Args:
-            filepath: Path where to save the model (without extension)
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
+        """Save the complete model state to disk"""
         try:
             # Convert bigram frequencies (tuple keys to strings)
             bigram_frequencies_str = {}
@@ -319,7 +518,8 @@ class EnhancedInterstitialMarkovianPredictor:
                 'model_features_shape': self.model_features_shape,
                 'feature_mean': self.feature_mean.tolist() if self.feature_mean is not None else None,
                 'feature_std': self.feature_std.tolist() if self.feature_std is not None else None,
-                'n_threads': self.n_threads
+                'n_threads': self.n_threads,
+                'text_data_length': self.text_data_length
             }
             
             # Save main data as JSON
@@ -338,15 +538,7 @@ class EnhancedInterstitialMarkovianPredictor:
             return False
 
     def load_model(self, filepath: str) -> bool:
-        """
-        Load a complete model state from disk
-        
-        Args:
-            filepath: Path to the saved model (without extension)
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
+        """Load a complete model state from disk"""
         try:
             # Load main data
             with open(f"{filepath}.json", 'r', encoding='utf-8') as f:
@@ -359,6 +551,7 @@ class EnhancedInterstitialMarkovianPredictor:
             self.unigram_counts = Counter(save_data['unigram_counts'])
             self.model_features_shape = save_data['model_features_shape']
             self.n_threads = save_data.get('n_threads', min(8, os.cpu_count()))
+            self.text_data_length = save_data.get('text_data_length', 0)
             
             # Restore numpy arrays
             self.feature_mean = np.array(save_data['feature_mean']) if save_data['feature_mean'] is not None else None
@@ -394,7 +587,7 @@ class EnhancedInterstitialMarkovianPredictor:
             # Load PyTorch model if it exists
             model_path = f"{filepath}_model.pth"
             if os.path.exists(model_path) and self.model_features_shape is not None:
-                self._create_model(self.model_features_shape)
+                self._create_enhanced_model(self.model_features_shape)
                 self.predictor_model.load_state_dict(torch.load(model_path))
                 self.predictor_model.eval()
             
@@ -414,7 +607,8 @@ class EnhancedInterstitialMarkovianPredictor:
             'has_neural_model': self.predictor_model is not None,
             'model_trained': self.feature_mean is not None,
             'features_shape': self.model_features_shape,
-            'n_threads': self.n_threads
+            'n_threads': self.n_threads,
+            'text_data_length': self.text_data_length
         }
 
 # Example usage
@@ -440,7 +634,11 @@ if __name__ == "__main__":
             with open(filename, 'r', encoding='utf-8') as f:
                 content = ' '.join(f.read().split()[:KB_LEN])
             predictor.extract_transition_probabilities(content)
-            predictor.train_interstitial_predictor(epochs=50)
+            
+            # Ask user if they want to use enhanced training with sine waves
+
+            predictor.train_enhanced_interstitial_predictor(epochs=50, sine_weight=0.2)
+          
             
             # Ask if user wants to save the model
             save_choice = input("Save trained model? (y/n): ").lower().strip()
