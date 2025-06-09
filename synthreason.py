@@ -27,7 +27,7 @@ class EnhancedInterstitialMarkovianPredictor:
         self.feature_mean = None
         self.feature_std = None
         self.predictor_model: Optional[nn.Module] = None
-        self.text_data_length = 0  # Track text data length for proper split
+        self.text_data_length = 0
 
     def extract_transition_probabilities(self, text: str) -> None:
         """Extract and normalize transition probabilities from text (bigrams and trigrams)"""
@@ -392,6 +392,7 @@ class EnhancedInterstitialMarkovianPredictor:
                 print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.6f}")
         print("Training completed!")
 
+
     def generate_next_word(self, prev_word: str, current_word: str) -> str:
         """Generate next word using weighted interstitial and transition probabilities"""
         state = (prev_word, current_word)
@@ -477,7 +478,6 @@ class EnhancedInterstitialMarkovianPredictor:
         except Exception as e:
             print(f"Error generating text: {e}")
             return "Error in text generation"
-
 
     def save_model(self, filepath: str) -> bool:
         """Save the complete model state to disk"""
@@ -610,8 +610,57 @@ class EnhancedInterstitialMarkovianPredictor:
             'n_threads': self.n_threads,
             'text_data_length': self.text_data_length
         }
+def find_words_with_full_stops(text):
+    """Find all words that contain full stops/periods"""
+    words = text.split()
+    words_with_periods = []
+    
+    for word in words:
+        if '.' in word:
+            words_with_periods.append(word)
+    
+    return words_with_periods
 
-# Example usage
+def generate_abstract_reasoning_corpus(corpus_words: List[str], num_sequences: int = 5000) -> str:
+    """
+    Generates a synthetic text corpus embodying abstract reasoning pathways.
+    This moves beyond simple word pairs to create transitions between semantic concepts.
+    """
+    # 1. Define semantic clusters for abstract reasoning concepts [4]
+    # This is analogous to identifying regions in a word embedding space [8]
+    reasoning_concepts = {
+        "causality": ["because", "since", "given"],
+        "consequence": ["therefore", "thus", "hence", "consequently", "accordingly"],
+        "contrast": ["however", "nevertheless", "although", "despite", "conversely"],
+        "elaboration": ["furthermore", "moreover", "indeed", "specifically"],
+        "condition": ["if", "unless", "provided", "assuming"]
+    }
+
+    all_concept_words = [word for concept_list in reasoning_concepts.values() for word in concept_list]
+    
+    # 2. Generate abstract reasoning sequences (Concept -> Trigger -> Concept)
+    abstract_sequences = []
+    for _ in range(num_sequences):
+        # Pick a random concept for the premise and conclusion
+        premise_concept_key = random.choice(list(reasoning_concepts.keys()))
+        conclusion_concept_key = random.choice(list(reasoning_concepts.keys()))
+
+        # Select a trigger word that links them
+        trigger_word = random.choice(reasoning_concepts[conclusion_concept_key])
+        
+        # Select random words from the original corpus to act as premise/conclusion subjects
+        premise_word = random.choice(corpus_words)
+        conclusion_word = random.choice(corpus_words)
+
+        # Create a short sequence that represents an abstract reasoning step
+        # This forms a non-local connection between two potentially distant words
+        sequence = [premise_word, trigger_word, conclusion_word]
+        abstract_sequences.append(" ".join(sequence))
+        
+    print(f"Generated {len(abstract_sequences)} abstract reasoning sequences.")
+    return " . ".join(abstract_sequences) + " . "
+
+
 if __name__ == "__main__":
     predictor = EnhancedInterstitialMarkovianPredictor()
     
@@ -627,18 +676,30 @@ if __name__ == "__main__":
             else:
                 print("Failed to load model. Starting fresh...")
                 predictor = EnhancedInterstitialMarkovianPredictor()
-        
+
         # If no model loaded or loading failed, train new model
         if not predictor.unigram_counts:
             filename = input("Filename: ")
             with open(filename, 'r', encoding='utf-8') as f:
                 content = ' '.join(f.read().split()[:KB_LEN])
-            predictor.extract_transition_probabilities(content)
             
-            # Ask user if they want to use enhanced training with sine waves
-
+            print("Generating abstract reasoning corpus to create a feature space unbound by local transitions...")
+            # --- MODIFICATION START ---
+            # Instead of a simple loop, generate a rich, synthetic corpus
+            # This corpus teaches the model about abstract, non-local reasoning pathways.
+            corpus_words = list(set(content.lower().split()))
+            reasoning_text = generate_abstract_reasoning_corpus(corpus_words)
+            
+            # Combine the abstract reasoning data with the original content
+            combined_content = reasoning_text + content
+            # --- MODIFICATION END ---
+            
+            print("Extracting transition probabilities from combined content...")
+            predictor.extract_transition_probabilities(combined_content)
+            
+            print("Training model on enhanced feature space...")
+            # Use enhanced training with sine waves
             predictor.train_enhanced_interstitial_predictor(epochs=50, sine_weight=0.2)
-          
             
             # Ask if user wants to save the model
             save_choice = input("Save trained model? (y/n): ").lower().strip()
