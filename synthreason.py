@@ -368,7 +368,7 @@ class EnhancedInterstitialMarkovianPredictor:
         # Store feature normalization parameters
         self.feature_mean = np.mean(features, axis=0)
         self.feature_std = np.std(features, axis=0) + 1e-8
-        features_normalized = (features - self.feature_mean) / self.feature_std
+        features_normalized = (self.generate_sine_wave_features( length = len(targets), frequency = 0.1, amplitude = 1.0, phase = 0.0) - self.feature_mean) / self.feature_std
         self.model_features_shape = features.shape[1]
 
         # Convert to tensors
@@ -431,17 +431,11 @@ class EnhancedInterstitialMarkovianPredictor:
                 
                 feature_vector = (feature_vector - self.feature_mean) / self.feature_std
                 features.append(feature_vector)
-            
-            try:
-                features_tensor = torch.FloatTensor(np.array(features))
-                with torch.no_grad():
-                    interstitial_values = self.predictor_model(features_tensor).squeeze().numpy()
-                    if interstitial_values.ndim == 0:  # Handle single prediction
-                        interstitial_values = np.array([interstitial_values])
-            except Exception as e:
-                print(f"Model prediction failed: {e}")
-                # Fallback to direct calculation
-                interstitial_values = np.array([self._calculate_interstitial_value((current_word, w)) for w in next_words])
+
+            features_tensor = torch.FloatTensor(np.array(features))
+            with torch.no_grad():
+                interstitial_values = self.predictor_model(features_tensor.reshape(-1,4)).squeeze().numpy()
+       
         else:
             # Fallback to direct calculation
             interstitial_values = np.array([self._calculate_interstitial_value((current_word, w)) for w in next_words])
@@ -621,7 +615,7 @@ def find_words_with_full_stops(text):
     
     return words_with_periods
 
-def generate_abstract_reasoning_corpus(corpus_words: List[str], num_sequences: int = 5000) -> str:
+def generate_abstract_reasoning_corpus(corpus_words: List[str], num_sequences: int = 15000) -> str:
     """
     Generates a synthetic text corpus embodying abstract reasoning pathways.
     This moves beyond simple word pairs to create transitions between semantic concepts.
@@ -658,7 +652,7 @@ def generate_abstract_reasoning_corpus(corpus_words: List[str], num_sequences: i
         abstract_sequences.append(" ".join(sequence))
         
     print(f"Generated {len(abstract_sequences)} abstract reasoning sequences.")
-    return " . ".join(abstract_sequences) + " . "
+    return " ".join(abstract_sequences)
 
 
 if __name__ == "__main__":
@@ -699,7 +693,7 @@ if __name__ == "__main__":
             
             print("Training model on enhanced feature space...")
             # Use enhanced training with sine waves
-            predictor.train_enhanced_interstitial_predictor(epochs=50, sine_weight=0.2)
+            predictor.train_enhanced_interstitial_predictor(epochs=50, sine_weight=10.8)
             
             # Ask if user wants to save the model
             save_choice = input("Save trained model? (y/n): ").lower().strip()
