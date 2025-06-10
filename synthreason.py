@@ -1,3 +1,4 @@
+
 import numpy as np
 # import pandas as pd # No longer used
 from collections import Counter, defaultdict, deque
@@ -12,7 +13,8 @@ from sklearn.model_selection import train_test_split
 # import json # No longer used for saving/loading in main flow
 from typing import Dict, List, Tuple, Optional, Any, Callable
 
-KB_LENGTH = 1000
+KB_LENGTH = -1
+
 # Attempt to import datasets
 try:
     from datasets import load_dataset
