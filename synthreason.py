@@ -1,870 +1,731 @@
 
 import numpy as np
-# import pandas as pd # No longer used
-from collections import Counter, defaultdict, deque
-import re
+from collections import Counter, defaultdict
 import random
+import os
+import pickle
+import json
+from typing import Dict, List, Tuple, Optional, Any
 import torch
-# import matplotlib.pyplot as plt # No longer used for visualization in main flow
-# from sklearn.linear_model import LinearRegression # Replaced by NN option
-# from sklearn.ensemble import RandomForestRegressor # Replaced by NN option
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-# import json # No longer used for saving/loading in main flow
-from typing import Dict, List, Tuple, Optional, Any, Callable
+import torch.nn as nn
+import torch.optim as optim
+from concurrent.futures import ThreadPoolExecutor
 
-KB_LENGTH = -1
+KB_LEN = -1
 
-# Attempt to import datasets
-try:
-    from datasets import load_dataset
-    DATASETS_AVAILABLE = True
-except ImportError:
-    DATASETS_AVAILABLE = False
-    def load_dataset(*args, **kwargs): # Placeholder
-        print("VERBOSE: Warning: Hugging Face 'datasets' library not found. Cannot load from Hub.")
-        raise ImportError("Hugging Face 'datasets' library is required for this feature but not found.")
-
-# Attempt to import TensorFlow
-try:
-    import tensorflow as tf
-    TENSORFLOW_AVAILABLE = True
-except ImportError:
-    TENSORFLOW_AVAILABLE = False
-    # print("VERBOSE: Warning: TensorFlow library not found. Neural network model will not be available.")
-
-# Helper functions for bigram key conversion
-def bigram_to_key(bigram: Tuple[str, str]) -> str:
-    return f"{bigram[0]}||{bigram[1]}"
-
-def key_to_bigram(key: str) -> Tuple[str, str]:
-    parts = key.split('||')
-    if len(parts) == 2:
-        return (parts[0], parts[1])
-    return ("<malformed>", "<key>")
-
-
-class FrequencyPredictor:
-    def __init__(self):
-        print("VERBOSE: FrequencyPredictor initialized.")
+class EnhancedInterstitialMarkovianPredictor:
+    def __init__(self, n_threads: Optional[int] = None):
         self.bigram_frequencies: Dict[Tuple[str, str], int] = {}
-        self.frequency_features: List[List[float]] = []
-        self.predictor_model: Optional[Any] = None
-        self.scaler = StandardScaler()
-        self.sorted_bigrams: List[Tuple[str, str]] = []
+        self.trigram_frequencies: Dict[Tuple[str, str, str], int] = {}
+        self.transition_matrix: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        self.trigram_transition_matrix: Dict[Tuple[str, str], Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        self.word_to_idx: Dict[str, int] = {}
+        self.idx_to_word: Dict[int, str] = {}
         self.unigram_counts: Dict[str, int] = Counter()
-        self.num_base_features: int = 80
-        self.feature_operations: Optional[List[Optional[Callable[[np.ndarray], np.ndarray]]]] = None
-        self.context_window = 99999
-    def set_feature_operations(self, operations: Optional[List[Optional[Callable[[np.ndarray], np.ndarray]]]]) -> None:
-        print(f"VERBOSE: Setting feature operations. Received {len(operations) if operations else 'None'} operations.")
-        if operations and len(operations) != self.num_base_features:
-            raise ValueError(f"Number of operations ({len(operations)}) must match the number of base features ({self.num_base_features})")
-        self.feature_operations = operations
-        if operations:
-            print(f"VERBOSE: {sum(1 for op in operations if op is not None)} active feature operations set for {self.num_base_features} base features.")
+        self.vocab_size = 0
+        self.n_threads = n_threads or min(8, os.cpu_count())
+        self.model_features_shape = None
+        self.feature_mean = None
+        self.feature_std = None
+        self.predictor_model: Optional[nn.Module] = None
+        self.text_data_length = 0
 
-    def _apply_feature_operations(self, X_data: np.ndarray) -> np.ndarray:
-        print(f"VERBOSE: Attempting to apply feature operations on data with shape {X_data.shape}.")
-        if not self.feature_operations:
-            print("VERBOSE: No feature operations defined. Returning data as is.")
-            return X_data
-
-        if X_data.ndim != 2 or X_data.shape[1] != self.num_base_features:
-            print(f"VERBOSE: Warning: X_data shape ({X_data.shape}) is not as expected for feature operations (expected {self.num_base_features} cols). Skipping transformations.")
-            return X_data
-
-        X_transformed = X_data.astype(float).copy()
-        print(f"VERBOSE: Applying feature operations. Initial X_data shape: {X_data.shape}")
-
-        for i in range(self.num_base_features):
-            if i < len(self.feature_operations):
-                operation = self.feature_operations[i]
-                if operation:
-                    # print(f"VERBOSE: Applying operation to feature index {i}...") # Can be too verbose
-                    try:
-                        X_transformed[:, i] = operation(X_data[:, i].astype(float))
-                    except Exception as e:
-                        print(f"VERBOSE: Error applying operation to feature index {i}: {e}. Feature {i} remains as original.")
-                        X_transformed[:, i] = X_data[:, i].astype(float)
-        print(f"VERBOSE: Finished applying feature operations. Transformed X_data shape: {X_transformed.shape}")
-        if X_data.shape[0] > 0 and X_transformed.shape[0] > 0:
-             # Compare a small part of the first row before and after (if non-empty)
-            comparison_limit = min(5, X_data.shape[1]) # Compare up to 5 features
-            # print(f"VERBOSE: Sample original features (first row, first {comparison_limit}): {X_data[0, :comparison_limit]}")
-            # print(f"VERBOSE: Sample transformed features (first row, first {comparison_limit}): {X_transformed[0, :comparison_limit]}")
-        return X_transformed
-
-    def load_text_from_hf_dataset(self,
-                                  dataset_name: str,
-                                  config_name: Optional[str] = None,
-                                  split: str = 'train',
-                                  text_column: str = 'text',
-                                  max_total_words: int = 20000) -> Optional[str]:
-        print(f"VERBOSE: Attempting to load text from Hugging Face dataset: {dataset_name} (Config: {config_name}, Split: {split}, Column: {text_column}).")
-        if not DATASETS_AVAILABLE:
-            print("VERBOSE: Hugging Face 'datasets' library not available. Cannot load from Hub.")
-            return None
-        try:
-            dataset = load_dataset(dataset_name, name=config_name, split=split, streaming=True, trust_remote_code=True)
-            print(f"VERBOSE: Accessed HF dataset stream: {dataset_name}, config: {config_name}, split: {split}")
-            
-            all_collected_words = []
-            docs_processed = 0
-            for doc in dataset:
-                if len(all_collected_words) >= max_total_words:
-                    print(f"VERBOSE: Reached max_total_words ({max_total_words}). Stopping collection.")
-                    break
-                text_content = doc.get(text_column)
-                if isinstance(text_content, str):
-                    current_doc_words = text_content.lower().split()
-                    words_to_add_count = max_total_words - len(all_collected_words)
-                    all_collected_words.extend(current_doc_words[:words_to_add_count])
-                docs_processed +=1
-            
-            print(f"VERBOSE: Processed {docs_processed} documents from HF dataset. Collected {len(all_collected_words)} words.")
-            if not all_collected_words:
-                print("VERBOSE: No words collected from HF dataset.")
-                return ""
-            return ' '.join(all_collected_words)
-        except Exception as e:
-            print(f"VERBOSE: Error loading dataset '{dataset_name}': {e}")
-            return None
-
-    def load_text_file(self, file_path: str) -> str:
-        print(f"VERBOSE: Attempting to load text from local file: {file_path}")
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-                words = content.lower().split()[:KB_LENGTH]
-                print(f"VERBOSE: Successfully loaded {len(words)} words from {file_path}.")
-                return ' '.join(words)
-        except FileNotFoundError:
-            print(f"VERBOSE: File {file_path} not found. Using internal sample text.")
-            return self.get_sample_text()
-        except Exception as e:
-            print(f"VERBOSE: Error loading file {file_path}: {e}. Using internal sample text.")
-            return self.get_sample_text()
-
-
-    def get_sample_text(self) -> str:
-        print("VERBOSE: Providing internal sample text.")
-        sample = """
-        the quick brown fox jumps over the lazy dog the fox is very agile and quick
-        machine learning is revolutionizing technology artificial intelligence learns from data patterns
-        natural language processing enables computers to understand human communication effectively
-        data science combines statistics programming and domain expertise to extract insights
-        python programming language offers powerful libraries for machine learning applications
-        deep learning neural networks can model complex relationships in large datasets
-        the quick brown fox returned the lazy dog slept the quick fox ran again
-        machine learning models improve with more data data patterns are key a a a a a
-        the a and of to in is you that it he was for on are as with his they I at
-        be this have from or one had by word but not what all were we when your can said
-        there use an each which she do how their if will up other about out many then them
-        these so some her would make like him into time has look two more write go see number
-        no way could people my than first water been call who oil its now find long down day
-        did get come made may part this is a very long sentence with many common words to make
-        the frequency distribution more varied and provide enough data for the neural network model
-        to learn some patterns even from this relatively small sample text it is important to have
-        diversity in the input for any machine learning task especially for natural language.
-        """.lower()
-        print(f"VERBOSE: Sample text has {len(sample.split())} words.")
-        return sample
-
-    def preprocess_text(self, text: str) -> List[str]:
-        print(f"VERBOSE: Preprocessing text. Initial length: {len(text)} characters.")
-        #text_cleaned = re.sub(r'[^a-zA-Z\s]', '', text)
-        words = text.split()
-        valid_words = [word for word in words if word]
-        print(f"VERBOSE: Preprocessing complete. Number of words: {len(valid_words)} (after cleaning and removing empty strings).")
-        return valid_words
-
-    def extract_bigram_frequencies(self, text: str) -> Dict[Tuple[str, str], int]:
-        print("VERBOSE: Starting bigram frequency extraction.")
-        words = self.preprocess_text(text)
+    def extract_transition_probabilities(self, text: str) -> None:
+        """Extract and normalize transition probabilities from text (bigrams and trigrams)"""
+        words = text.lower().split()
         if len(words) < 2:
-            print("VERBOSE: Not enough words to form bigrams. Extracted 0 bigrams.")
-            self.bigram_frequencies = {}; self.sorted_bigrams = []
-            self.unigram_counts = Counter(words); return {}
+            return
 
+        # Build vocabulary
+        unique_words = list(set(words))
+        self.vocab_size = len(unique_words)
+        self.word_to_idx = {word: idx for idx, word in enumerate(unique_words)}
+        self.idx_to_word = {idx: word for word, idx in self.word_to_idx.items()}
         self.unigram_counts = Counter(words)
-        print(f"VERBOSE: Unigram counts calculated. Total unigrams: {len(self.unigram_counts)}, e.g., {list(self.unigram_counts.items())[:3]}")
-        bigrams = [(words[i], words[i+1]) for i in range(len(words)-1)]
-        self.bigram_frequencies = dict(Counter(bigrams))
-        print(f"VERBOSE: Extracted {len(self.bigram_frequencies)} unique bigrams. Total bigram occurrences: {len(bigrams)}.")
-        
-        self.sorted_bigrams = [
-            item[0] for item in sorted(self.bigram_frequencies.items(), key=lambda x: (x[1], x[0][0], x[0][1]), reverse=True)
-        ]
-        print(f"VERBOSE: Bigrams sorted by frequency. Top 3: {self.sorted_bigrams[:3] if len(self.sorted_bigrams) >=3 else self.sorted_bigrams}")
-        return self.bigram_frequencies
 
-    def create_bigram_frequency_features(self) -> List[List[float]]:
-        print("VERBOSE: Starting creation of bigram frequency features.")
+        # Count bigrams
+        self.bigram_frequencies = dict(Counter((words[i], words[i+1]) for i in range(len(words)-1)))
+        # Count trigrams
+        self.trigram_frequencies = dict(Counter((words[i], words[i+1], words[i+2]) for i in range(len(words)-2)))
+
+        # Build bigram transition matrix
+        word_totals = defaultdict(float)
+        for (w1, w2), count in self.bigram_frequencies.items():
+            word_totals[w1] += count
+        for (w1, w2), count in self.bigram_frequencies.items():
+            if word_totals[w1] > 0:
+                self.transition_matrix[w1][w2] = count / word_totals[w1]
+
+        # Build trigram (two-step) transition matrix
+        trigram_totals = defaultdict(float)
+        for (w1, w2, w3), count in self.trigram_frequencies.items():
+            trigram_totals[(w1, w2)] += count
+        for (w1, w2, w3), count in self.trigram_frequencies.items():
+            if trigram_totals[(w1, w2)] > 0:
+                self.trigram_transition_matrix[(w1, w2)][w3] = count / trigram_totals[(w1, w2)]
+
+    def _calculate_interstitial_value(self, state: Tuple[str, str]) -> float:
+        """Calculate interstitial value for a two-word state for feature extraction"""
+        w1, w2 = state
+        current_transitions = dict(self.transition_matrix.get(w2, {}))
+        next_transitions = dict(self.trigram_transition_matrix.get(state, {}))
+
+        # Features: entropy of current and historical transitions, connectivity, frequency
+        probs = list(current_transitions.values())
+        entropy = -sum(p * np.log2(p + 1e-10) for p in probs if p > 0) if probs else 0.0
+        probs = list(next_transitions.values())
+        trigram_entropy = -sum(p * np.log2(p + 1e-10) for p in probs if p > 0) if probs else 0.0
+        connectivity = len(next_transitions) / self.vocab_size if self.vocab_size > 0 else 0.0
+        word_freq = self.unigram_counts[w2] / sum(self.unigram_counts.values()) if sum(self.unigram_counts.values()) > 0 else 0.0
+        freq_adjusted_connectivity = connectivity * (1 - word_freq)
+
+        features = [entropy, trigram_entropy, connectivity, freq_adjusted_connectivity]
+        weights = [0.4, 0.4, 0.1, 0.1]
+        interstitial_value = sum(w * f for w, f in zip(weights, features))
+        return interstitial_value
+
+    def generate_sine_wave_features(self, length: int = 1000, frequency: float = 0.1, 
+                                   amplitude: float = 1.0, phase: float = 0.0) -> np.ndarray:
+        """Generate sine wave features for training data augmentation"""
+        t = np.linspace(0, length, length)
+        sine_wave = amplitude * np.sin(2 * np.pi * frequency * t + phase)
+        
+        # Create features from sine wave properties
         features = []
-        if not self.sorted_bigrams:
-            print("VERBOSE: No sorted bigrams available to create features.")
-            self.frequency_features = []; return []
-
-        for bigram_idx, bigram in enumerate(self.sorted_bigrams):
-            y, x = bigram
-            x = len(x)
-            y = len(y)
-            freq = self.bigram_frequencies[bigram]
-            bigram_features_vector = [
-                # Original functions
-        np.log1p(y),
-        np.log1p(y),
-        np.log1p(y),
-        np.log1p(y),
-        np.square(y),
-        np.square(y),
-        None, 
-        np.sqrt(np.maximum(0, x)),
-        np.log1p(y),
-        np.log1p(y),
-        None, 
-        None, 
-        None, 
-        None, 
-        x * 2.0, 
-        None,
-
-        None,
-        
-        # Additional math functions
-        # Basic arithmetic
-        x + 1.0,
-        x - 1.0,
-        x * 3.0,
-        x / 2.0,
-        x ** 3,
-        x ** 0.5,
-        x ** (1/3),
-        1 / np.maximum(x, 1e-8),  # reciprocal with safety
-        
-        # Exponential and logarithmic
-        np.exp(y),
-        np.exp2(y),
-        np.expm1(y),
-        np.log(np.maximum(x, 1e-8)),
-        np.log2(np.maximum(x, 1e-8)),
-        np.log10(np.maximum(x, 1e-8)),
-        
-        # Trigonometric
-        np.sin(y),
-        np.cos(y),
-        np.tan(y),
-        np.arcsin(np.clip(x, -1, 1)),
-        np.arccos(np.clip(x, -1, 1)),
-        np.arctan(y),
-        
-        # Hyperbolic
-        np.sinh(y),
-        np.cosh(y),
-        np.tanh(y),
-        np.arcsinh(y),
-        np.arccosh(np.maximum(x, 1)),
-        np.arctanh(np.clip(x, -0.99, 0.99)),
-        
-        # Rounding and ceiling/floor
-        np.round(y),
-        np.floor(y),
-        np.ceil(y),
-        np.trunc(x),
-        
-        # Sign and absolute
-        np.abs(x),
-        np.sign(x),
-        np.positive(x),
-        np.negative(x),
-        
-        # Power and roots
-        np.cbrt(x),  # cube root
-        np.power(x, 4),
-        np.power(x, 0.25),  # 4th root
-        np.power(x, 1.5),
-        
-        # Special functions
-        np.maximum(x, 0),  # ReLU
-        np.minimum(x, 0),  # negative part
-        np.maximum(x, 1),  # max with 1
-        np.minimum(x, 1),  # min with 1
-        
-        # Statistical transforms
-        (x - np.mean(x)) / (np.std(x) + 1e-8),  # standardize
-        x / (np.max(np.abs(x)) + 1e-8),  # normalize by max
-        np.clip(x, 0, 1),  # clip to [0,1]
-        np.clip(x, -1, 1),  # clip to [-1,1]
-        
-        # Complex transformations
-        x / (1 + np.abs(x)),  # soft sign
-        np.where(x > 0, x, 0.01 * x),  # leaky ReLU
-        np.log(1 + np.exp(-np.abs(x))) + np.maximum(x, 0),  # softplus
-        x * (1 / (1 + np.exp(-x))),  # swish activation
-        # Additional basic features
-        x,  # identity
-        np.sqrt(np.abs(x) + 1e-8),  # sqrt(abs(x))
-        1 / (np.sqrt(np.abs(x) + 1e-8)),  # reciprocal sqrt
-        1 / (x ** 2 + 1e-8),  # inverse square
-        np.clip(x, 0, None),  # zero out negative values
-        np.clip(x, None, 0),  # zero out positive values
-        None , # binary indicator: positive
-        None,  # binary indicator: negative
-        None,  # binary indicator: zero
-        x - np.mean(x),  # zero-mean
-        (x - np.min(x)) / (np.max(x) - np.min(x) + 1e-8),  # min-max scaling
-        np.exp(-x**2),  # Gaussian basis
-        1 / (1 + np.exp(-x)),  # sigmoid
-        np.heaviside(x, 0.0),  # Heaviside step
-            ]
-            features.append(bigram_features_vector)
-            # if bigram_idx < 2: # Print features for first 2 bigrams
-            #     print(f"VERBOSE: Features for bigram {bigram}: {bigram_features_vector}")
-
-        self.frequency_features = features
-        if features:
-            print(f"VERBOSE: Created {len(features)} feature vectors, each with {len(features[0])} elements (1 target + {self.num_base_features} inputs).")
-        else:
-            print("VERBOSE: No features were created.")
-        return features
-
-    def train_predictor(self, model_type: str = 'neural_network') -> None:
-        print(f"VERBOSE: Starting predictor training with model_type: {model_type}.")
-        if not self.frequency_features:
-            print("VERBOSE: No frequency features available. Skipping training.")
-            self.predictor_model = None; return
-
-        try:
-            # Assuming self.frequency_features rows are [target, feat1, feat2, ...]
-            X_raw = np.array([f[1:] for f in self.frequency_features], dtype=float) 
-            y = np.array([f[0] for f in self.frequency_features], dtype=float)  
-        except Exception as e:
-            print(f"VERBOSE: Error converting features to NumPy array: {e}. Check feature creation. Skipping training.")
-            self.predictor_model = None; return
+        for i in range(len(sine_wave) - 1):
+            current_val = sine_wave[i]
+            next_val = sine_wave[i + 1]
             
-        print(f"VERBOSE: Raw features X_raw shape: {X_raw.shape}, Target y shape: {y.shape}.")
-
-        # This check is important. If it fails, _apply_feature_operations might skip,
-        # or if it proceeds, it might operate on incorrectly shaped data.
-        if X_raw.shape[0] <= 1 or X_raw.ndim != 2 or X_raw.shape[0] != y.shape[0] or X_raw.shape[1] != self.num_base_features:
-            print(f"VERBOSE: Warning: Shape of X_raw ({X_raw.shape}) or y ({y.shape}) is unsuitable for training/transformation. Num base features: {self.num_base_features}. Skipping actual model training.")
-            # If you commented out the 'return' here previously, ensure X_raw is what _apply_feature_operations expects
-            # or that _apply_feature_operations handles the shape mismatch by returning X_raw untransformed.
-            # For now, let's assume if this warning hits, X_transformed might just be X_raw.
-            # self.predictor_model = None; return # Original line commented out by user.
-        
-        X_transformed = self._apply_feature_operations(X_raw) 
-        print(f"VERBOSE: Transformed features X_transformed shape: {X_transformed.shape}.")
-        
-        # --- MODIFICATION TO "SKIP" (REPLACE) INFINITIES AND NANS ---
-        # Check if X_transformed contains any NaN or Inf values before proceeding
-        has_nan = np.isnan(X_transformed).any()
-        has_inf = np.isinf(X_transformed).any()
-
-        if has_nan or has_inf:
-            if has_nan and has_inf:
-                print("VERBOSE: X_transformed contains both NaNs and infinities.")
-            elif has_nan:
-                print("VERBOSE: X_transformed contains NaNs.")
-            elif has_inf:
-                print("VERBOSE: X_transformed contains infinities.")
+            # Extract meaningful features from sine wave
+            slope = next_val - current_val
+            magnitude = abs(current_val)
+            phase_position = (i % (1/frequency)) / (1/frequency) if frequency > 0 else 0
             
-            print("VERBOSE: Applying np.nan_to_num to replace NaNs/infinities.")
-            # Replace NaN with 0.0
-            # Replace positive infinity with the largest positive number for the dtype
-            # Replace negative infinity with the smallest negative number for the dtype
-            X_transformed = np.nan_to_num(X_transformed, 
-                                          nan=0.0, 
-                                          posinf=np.finfo(X_transformed.dtype).max, 
-                                          neginf=np.finfo(X_transformed.dtype).min)
-            print(f"VERBOSE: X_transformed after np.nan_to_num. Shape: {X_transformed.shape}.")
-            # Verify again (optional)
-            # if np.isnan(X_transformed).any() or np.isinf(X_transformed).any():
-            #    print("VERBOSE: Warning: NaNs or infinities still present after np.nan_to_num.")
-        # --- END MODIFICATION ---
+            feature_vector = [current_val, slope, magnitude, phase_position]
+            features.append(feature_vector)
         
-        # Ensure X_transformed is not empty before proceeding
-        if X_transformed.shape[0] == 0:
-            print("VERBOSE: X_transformed is empty after operations and/or cleaning. Skipping training.")
-            self.predictor_model = None; return
+        return np.array(features)
 
-        test_size_for_split = 0.2 if X_transformed.shape[0] >= 10 else 0.0
-        if X_transformed.shape[0] < 10:
-            print(f"VERBOSE: Dataset too small ({X_transformed.shape[0]} samples), using all data for training and testing.")
-            # Ensure y matches X_transformed's sample size if filtering happened (not in this nan_to_num)
-            X_train, X_test, y_train, y_test = (X_transformed, X_transformed, y[:X_transformed.shape[0]], y[:X_transformed.shape[0]])
-        else:
-            X_train, X_test, y_train, y_test = train_test_split(X_transformed, y, test_size=test_size_for_split, random_state=42)
+    def _process_word_features(self, word_data: Tuple[str, int]) -> Tuple[List[float], float]:
+        """Process features for a single word (thread-safe)"""
+        word1, w1_idx = word_data
+        # Use previous word if available, otherwise empty string
+        prev_word = self.idx_to_word.get(w1_idx-1, "") if w1_idx > 0 else ""
+        state = (prev_word, word1)
         
-        print(f"VERBOSE: Data split. X_train shape: {X_train.shape}, X_test shape: {X_test.shape}, y_train shape: {y_train.shape}, y_test shape: {y_test.shape}.")
+        feature_vector = [
+            self._calculate_interstitial_value(state),
+            len(self.transition_matrix[word1]) / self.vocab_size if self.vocab_size > 0 else 0.0,
+            self.unigram_counts[word1] / sum(self.unigram_counts.values()) if sum(self.unigram_counts.values()) > 0 else 0.0,
+        ]
         
-        if X_train.shape[0] == 0:
-            print("VERBOSE: X_train is empty after split. Skipping training.")
-            self.predictor_model = None; return
+        # Fixed target calculation - use a simple metric instead of recursive call
+        target = self._calculate_interstitial_value(state)
+        return feature_vector, target
 
-        print("VERBOSE: Fitting StandardScaler on X_train.")
-        try:
-            self.scaler.fit(X_train)
-            X_train_scaled = self.scaler.transform(X_train)
-            # X_test_scaled = self.scaler.transform(X_test) # Also scale X_test for evaluation
-            print(f"VERBOSE: X_train scaled. Shape: {X_train_scaled.shape}. Scaler mean (first 3): {self.scaler.mean_[:3] if self.scaler.mean_.size >=3 else self.scaler.mean_}..., Scaler scale (first 3): {self.scaler.scale_[:3] if self.scaler.scale_.size >=3 else self.scaler.scale_}...")
-        except ValueError as e:
-            print(f"VERBOSE: ValueError during StandardScaler fit/transform: {e}. This might happen if data still contains NaNs/infs or all features are constant after nan_to_num.")
-            self.predictor_model = None; return
+    def create_interstitial_features(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Create features that capture interstitial markovian relationships using multithreading"""
+        words_to_process = [(word, self.word_to_idx[word]) 
+                          for word in self.word_to_idx.keys() 
+                          if word in self.word_to_idx]
+        if not words_to_process:
+            return np.array([]), np.array([])
 
-        # ... (rest of the neural network training code) ...
-        if model_type == 'neural_network':
-            if not TENSORFLOW_AVAILABLE:
-                print("VERBOSE: TensorFlow not available. Cannot train neural network model.")
-                self.predictor_model = None; return
+        # Process features in parallel
+        features = []
+        targets = []
+        chunk_size = max(1, len(words_to_process) // self.n_threads)
+        chunks = [words_to_process[i:i + chunk_size] 
+                 for i in range(0, len(words_to_process), chunk_size)]
+
+        def process_chunk(chunk):
+            chunk_features = []
+            chunk_targets = []
+            for word_data in chunk:
+                feature_vector, target = self._process_word_features(word_data)
+                chunk_features.append(feature_vector)
+                chunk_targets.append(target)
+            return chunk_features, chunk_targets
+
+        with ThreadPoolExecutor(max_workers=self.n_threads) as executor:
+            futures = [executor.submit(process_chunk, chunk) for chunk in chunks]
+            for future in futures:
+                chunk_features, chunk_targets = future.result()
+                features.extend(chunk_features)
+                targets.extend(chunk_targets)
+
+        return np.array(features), np.array(targets)
+
+    def create_enhanced_interstitial_features(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Enhanced version that includes sine wave data"""
+        # Get original text-based features
+        text_features, text_targets = self.create_interstitial_features()
+        
+        if len(text_features) == 0:
+            return np.array([]), np.array([])
+        
+        # Store text data length for proper split tracking
+        self.text_data_length = len(text_features)
+        
+        # Generate sine wave features with multiple frequencies
+        sine_features_list = []
+        sine_targets_list = []
+        
+        frequencies = [0.05, 0.1, 0.2, 0.5]  # Different sine wave frequencies
+        for freq in frequencies:
+            sine_features = self.generate_sine_wave_features(
+                length=len(text_features), 
+                frequency=freq,
+                amplitude=np.random.uniform(0.5, 2.0),
+                phase=np.random.uniform(0, 2*np.pi)
+            )
             
-            print("VERBOSE: Defining Keras Sequential model.")
-            # Ensure input_shape matches X_train_scaled.shape[1]
-            if X_train_scaled.shape[1] == 0:
-                 print("VERBOSE: X_train_scaled has 0 features. Cannot define model input layer.")
-                 self.predictor_model = None; return
-
-            nn_model = tf.keras.Sequential([
-                tf.keras.layers.InputLayer(input_shape=(X_train_scaled.shape[1],)),
-                tf.keras.layers.Dense(128, activation='relu'),
-                tf.keras.layers.Dropout(0.2),
-                tf.keras.layers.Dense(64, activation='relu'),
-                tf.keras.layers.Dropout(0.2),
-                tf.keras.layers.Dense(32, activation='relu'),
-                tf.keras.layers.Dense(1) 
+            # Create targets based on sine wave predictability
+            sine_targets = np.array([
+                abs(np.sin(2 * np.pi * freq * i)) for i in range(len(sine_features))
             ])
-            nn_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss='mean_squared_error')
             
-            print(f"VERBOSE: Training Neural Network model on {X_train_scaled.shape[0]} samples for 100 epochs...")
-            history = nn_model.fit(X_train_scaled, y_train, epochs=100, batch_size=32, verbose=0)
-            self.predictor_model = nn_model
-            print(f"VERBOSE: Neural Network predictor trained. Final training loss: {history.history['loss'][-1]:.4f}")
-        else:
-            print(f"VERBOSE: Unsupported model_type: {model_type} or required library missing. No model trained.")
-            self.predictor_model = None
+            sine_features_list.append(sine_features)
+            sine_targets_list.append(sine_targets)
+        
+        # Combine all sine wave features
+        all_sine_features = np.vstack(sine_features_list)
+        all_sine_targets = np.hstack(sine_targets_list)
+        
+        # Pad features to match dimensions
+        text_feature_dim = text_features.shape[1]
+        sine_feature_dim = all_sine_features.shape[1]
+        
+        if text_feature_dim > sine_feature_dim:
+            # Pad sine features
+            padding = np.zeros((all_sine_features.shape[0], text_feature_dim - sine_feature_dim))
+            all_sine_features = np.hstack([all_sine_features, padding])
+        elif sine_feature_dim > text_feature_dim:
+            # Pad text features
+            padding = np.zeros((text_features.shape[0], sine_feature_dim - text_feature_dim))
+            text_features = np.hstack([text_features, padding])
+        
+        # Combine text and sine wave features
+        combined_features = np.vstack([text_features, all_sine_features])
+        combined_targets = np.hstack([text_targets, all_sine_targets])
+        
+        return combined_features, combined_targets
 
-
-    def generate_new_bigram_frequencies(self, num_variations: int = 1) -> List[Dict[Tuple[str, str], float]]:
-        print(f"VERBOSE: Starting generation of {num_variations} new bigram frequency set(s).")
-        if self.predictor_model is None:
-            print("VERBOSE: Predictor model not available. Cannot generate new frequencies.")
-            return []
-        if not self.frequency_features or not self.sorted_bigrams:
-            print("VERBOSE: Missing frequency features or sorted bigrams. Cannot generate.")
-            return []
-
-        new_frequency_sets = []
-        original_total_frequency_sum = sum(self.bigram_frequencies.values())
-        if original_total_frequency_sum == 0 : original_total_frequency_sum = 1.0 # Avoid division by zero
-        print(f"VERBOSE: Original total frequency sum for scaling: {original_total_frequency_sum}")
-
-        try:
-            base_X_for_prediction = np.array([f[1:] for f in self.frequency_features], dtype=float)
-        except Exception as e:
-            print(f"VERBOSE: Error preparing base_X_for_prediction from self.frequency_features: {e}. Cannot generate.")
-            return []
-
-        # This check is crucial and must pass for the rest of the function to be valid.
-        # Assuming this passes based on the error occurring later at self.scaler.transform().
-        if base_X_for_prediction.shape[1] != self.num_base_features:
-            print(f"VERBOSE: Error: Mismatch in feature dimensions ({base_X_for_prediction.shape[1]} vs {self.num_base_features}) for generation. Cannot proceed.")
-            return []
-        print(f"VERBOSE: Base features for prediction (X_raw equivalent) shape: {base_X_for_prediction.shape}")
-
-        for variation in range(num_variations):
-            print(f"VERBOSE: Generating variation {variation + 1}/{num_variations}.")
-            X_noised = base_X_for_prediction.astype(float).copy() # Ensure it's float for operations
-            noise_factor = 0.1 + (variation * 0.02)
-            
-            for j in range(X_noised.shape[1]):
-                # Adding noise based on column's std dev might be more stable than abs value if scales vary wildly
-                col_std = np.std(X_noised[:, j])
-                if col_std == 0: col_std = 0.1 # Add small noise even to constant columns to potentially break constancy
+    def _create_enhanced_model(self, input_size: int):
+        """Enhanced model that can handle both text and sine wave features"""
+        class EnhancedInterstitialNet(nn.Module):
+            def __init__(self, input_size):
+                super().__init__()
                 
-                # Or use the user's original noise logic if preferred, but be mindful of X_noised values
-                # noise = np.random.normal(0, noise_factor * np.abs(X_noised[:, j] + 1e-8)) # Added epsilon to abs
-                noise = np.random.normal(0, noise_factor * col_std, size=X_noised.shape[0])
-                X_noised[:, j] = X_noised[:, j] + noise
-                # Optional: If certain features should remain non-negative (e.g. counts, lengths after noise)
-                # X_noised[:, j] = np.maximum(0, X_noised[:, j])
-            
-            X_transformed_noised = self._apply_feature_operations(X_noised)
-            
-            if X_transformed_noised.shape[0] == 0: # Should not happen if X_noised is not empty
-                print("VERBOSE: Transformed noised features are unexpectedly empty. Skipping this variation.")
-                continue
-            
-            # --- ADDED SECTION TO HANDLE INFINITIES/LARGE VALUES/NANS ---
-            has_problematic_values = False
-            if np.isnan(X_transformed_noised).any():
-                print("VERBOSE: X_transformed_noised contains NaNs before scaling.")
-                has_problematic_values = True
-            if np.isinf(X_transformed_noised).any():
-                print("VERBOSE: X_transformed_noised contains infinities before scaling.")
-                has_problematic_values = True
-            
-            # Check for values too large for float64, though np.nan_to_num might not fix these if they are already finite but huge
-            # Scikit-learn's check is more stringent. Replacing inf might create numbers that are still "too large".
-            # However, this step primarily targets np.inf and np.nan.
-            if has_problematic_values:
-                print("VERBOSE: Applying np.nan_to_num to X_transformed_noised.")
-                try:
-                    # Replace NaN with 0, inf with large finite numbers
-                    X_transformed_noised = np.nan_to_num(X_transformed_noised, 
-                                                          nan=0.0, 
-                                                          posinf=np.finfo(X_transformed_noised.dtype).max / 2, # Use a slightly smaller max to avoid edge issues
-                                                          neginf=np.finfo(X_transformed_noised.dtype).min / 2) # Use a slightly smaller min
-                    print(f"VERBOSE: X_transformed_noised after nan_to_num. Shape: {X_transformed_noised.shape}.")
-                except Exception as e:
-                    print(f"VERBOSE: Error during np.nan_to_num on X_transformed_noised: {e}. Skipping variation.")
-                    continue
-            # --- END ADDED SECTION ---
+                # Separate pathways for different feature types
+                self.text_pathway = nn.Sequential(
+                    nn.Linear(input_size, 128),
+                    nn.ReLU(),
+                    nn.Dropout(0.2)
+                )
+                
+                self.sine_pathway = nn.Sequential(
+                    nn.Linear(input_size, 64),
+                    nn.ReLU(),
+                    nn.Dropout(0.1)
+                )
+                
+                # Combined processing
+                self.combined_layers = nn.Sequential(
+                    nn.Linear(128 + 64, 256),
+                    nn.ReLU(),
+                    nn.BatchNorm1d(256),
+                    nn.Dropout(0.3),
+                    
+                    # Convolutional processing for pattern recognition
+                    nn.Unflatten(1, (16, 16)),
+                    nn.Conv1d(16, 32, 3, padding=1),
+                    nn.ReLU(),
+                    nn.Conv1d(32, 16, 3, padding=1),
+                    nn.ReLU(),
+                    nn.Flatten(),
+                    
+                    nn.Linear(16 * 16, 64),
+                    nn.ReLU(),
+                    nn.Linear(64, 1),
+                    nn.Sigmoid()
+                )
+                
+            def forward(self, x):
+                text_out = self.text_pathway(x)
+                sine_out = self.sine_pathway(x)
+                combined = torch.cat([text_out, sine_out], dim=1)
+                return self.combined_layers(combined)
+        
+        self.predictor_model = EnhancedInterstitialNet(input_size)
 
-            # Line 480 where the error occurred:
+    def _create_model(self, input_size: int):
+        """Create the neural network model for interstitial prediction"""
+        class InterstitialNet(nn.Module):
+            def __init__(self, input_size):
+                super().__init__()
+                # Calculate dimensions for proper reshaping
+                hidden_size = max(128, ((input_size + 15) // 16) * 16)  # Round up to nearest 16
+                conv_channels = hidden_size // 8
+                conv_length = 8
+                
+                self.layers = nn.Sequential(
+                    # Dense encoder
+                    nn.Linear(input_size, hidden_size),
+                    nn.ReLU(),
+                    nn.Dropout(0.2),
+                    
+                    # Reshape for convolution
+                    nn.Unflatten(1, (conv_channels, conv_length)),
+                    
+                    # Transposed convolutions
+                    nn.ConvTranspose1d(conv_channels, conv_channels*2, 3, stride=2, padding=1, output_padding=1),
+                    nn.ReLU(),
+                    nn.BatchNorm1d(conv_channels*2),
+                    
+                    nn.ConvTranspose1d(conv_channels*2, conv_channels, 3, stride=2, padding=1, output_padding=1),
+                    nn.ReLU(),
+                    
+                    # Flatten and final layers
+                    nn.Flatten(),
+                    nn.Linear(conv_channels * conv_length * 4, 64),  # 4x upsampling from convolutions
+                    nn.ReLU(),
+                    nn.Dropout(0.2),
+                    nn.Linear(64, 1),
+                    nn.Sigmoid()
+                )
+                
+            def forward(self, x):
+                return self.layers(x)
+                
+        self.predictor_model = InterstitialNet(input_size)
+
+    def train_enhanced_interstitial_predictor(self, epochs: int = 100, sine_weight: float = 0.3):
+        """Train with both text and sine wave features - FIXED VERSION"""
+        features, targets = self.create_enhanced_interstitial_features()
+        if len(features) == 0:
+            print("No features created for training")
+            return
+
+        # Store feature normalization parameters
+        self.feature_mean = np.mean(features, axis=0)
+        self.feature_std = np.std(features, axis=0) + 1e-8
+        features_normalized = (features - self.feature_mean) / self.feature_std
+        self.model_features_shape = features.shape[1]
+
+        # Convert to tensors
+        X_tensor = torch.FloatTensor(features_normalized)
+        y_tensor = torch.FloatTensor(targets).unsqueeze(1)
+
+        # Create enhanced model
+        self._create_enhanced_model(features.shape[1])
+        
+        # Use different loss weights for text vs sine wave data
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.predictor_model.parameters(), lr=0.001, weight_decay=1e-5)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5)
+
+        # Training loop with sine wave integration
+        for epoch in range(epochs):
+            optimizer.zero_grad()
+            outputs = self.predictor_model(X_tensor)
+            
+            # Calculate loss with potential weighting
+            loss = criterion(outputs, y_tensor)
+            
+            # FIXED: Add regularization for sine wave learning with proper tensor sizing
+            if len(targets) > self.text_data_length:
+                # Calculate the split point using stored text_data_length
+                sine_data_start = self.text_data_length
+                sine_data_end = len(targets)
+                sine_data_length = sine_data_end - sine_data_start
+                
+                if sine_data_length > 0:
+                    # Create sine wave target with exact matching size
+                    sine_outputs = outputs[sine_data_start:sine_data_end]
+                    sine_reference = torch.sin(torch.linspace(0, 4*np.pi, sine_data_length)).unsqueeze(1)
+                    
+                    # Ensure tensors have the same size
+                    if sine_outputs.shape[0] == sine_reference.shape[0]:
+                        sine_reg = torch.mean(torch.abs(sine_outputs - sine_reference))
+                        loss += sine_weight * sine_reg
+            
+            loss.backward()
+            optimizer.step()
+            scheduler.step(loss)
+
+            if (epoch + 1) % 10 == 0:
+                print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.6f}")
+        
+        print("Enhanced training completed!")
+
+    def train_interstitial_predictor(self, epochs: int = 100):
+        """Train neural network to predict interstitial markovian values"""
+        features, targets = self.create_interstitial_features()
+        if len(features) == 0:
+            print("No features created for training")
+            return
+
+        # Store feature normalization parameters
+        self.feature_mean = np.mean(features, axis=0)
+        self.feature_std = np.std(features, axis=0) + 1e-8
+        features_normalized = (features - self.feature_mean) / self.feature_std
+        self.model_features_shape = features.shape[1]
+
+        # Convert to tensors
+        X_tensor = torch.FloatTensor(features_normalized)
+        y_tensor = torch.FloatTensor(targets).unsqueeze(1)
+
+        # Create model
+        self._create_model(features.shape[1])
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.predictor_model.parameters(), lr=0.001)
+
+        # Training loop
+        for epoch in range(epochs):
+            optimizer.zero_grad()
+            outputs = self.predictor_model(X_tensor)
+            loss = criterion(outputs, y_tensor)
+            loss.backward()
+            optimizer.step()
+
+            if (epoch + 1) % 10 == 0:
+                print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.6f}")
+        print("Training completed!")
+
+
+    def generate_next_word(self, prev_word: str, current_word: str) -> str:
+        """Generate next word using weighted interstitial and transition probabilities"""
+        state = (prev_word, current_word)
+        transitions = dict(self.trigram_transition_matrix.get(state, {}))
+        if not transitions:
+            transitions = dict(self.transition_matrix.get(current_word, {}))
+            if not transitions:
+                return random.choice(list(self.unigram_counts.keys())) if self.unigram_counts else ""
+
+        # Get interstitial values for each possible next word
+        next_words = list(transitions.keys())
+        if self.predictor_model and self.feature_mean is not None:
+            # Use model prediction if available
+            features = []
+            for w in next_words:
+                feature_vector = [
+                    self._calculate_interstitial_value((current_word, w)),
+                    len(self.transition_matrix[w]) / self.vocab_size if self.vocab_size > 0 else 0.0,
+                    self.unigram_counts[w] / sum(self.unigram_counts.values()) if sum(self.unigram_counts.values()) > 0 else 0.0,
+                ]
+                
+                # Debug: Check dimensions before normalization
+                feature_vector = np.array(feature_vector)
+                
+                # Ensure dimensions match
+                if feature_vector.shape[0] != self.feature_mean.shape[0]:
+                    # Pad or truncate to match expected dimensions
+                    expected_dim = self.feature_mean.shape[0]
+                    if feature_vector.shape[0] < expected_dim:
+                        # Pad with zeros
+                        padding = np.zeros(expected_dim - feature_vector.shape[0])
+                        feature_vector = np.concatenate([feature_vector, padding])
+                    else:
+                        # Truncate
+                        feature_vector = feature_vector[:expected_dim]
+                
+                feature_vector = (feature_vector - self.feature_mean) / self.feature_std
+                features.append(feature_vector)
+            
             try:
-                X_scaled = self.scaler.transform(X_transformed_noised)
-            except ValueError as ve:
-                print(f"VERBOSE: ValueError during scaler.transform: {ve}. This means X_transformed_noised still has problematic values (likely too large for float64 even if not strictly inf after nan_to_num, or all NaNs in a column). Skipping variation.")
-                # You might want to print a sample of X_transformed_noised here for debugging
-                # print(f"VERBOSE: Sample of X_transformed_noised that caused error: {X_transformed_noised[:5, :5]}")
-                continue # Skip this variation if scaling fails
-            
-            print("VERBOSE: Predicting new counts with the model...")
-            predicted_new_counts = self.predictor_model.predict(X_scaled)
-            
-            # ... (rest of the function for processing predicted_new_counts)
-            if isinstance(predicted_new_counts, tf.Tensor):
-                predicted_new_counts = predicted_new_counts.numpy()
-            predicted_new_counts = predicted_new_counts.flatten()
-            
-            predicted_new_counts = np.maximum(predicted_new_counts, 0.01) 
-            
-            current_sum_predicted_counts = np.sum(predicted_new_counts)
-            if current_sum_predicted_counts == 0:
-                if len(predicted_new_counts) > 0:
-                    predicted_new_counts = np.full_like(predicted_new_counts, 0.01)
-                    print("VERBOSE: Sum of predicted counts was 0, filled with 0.01.")
-                else:
-                    new_frequency_sets.append({});
-                    print("VERBOSE: Predicted counts array is empty for this variation.")
-                    continue 
-            current_sum_predicted_counts = np.sum(predicted_new_counts)
-            
-            scaled_predicted_counts = predicted_new_counts
-            if original_total_frequency_sum > 0 and current_sum_predicted_counts > 0:
-                scale_factor = original_total_frequency_sum / current_sum_predicted_counts
-                scaled_predicted_counts = predicted_new_counts * scale_factor
-            
-            new_freq_dict: Dict[Tuple[str, str], float] = {
-                bigram: float(scaled_predicted_counts[i]) 
-                for i, bigram in enumerate(self.sorted_bigrams) 
-                if i < len(scaled_predicted_counts)
-            }
-            new_frequency_sets.append(new_freq_dict)
-            print(f"VERBOSE: Generated frequency dictionary for variation {variation + 1} with {len(new_freq_dict)} entries.")
-        
-        print(f"VERBOSE: Finished generating {len(new_frequency_sets)} new frequency sets.")
-        return new_frequency_sets
-
-    def expand_text_from_bigrams(self,frequency_dict: Dict[Tuple[str, str], float],text_length: int = 100,seed_phrase: Optional[str] = None) -> str:
-        """Generates text by predicting subsequent words using bigram frequencies."""
-        
-        generated_words = []
-        
-        # Initialize with seed phrase or random starting word
-        if seed_phrase:
-            seed_words = seed_phrase.split()
-            generated_words.extend(seed_words)
-            current_word = seed_words[-1] if seed_words else None
+                features_tensor = torch.FloatTensor(np.array(features))
+                with torch.no_grad():
+                    interstitial_values = self.predictor_model(features_tensor).squeeze().numpy()
+                    if interstitial_values.ndim == 0:  # Handle single prediction
+                        interstitial_values = np.array([interstitial_values])
+            except Exception as e:
+                print(f"Model prediction failed: {e}")
+                # Fallback to direct calculation
+                interstitial_values = np.array([self._calculate_interstitial_value((current_word, w)) for w in next_words])
         else:
-            # Pick a random first word from available bigrams
-            available_first_words = list(set(bigram[0] for bigram in frequency_dict.keys()))
-            current_word = random.choice(available_first_words) if available_first_words else None
-            if current_word:
-                generated_words.append(current_word)
-        
-        if not current_word:
-            return ""
-        
-        with torch.no_grad():
-            for _ in range(text_length - len(generated_words)):
-                # Find all bigrams that start with current_word
-                possible_next_words = []
-                probabilities = []
-                
-                for (first_word, second_word), freq in frequency_dict.items():
-                    if first_word == current_word:
-                        possible_next_words.append(second_word)
-                        probabilities.append(freq)
-                
-                if not possible_next_words:
-                    # No continuation found, break or pick random word
-                    break
-                
-                # Convert to torch tensor for sampling
-                prob_tensor = torch.tensor(probabilities, dtype=torch.float32)
-                
-                # Normalize probabilities
-                prob_tensor = prob_tensor / prob_tensor.sum()
-                
-                # Sample next word based on probabilities
-                next_word_idx = torch.multinomial(prob_tensor, 1).item()
-                next_word = possible_next_words[next_word_idx]
-                
-                generated_words.append(next_word)
-                current_word = next_word  # Update current word for next iteration
-        
-        return ' '.join(generated_words)
+            # Fallback to direct calculation
+            interstitial_values = np.array([self._calculate_interstitial_value((current_word, w)) for w in next_words])
 
+        transition_probs = np.array([transitions[w] for w in next_words])
+        combined_probs = transition_probs * (interstitial_values + 1e-8)  # Add small epsilon
+        combined_probs = combined_probs / np.sum(combined_probs) if np.sum(combined_probs) > 0 else np.ones_like(combined_probs) / len(combined_probs)
+        
+        next_word = np.random.choice(next_words, p=combined_probs)
+        return next_word
 
-def core_text_generation_flow():
-    print("VERBOSE: Starting core_text_generation_flow.")
-    if TENSORFLOW_AVAILABLE:
-        # tf.random.set_seed(42) 
-        # np.random.seed(42)     
-        print("VERBOSE: TensorFlow available.")
-        pass
-
-    predictor = FrequencyPredictor() # Init print is inside class
-
-    print("VERBOSE: Defining custom feature operations...")
-
-
-    custom_feature_operations: List[Optional[Callable[[np.ndarray], np.ndarray]]] = [
-        # Original functions
-        lambda x: np.log1p(x),
-        lambda x: np.log1p(x),
-        lambda x: np.log1p(x),
-        lambda x: np.log1p(x),
-        lambda x: np.square(x),
-        lambda x: np.square(x),
-        None, 
-        lambda x: np.sqrt(np.maximum(0, x)),
-        lambda x: np.log1p(x),
-        lambda x: np.log1p(x),
-        None, 
-        None, 
-        None, 
-        None, 
-        lambda x: x * 2.0, 
-        None,
+    def generate_text(self, length: int = 50, seed: Optional[str] = None) -> str:
+        """Generate text using interstitial Markovian values and two-step transitions"""
+        if not self.unigram_counts:
+            return "No data to generate text"
         
-        
-        # Additional math functions
-        # Basic arithmetic
-        lambda x: x + 1.0,
-        lambda x: x - 1.0,
-        lambda x: x * 3.0,
-        lambda x: x / 2.0,
-        lambda x: x ** 3,
-        lambda x: x ** 0.5,
-        lambda x: x ** (1/3),
-        lambda x: 1 / np.maximum(x, 1e-8),  # reciprocal with safety
-        
-        # Exponential and logarithmic
-        lambda x: np.exp(x),
-        lambda x: np.exp2(x),
-        lambda x: np.expm1(x),
-        lambda x: np.log(np.maximum(x, 1e-8)),
-        lambda x: np.log2(np.maximum(x, 1e-8)),
-        lambda x: np.log10(np.maximum(x, 1e-8)),
-        
-        # Trigonometric
-        lambda x: np.sin(x),
-        lambda x: np.cos(x),
-        lambda x: np.tan(x),
-        lambda x: np.arcsin(np.clip(x, -1, 1)),
-        lambda x: np.arccos(np.clip(x, -1, 1)),
-        lambda x: np.arctan(x),
-        
-        # Hyperbolic
-        lambda x: np.sinh(x),
-        lambda x: np.cosh(x),
-        lambda x: np.tanh(x),
-        lambda x: np.arcsinh(x),
-        lambda x: np.arccosh(np.maximum(x, 1)),
-        lambda x: np.arctanh(np.clip(x, -0.99, 0.99)),
-        
-        # Rounding and ceiling/floor
-        lambda x: np.round(x),
-        lambda x: np.floor(x),
-        lambda x: np.ceil(x),
-        lambda x: np.trunc(x),
-        
-        # Sign and absolute
-        lambda x: np.abs(x),
-        lambda x: np.sign(x),
-        lambda x: np.positive(x),
-        lambda x: np.negative(x),
-        
-        # Power and roots
-        lambda x: np.cbrt(x),  # cube root
-        lambda x: np.power(x, 4),
-        lambda x: np.power(x, 0.25),  # 4th root
-        lambda x: np.power(x, 1.5),
-        
-        # Special functions
-        lambda x: np.maximum(x, 0),  # ReLU
-        lambda x: np.minimum(x, 0),  # negative part
-        lambda x: np.maximum(x, 1),  # max with 1
-        lambda x: np.minimum(x, 1),  # min with 1
-        
-        # Statistical transforms
-        lambda x: (x - np.mean(x)) / (np.std(x) + 1e-8),  # standardize
-        lambda x: x / (np.max(np.abs(x)) + 1e-8),  # normalize by max
-        lambda x: np.clip(x, 0, 1),  # clip to [0,1]
-        lambda x: np.clip(x, -1, 1),  # clip to [-1,1]
-        
-        # Complex transformations
-        lambda x: x / (1 + np.abs(x)),  # soft sign
-        lambda x: np.where(x > 0, x, 0.01 * x),  # leaky ReLU
-        lambda x: np.log(1 + np.exp(-np.abs(x))) + np.maximum(x, 0),  # softplus
-        lambda x: x * (1 / (1 + np.exp(-x))),  # swish activation
-        # Additional basic features
-        lambda x: x,  # identity
-        lambda x: np.sqrt(np.abs(x) + 1e-8),  # sqrt(abs(x))
-        lambda x: 1 / (np.sqrt(np.abs(x) + 1e-8)),  # reciprocal sqrt
-        lambda x: 1 / (x ** 2 + 1e-8),  # inverse square
-        lambda x: np.clip(x, 0, None),  # zero out negative values
-        lambda x: np.clip(x, None, 0),  # zero out positive values
-        lambda x: (x > 0).astype(float),  # binary indicator: positive
-        lambda x: (x < 0).astype(float),  # binary indicator: negative
-        lambda x: (x == 0).astype(float),  # binary indicator: zero
-        lambda x: x - np.mean(x),  # zero-mean
-        lambda x: (x - np.min(x)) / (np.max(x) - np.min(x) + 1e-8),  # min-max scaling
-        lambda x: np.exp(-x**2),  # Gaussian basis
-        lambda x: 1 / (1 + np.exp(-x)),  # sigmoid
-        lambda x: np.heaviside(x, 0.0),  # Heaviside step
-    ]
-    predictor.set_feature_operations(custom_feature_operations) # add more as desired
-
-    text_content = None
-    hf_dataset_config = {
-        "name": "wikitext", "config": "wikitext-2-raw-v1", 
-        "split": "train", "text_column": "text" 
-    }
-    # hf_dataset_config = None # Uncomment to use local file fallback
-    print(f"VERBOSE: Hugging Face dataset config: {'Active' if hf_dataset_config else 'Inactive'}")
-
-
-    if not hf_dataset_config and DATASETS_AVAILABLE:
-        print("VERBOSE: Attempting to load content from Hugging Face dataset.")
-        text_content = predictor.load_text_from_hf_dataset(
-            dataset_name=hf_dataset_config["name"], config_name=hf_dataset_config["config"],
-            split=hf_dataset_config["split"], text_column=hf_dataset_config["text_column"],
-            max_total_words=1000000 # Reduced for faster verbose testing
-        )
-    
-    if text_content is None:
-        print("VERBOSE: Falling back to local file/sample text for content.")
-        input_file = "test.txt" # MODIFIED: Was "test.txt", made consistent with __main__
-        text_content = predictor.load_text_file(input_file)
-    
-    if not text_content:
-        print("VERBOSE: CRITICAL: No text content loaded. Cannot proceed."); return
-    print(f"VERBOSE: Text content loaded. Approx length: {len(text_content)} chars.")
-
-    print("VERBOSE: Extracting original bigram frequencies...")
-    original_bigram_frequencies = predictor.extract_bigram_frequencies(text_content)
-    if not original_bigram_frequencies:
-        print("VERBOSE: CRITICAL: No bigrams extracted. Cannot proceed."); return
-    print(f"VERBOSE: Original bigram frequencies extracted. Count: {len(original_bigram_frequencies)}.")
-
-    print("VERBOSE: Creating bigram frequency features...")
-    predictor.create_bigram_frequency_features()
-    new_frequencies_set = None
-
-    if not predictor.frequency_features:
-        print("VERBOSE: Warning: No features created. Using original frequencies for text generation.")
-        new_frequencies_set = {k: float(v) for k, v in original_bigram_frequencies.items()}
-    else:
-        print("VERBOSE: Features created. Proceeding with model training/prediction.")
-        model_to_train = 'neural_network' 
-        
-        if model_to_train == 'neural_network' and not TENSORFLOW_AVAILABLE:
-            print("VERBOSE: TensorFlow not found, cannot train neural network. Using original frequencies.")
-            new_frequencies_set = {k: float(v) for k, v in original_bigram_frequencies.items()}
-        else:
-            print(f"VERBOSE: Attempting to train '{model_to_train}' model.")
-            predictor.train_predictor(model_type=model_to_train) 
-            if predictor.predictor_model:
-                print("VERBOSE: Model trained successfully. Generating new bigram frequencies...")
-                generated_sets = predictor.generate_new_bigram_frequencies(num_variations=1)
-                if generated_sets:
-                    new_frequencies_set = generated_sets[0]
-                    print("VERBOSE: New bigram frequencies generated successfully.")
-                else:
-                    print("VERBOSE: Warning: Could not generate new freqs after model training. Using original.")
-                    new_frequencies_set = {k: float(v) for k, v in original_bigram_frequencies.items()}
-            else:
-                print("VERBOSE: Warning: Predictor model not trained. Using original freqs.")
-                new_frequencies_set = {k: float(v) for k, v in original_bigram_frequencies.items()}
-
-    if not new_frequencies_set:
-        print("VERBOSE: CRITICAL: Failed to obtain any frequency set for generation. Cannot generate text."); return
-    print(f"VERBOSE: Frequency set for generation is ready (size: {len(new_frequencies_set)}). Top 3: {list(new_frequencies_set.items())[:3] if new_frequencies_set else 'N/A'}")
-        
-    while True:
         try:
-            user_seed = input("Enter a seed phrase (or press Enter for default, Ctrl+C to exit): ").strip()
-        except KeyboardInterrupt:
-            print("\nVERBOSE: Exiting generation loop.")
-            break
-        effective_seed = user_seed
-        if not user_seed:
-            if predictor.unigram_counts:
-                temp_transitions = defaultdict(list)
-                for (w1, w2), count in new_frequencies_set.items():
-                    if count > 0: temp_transitions[w1].append((w2, count))
-                potential_seeds = [w for w,c in predictor.unigram_counts.most_common(25) if w in temp_transitions and temp_transitions[w]]
-                if potential_seeds: effective_seed = random.choice(potential_seeds)
-                else: effective_seed = "the" 
-            else: effective_seed = "the"
-            print(f"VERBOSE: No user seed. (Using default/random seed: '{effective_seed}')")
-        
-        text_len = 150 
-        print(f"VERBOSE: Generating text with seed '{effective_seed}' and length {text_len}.")
-        generated_text_new = predictor.expand_text_from_bigrams(new_frequencies_set, text_length=text_len, seed_phrase=effective_seed)
-        
-        output_prefix = ""
-        # Use effective_seed for processing, user_seed for display if it was originally empty
-        display_seed_for_prefix = user_seed if user_seed else effective_seed
+            if seed and len(seed.split()) >= 2:
+                prev_word, current_word = seed.split()[-2], seed.split()[-1]
+            else:
+                # Start with random words if seed is insufficient
+                words_list = list(self.unigram_counts.keys())
+                prev_word = random.choice(words_list)
+                current_word = random.choice(words_list)
+            
+            # Generate words
+            words = [prev_word, current_word]  # Include seed words
+            for _ in range(length):
+                next_word = self.generate_next_word(prev_word, current_word)
+                words.append(next_word)
+                prev_word, current_word = current_word, next_word
+            
+            return ' '.join(words)
+        except Exception as e:
+            print(f"Error generating text: {e}")
+            return "Error in text generation"
 
-        if display_seed_for_prefix:
-            processed_seed_words = predictor.preprocess_text(display_seed_for_prefix) 
-            processed_seed_phrase = " ".join(processed_seed_words)
-            if generated_text_new.lower().startswith(processed_seed_phrase.lower()) and processed_seed_phrase:
-                output_prefix = f"Continuing seed '{display_seed_for_prefix}':\n"
-            elif processed_seed_phrase:
-                output_prefix = f"Seed '{display_seed_for_prefix}' (new sequence shown below, may not directly continue seed):\n"
+    def save_model(self, filepath: str) -> bool:
+        """Save the complete model state to disk"""
+        try:
+            # Convert bigram frequencies (tuple keys to strings)
+            bigram_frequencies_str = {}
+            for (w1, w2), count in self.bigram_frequencies.items():
+                key_str = f"{w1}|||{w2}"
+                bigram_frequencies_str[key_str] = count
+            
+            # Convert trigram frequencies (tuple keys to strings)
+            trigram_frequencies_str = {}
+            for (w1, w2, w3), count in self.trigram_frequencies.items():
+                key_str = f"{w1}|||{w2}|||{w3}"
+                trigram_frequencies_str[key_str] = count
+            
+            # Convert defaultdicts to regular dicts for JSON serialization
+            transition_matrix_dict = {}
+            for k, v in self.transition_matrix.items():
+                transition_matrix_dict[k] = dict(v)
+            
+            trigram_transition_matrix_dict = {}
+            for k, v in self.trigram_transition_matrix.items():
+                # Convert tuple keys to strings for JSON
+                key_str = f"{k[0]}|||{k[1]}"
+                trigram_transition_matrix_dict[key_str] = dict(v)
+            
+            # Prepare data for saving
+            save_data = {
+                'bigram_frequencies': bigram_frequencies_str,
+                'trigram_frequencies': trigram_frequencies_str,
+                'transition_matrix': transition_matrix_dict,
+                'trigram_transition_matrix': trigram_transition_matrix_dict,
+                'word_to_idx': self.word_to_idx,
+                'idx_to_word': self.idx_to_word,
+                'unigram_counts': dict(self.unigram_counts),
+                'vocab_size': self.vocab_size,
+                'model_features_shape': self.model_features_shape,
+                'feature_mean': self.feature_mean.tolist() if self.feature_mean is not None else None,
+                'feature_std': self.feature_std.tolist() if self.feature_std is not None else None,
+                'n_threads': self.n_threads,
+                'text_data_length': self.text_data_length
+            }
+            
+            # Save main data as JSON
+            with open(f"{filepath}.json", 'w', encoding='utf-8') as f:
+                json.dump(save_data, f, indent=2, ensure_ascii=False)
+            
+            # Save PyTorch model separately if it exists
+            if self.predictor_model is not None:
+                torch.save(self.predictor_model.state_dict(), f"{filepath}_model.pth")
+            
+            print(f"Model saved successfully to {filepath}")
+            return True
+            
+        except Exception as e:
+            print(f"Error saving model: {e}")
+            return False
+
+    def load_model(self, filepath: str) -> bool:
+        """Load a complete model state from disk"""
+        try:
+            # Load main data
+            with open(f"{filepath}.json", 'r', encoding='utf-8') as f:
+                save_data = json.load(f)
+            
+            # Restore basic attributes
+            self.vocab_size = save_data['vocab_size']
+            self.word_to_idx = save_data['word_to_idx']
+            self.idx_to_word = save_data['idx_to_word']
+            self.unigram_counts = Counter(save_data['unigram_counts'])
+            self.model_features_shape = save_data['model_features_shape']
+            self.n_threads = save_data.get('n_threads', min(8, os.cpu_count()))
+            self.text_data_length = save_data.get('text_data_length', 0)
+            
+            # Restore numpy arrays
+            self.feature_mean = np.array(save_data['feature_mean']) if save_data['feature_mean'] is not None else None
+            self.feature_std = np.array(save_data['feature_std']) if save_data['feature_std'] is not None else None
+            
+            # Restore bigram frequencies (convert string keys back to tuples)
+            self.bigram_frequencies = {}
+            for key_str, count in save_data['bigram_frequencies'].items():
+                parts = key_str.split('|||')
+                if len(parts) == 2:
+                    self.bigram_frequencies[(parts[0], parts[1])] = count
+            
+            # Restore trigram frequencies (convert string keys back to tuples)
+            self.trigram_frequencies = {}
+            for key_str, count in save_data['trigram_frequencies'].items():
+                parts = key_str.split('|||')
+                if len(parts) == 3:
+                    self.trigram_frequencies[(parts[0], parts[1], parts[2])] = count
+            
+            # Restore transition matrices
+            self.transition_matrix = defaultdict(lambda: defaultdict(float))
+            for k, v in save_data['transition_matrix'].items():
+                self.transition_matrix[k] = defaultdict(float, v)
+            
+            self.trigram_transition_matrix = defaultdict(lambda: defaultdict(float))
+            for k_str, v in save_data['trigram_transition_matrix'].items():
+                # Convert string keys back to tuples
+                k_parts = k_str.split('|||')
+                if len(k_parts) == 2:
+                    k = (k_parts[0], k_parts[1])
+                    self.trigram_transition_matrix[k] = defaultdict(float, v)
+            
+            # Load PyTorch model if it exists
+            model_path = f"{filepath}_model.pth"
+            if os.path.exists(model_path) and self.model_features_shape is not None:
+                self._create_enhanced_model(self.model_features_shape)
+                self.predictor_model.load_state_dict(torch.load(model_path))
+                self.predictor_model.eval()
+            
+            print(f"Model loaded successfully from {filepath}")
+            return True
+            
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            return False
+
+    def get_model_info(self) -> Dict[str, Any]:
+        """Get information about the current model state"""
+        return {
+            'vocab_size': self.vocab_size,
+            'bigram_count': len(self.bigram_frequencies),
+            'trigram_count': len(self.trigram_frequencies),
+            'has_neural_model': self.predictor_model is not None,
+            'model_trained': self.feature_mean is not None,
+            'features_shape': self.model_features_shape,
+            'n_threads': self.n_threads,
+            'text_data_length': self.text_data_length
+        }
+def find_words_with_full_stops(text):
+    """Find all words that contain full stops/periods"""
+    words = text.split()
+    words_with_periods = []
+    
+    for word in words:
+        if '.' in word:
+            words_with_periods.append(word)
+    
+    return words_with_periods
+
+def generate_abstract_reasoning_corpus(corpus_words: List[str], num_sequences: int = 5000) -> str:
+    """
+    Generates a synthetic text corpus embodying abstract reasoning pathways.
+    This moves beyond simple word pairs to create transitions between semantic concepts.
+    """
+    # 1. Define semantic clusters for abstract reasoning concepts [4]
+    # This is analogous to identifying regions in a word embedding space [8]
+    reasoning_concepts = {
+        "causality": ["because", "since", "given"],
+        "consequence": ["therefore", "thus", "hence", "consequently", "accordingly"],
+        "contrast": ["however", "nevertheless", "although", "despite", "conversely"],
+        "elaboration": ["furthermore", "moreover", "indeed", "specifically"],
+        "condition": ["if", "unless", "provided", "assuming"]
+    }
+
+    all_concept_words = [word for concept_list in reasoning_concepts.values() for word in concept_list]
+    
+    # 2. Generate abstract reasoning sequences (Concept -> Trigger -> Concept)
+    abstract_sequences = []
+    for _ in range(num_sequences):
+        # Pick a random concept for the premise and conclusion
+        premise_concept_key = random.choice(list(reasoning_concepts.keys()))
+        conclusion_concept_key = random.choice(list(reasoning_concepts.keys()))
+
+        # Select a trigger word that links them
+        trigger_word = random.choice(reasoning_concepts[conclusion_concept_key])
         
-        print(f"\n{output_prefix}{generated_text_new}")
-        print("-" * 30)
+        # Select random words from the original corpus to act as premise/conclusion subjects
+        premise_word = random.choice(corpus_words)
+        conclusion_word = random.choice(corpus_words)
+
+        # Create a short sequence that represents an abstract reasoning step
+        # This forms a non-local connection between two potentially distant words
+        sequence = [premise_word, trigger_word, conclusion_word]
+        abstract_sequences.append(" ".join(sequence))
+        
+    print(f"Generated {len(abstract_sequences)} abstract reasoning sequences.")
+    return " . ".join(abstract_sequences) + " . "
 
 
 if __name__ == "__main__":
-    print("VERBOSE: Script execution started (__main__).")
-    if not DATASETS_AVAILABLE:
-        print("---")
-        print("NOTE: Hugging Face 'datasets' library not found (run: pip install datasets).")
-        print("The script will rely on 'input_text.txt' or the internal sample text if HF loading fails.")
-        print("---")
-    if not TENSORFLOW_AVAILABLE:
-        print("---")
-        print("NOTE: TensorFlow library not found (run: pip install tensorflow).")
-        print("The neural network model will not be available. The script might not function as intended for NN prediction.")
-        print("---")
-
-    input_file_main = "input_text.txt"
+    predictor = EnhancedInterstitialMarkovianPredictor()
+    
     try:
-        with open(input_file_main, 'r', encoding='utf-8') as f: f.read(1) 
-        print(f"VERBOSE: Fallback file '{input_file_main}' found.")
-    except FileNotFoundError:
-        print(f"VERBOSE: Creating sample file: {input_file_main} (as a fallback data source)")
-        with open(input_file_main, 'w', encoding='utf-8') as f:
-            f.write(FrequencyPredictor().get_sample_text()) # get_sample_text will also print
-            f.write("\nThis is additional sample text for the fallback input_text.txt. ")
+        # Check if user wants to load existing model
+        load_choice = input("Load existing model? (y/n): ").lower().strip()
+        
+        if load_choice == 'y':
+            model_path = input("Enter model path (without extension): ").strip()
+            if predictor.load_model(model_path):
+                print("Model loaded successfully!")
+                print("Model info:", predictor.get_model_info())
+            else:
+                print("Failed to load model. Starting fresh...")
+                predictor = EnhancedInterstitialMarkovianPredictor()
+
+        # If no model loaded or loading failed, train new model
+        if not predictor.unigram_counts:
+            filename = input("Filename: ")
+            with open(filename, 'r', encoding='utf-8') as f:
+                content = ' '.join(f.read().split()[:KB_LEN])
             
-    core_text_generation_flow()
-    print("VERBOSE: Script execution finished.")
+            print("Generating abstract reasoning corpus to create a feature space unbound by local transitions...")
+            # --- MODIFICATION START ---
+            # Instead of a simple loop, generate a rich, synthetic corpus
+            # This corpus teaches the model about abstract, non-local reasoning pathways.
+            corpus_words = list(set(content.lower().split()))
+            reasoning_text = generate_abstract_reasoning_corpus(corpus_words)
+            
+            # Combine the abstract reasoning data with the original content
+            combined_content = reasoning_text + content
+            # --- MODIFICATION END ---
+            
+            print("Extracting transition probabilities from combined content...")
+            predictor.extract_transition_probabilities(combined_content)
+            
+            print("Training model on enhanced feature space...")
+            # Use enhanced training with sine waves
+            predictor.train_enhanced_interstitial_predictor(epochs=50, sine_weight=0.2)
+            
+            # Ask if user wants to save the model
+            save_choice = input("Save trained model? (y/n): ").lower().strip()
+            if save_choice == 'y':
+                save_path = input("Enter save path (without extension): ").strip()
+                predictor.save_model(save_path)
+        
+        # Interactive text generation
+        while True:
+            seed_input = input("USER: ")
+            if seed_input.lower() == 'quit':
+                break
+            elif seed_input.lower() == 'save':
+                save_path = input("Enter save path (without extension): ").strip()
+                predictor.save_model(save_path)
+                continue
+            elif seed_input.lower() == 'info':
+                print("Model info:", predictor.get_model_info())
+                continue
+                
+            generated_text = predictor.generate_text(length=250, seed=seed_input)
+            print("Generated text:", generated_text)
+            print()
+            
+    except KeyboardInterrupt:
+        print("\nExiting...")
+    except Exception as e:
+        print(f"Error: {e}")
