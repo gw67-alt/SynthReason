@@ -27,7 +27,7 @@ try:
 except ImportError:
     DATASETS_AVAILABLE = False
     print("Hugging Face datasets not available. HF dataset loading will be disabled.")
-
+KB_LEN = 99999
 class SpikingFrequencyPredictor:
     def __init__(self):
         print("VERBOSE: SpikingFrequencyPredictor initialized.")
@@ -84,7 +84,7 @@ class SpikingFrequencyPredictor:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                words = content.lower().split()
+                words = content.lower().split()[:KB_LEN]
                 print(f"VERBOSE: Successfully loaded {len(words)} words from {file_path}.")
                 return ' '.join(words)
         except FileNotFoundError:
