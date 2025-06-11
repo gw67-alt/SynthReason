@@ -27,7 +27,7 @@ try:
 except ImportError:
     DATASETS_AVAILABLE = False
     print("Hugging Face datasets not available. HF dataset loading will be disabled.")
-KB_LEN = 99999
+KB_LEN = -1
 class SpikingFrequencyPredictor:
     def __init__(self):
         print("VERBOSE: SpikingFrequencyPredictor initialized.")
@@ -41,8 +41,8 @@ class SpikingFrequencyPredictor:
         self.feature_operations: Optional[List[Optional[Callable[[np.ndarray], np.ndarray]]]] = None
         
         # Spiking neural network parameters
-        self.num_steps = 25  # Number of time steps for SNN simulation
-        self.beta = 0.5  # Neuron decay rate
+        self.num_steps = 4  # Number of time steps for SNN simulation
+        self.beta = 0.1  # Neuron decay rate
         self.spike_grad = surrogate.fast_sigmoid()  # Surrogate gradient function
         self.current_text = ""  # Store current text for access
 
@@ -757,101 +757,6 @@ class SpikingMultilinearStreamLinker:
         
         return np.array(spike_patterns)
     
-    def link_streams_at_positions(self, text: str, seed_phrases: List[str]) -> Dict[int, Dict[str, Any]]:
-        """Link multilinear streams from earlier to later seed info at optimal positions."""
-        print("VERBOSE: Starting multilinear stream linking process")
-        
-        stream_names = ['syntactic', 'semantic', 'positional', 'frequency']
-        self.initialize_streams(stream_names)
-        
-        words = self.predictor.preprocess_text(text)
-        self.extract_seed_positions(text, seed_phrases)
-        self.compute_optimal_link_positions(len(words))
-        
-        self.create_multilinear_features(text)
-        
-        link_results = {}
-        for link_pos in self.optimal_link_positions:
-            if link_pos < len(words):
-                link_info = self._perform_stream_linking(link_pos, words)
-                link_results[link_pos] = link_info
-        
-        print(f"VERBOSE: Completed stream linking at {len(link_results)} positions")
-        return link_results
-    
-    def _perform_stream_linking(self, position: int, words: List[str]) -> Dict[str, Any]:
-        """Perform actual stream linking at a specific position."""
-        if self.multilinear_features is None or position >= len(self.multilinear_features):
-            return {}
-        
-        current_features = self.multilinear_features[position]
-        
-        earlier_seeds = [s for s in self.seed_positions if s[0] < position]
-        later_seeds = [s for s in self.seed_positions if s[0] > position]
-        
-        earlier_weights = self._calculate_linking_weights(position, earlier_seeds, direction='earlier')
-        later_weights = self._calculate_linking_weights(position, later_seeds, direction='later')
-        
-        linked_features = self._create_linked_features(
-            current_features, earlier_weights, later_weights, position, words
-        )
-        
-        original_feature_count = len(current_features)
-        link_strength = np.linalg.norm(linked_features[:original_feature_count] - current_features)
-        
-        link_info = {
-            'position': position,
-            'word': words[position],
-            'current_features': current_features.tolist(),
-            'linked_features': linked_features.tolist(),
-            'earlier_seed_weights': earlier_weights,
-            'later_seed_weights': later_weights,
-            'link_strength': link_strength,
-            'temporal_features': linked_features[original_feature_count:].tolist()
-        }
-        
-        return link_info
-    
-    def _calculate_linking_weights(self, position: int, seeds: List[Tuple[int, str, float]], 
-                                 direction: str) -> Dict[str, float]:
-        """Calculate weights for linking to earlier or later seeds."""
-        weights = {}
-        
-        for seed_pos, seed_phrase, seed_conf in seeds:
-            distance = abs(position - seed_pos)
-            distance_weight = math.exp(-distance / 20.0)
-            total_weight = distance_weight * seed_conf
-            weights[f"{direction}_{seed_phrase}_{seed_pos}"] = total_weight
-        
-        return weights
-    
-    def _create_linked_features(self, current_features: np.ndarray, 
-                              earlier_weights: Dict[str, float], 
-                              later_weights: Dict[str, float],
-                              position: int, words: List[str]) -> np.ndarray:
-        """Create linked feature vector incorporating earlier and later seed information."""
-        linked_features = current_features.copy()
-        
-        earlier_influence = sum(earlier_weights.values())
-        later_influence = sum(later_weights.values())
-        
-        if earlier_influence > 0:
-            linked_features[:len(linked_features)//2] *= (1 + earlier_influence * 0.1)
-        
-        if later_influence > 0:
-            linked_features[len(linked_features)//2:] *= (1 + later_influence * 0.1)
-        
-        temporal_features = np.array([
-            earlier_influence,
-            later_influence,
-            earlier_influence + later_influence,
-            abs(earlier_influence - later_influence)
-        ])
-        
-        linked_features = np.concatenate([linked_features, temporal_features])
-        
-        return linked_features
-
 
 def enhanced_spiking_text_generation():
     """Enhanced text generation using spiking neural networks."""
@@ -859,7 +764,6 @@ def enhanced_spiking_text_generation():
     
     # Initialize spiking components
     predictor = SpikingFrequencyPredictor()
-    linker = SpikingMultilinearStreamLinker(predictor)
     
     # Load and process text
     text_content = predictor.load_text_file("test.txt")
@@ -882,8 +786,6 @@ def enhanced_spiking_text_generation():
             print("Goodbye!")
             break
             
-        # Perform multilinear linking with spiking networks
-        link_results = linker.link_streams_at_positions(text_content, [user_input])
         
         # Generate with spiking network
         spiking_frequencies = predictor.generate_spiking_predictions(num_variations=1)
@@ -892,16 +794,6 @@ def enhanced_spiking_text_generation():
             # Enhance frequencies based on linking results
             enhanced_frequencies = spiking_frequencies[0].copy()
             words = predictor.preprocess_text(text_content)
-            
-            for position, link_info in link_results.items():
-                if position < len(words) - 1:
-                    current_word = words[position]
-                    next_word = words[position + 1]
-                    bigram = (current_word, next_word)
-                    
-                    if bigram in enhanced_frequencies:
-                        boost_factor = 1 + (link_info['link_strength'] * 0.1)
-                        enhanced_frequencies[bigram] = float(enhanced_frequencies[bigram] * boost_factor)
             
             generated_text = predictor.expand_text_from_bigrams(
                 enhanced_frequencies,
