@@ -416,8 +416,8 @@ class SpikingFrequencyPredictor:
         # Process each time step
         for step in range(self.num_steps):
             spk_out, mem_out = self.snn_model(spike_data[step])
-            spk_rec.append(spk_out)
-            mem_rec.append(mem_out)
+            spk_rec.append(mem_out)
+            mem_rec.append(spk_out)
         
         # Stack recordings
         spk_rec = torch.stack(spk_rec)
