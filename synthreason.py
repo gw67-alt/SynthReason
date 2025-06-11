@@ -1,731 +1,921 @@
-
 import numpy as np
-from collections import Counter, defaultdict
+from collections import defaultdict, deque
+from typing import Dict, List, Tuple, Optional, Any, Callable
 import random
-import os
-import pickle
-import json
-from typing import Dict, List, Tuple, Optional, Any
+import math
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from concurrent.futures import ThreadPoolExecutor
+import snntorch as snn
+from snntorch import surrogate
+from snntorch import utils
+from collections import Counter, defaultdict
+import re
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+import snntorch
+# Check for optional dependencies
+try:
+    import tensorflow as tf
+    TENSORFLOW_AVAILABLE = True
+except ImportError:
+    TENSORFLOW_AVAILABLE = False
+    print("TensorFlow not available. Neural network training will be disabled.")
 
-KB_LEN = -1
+try:
+    from datasets import load_dataset
+    DATASETS_AVAILABLE = True
+except ImportError:
+    DATASETS_AVAILABLE = False
+    print("Hugging Face datasets not available. HF dataset loading will be disabled.")
 
-class EnhancedInterstitialMarkovianPredictor:
-    def __init__(self, n_threads: Optional[int] = None):
+class SpikingFrequencyPredictor:
+    def __init__(self):
+        print("VERBOSE: SpikingFrequencyPredictor initialized.")
         self.bigram_frequencies: Dict[Tuple[str, str], int] = {}
-        self.trigram_frequencies: Dict[Tuple[str, str, str], int] = {}
-        self.transition_matrix: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
-        self.trigram_transition_matrix: Dict[Tuple[str, str], Dict[str, float]] = defaultdict(lambda: defaultdict(float))
-        self.word_to_idx: Dict[str, int] = {}
-        self.idx_to_word: Dict[int, str] = {}
+        self.frequency_features: List[List[float]] = []
+        self.snn_model: Optional[nn.Module] = None
+        self.scaler = StandardScaler()
+        self.sorted_bigrams: List[Tuple[str, str]] = []
         self.unigram_counts: Dict[str, int] = Counter()
-        self.vocab_size = 0
-        self.n_threads = n_threads or min(8, os.cpu_count())
-        self.model_features_shape = None
-        self.feature_mean = None
-        self.feature_std = None
-        self.predictor_model: Optional[nn.Module] = None
-        self.text_data_length = 0
-
-    def extract_transition_probabilities(self, text: str) -> None:
-        """Extract and normalize transition probabilities from text (bigrams and trigrams)"""
-        words = text.lower().split()
-        if len(words) < 2:
-            return
-
-        # Build vocabulary
-        unique_words = list(set(words))
-        self.vocab_size = len(unique_words)
-        self.word_to_idx = {word: idx for idx, word in enumerate(unique_words)}
-        self.idx_to_word = {idx: word for word, idx in self.word_to_idx.items()}
-        self.unigram_counts = Counter(words)
-
-        # Count bigrams
-        self.bigram_frequencies = dict(Counter((words[i], words[i+1]) for i in range(len(words)-1)))
-        # Count trigrams
-        self.trigram_frequencies = dict(Counter((words[i], words[i+1], words[i+2]) for i in range(len(words)-2)))
-
-        # Build bigram transition matrix
-        word_totals = defaultdict(float)
-        for (w1, w2), count in self.bigram_frequencies.items():
-            word_totals[w1] += count
-        for (w1, w2), count in self.bigram_frequencies.items():
-            if word_totals[w1] > 0:
-                self.transition_matrix[w1][w2] = count / word_totals[w1]
-
-        # Build trigram (two-step) transition matrix
-        trigram_totals = defaultdict(float)
-        for (w1, w2, w3), count in self.trigram_frequencies.items():
-            trigram_totals[(w1, w2)] += count
-        for (w1, w2, w3), count in self.trigram_frequencies.items():
-            if trigram_totals[(w1, w2)] > 0:
-                self.trigram_transition_matrix[(w1, w2)][w3] = count / trigram_totals[(w1, w2)]
-
-    def _calculate_interstitial_value(self, state: Tuple[str, str]) -> float:
-        """Calculate interstitial value for a two-word state for feature extraction"""
-        w1, w2 = state
-        current_transitions = dict(self.transition_matrix.get(w2, {}))
-        next_transitions = dict(self.trigram_transition_matrix.get(state, {}))
-
-        # Features: entropy of current and historical transitions, connectivity, frequency
-        probs = list(current_transitions.values())
-        entropy = -sum(p * np.log2(p + 1e-10) for p in probs if p > 0) if probs else 0.0
-        probs = list(next_transitions.values())
-        trigram_entropy = -sum(p * np.log2(p + 1e-10) for p in probs if p > 0) if probs else 0.0
-        connectivity = len(next_transitions) / self.vocab_size if self.vocab_size > 0 else 0.0
-        word_freq = self.unigram_counts[w2] / sum(self.unigram_counts.values()) if sum(self.unigram_counts.values()) > 0 else 0.0
-        freq_adjusted_connectivity = connectivity * (1 - word_freq)
-
-        features = [entropy, trigram_entropy, connectivity, freq_adjusted_connectivity]
-        weights = [0.4, 0.4, 0.1, 0.1]
-        interstitial_value = sum(w * f for w, f in zip(weights, features))
-        return interstitial_value
-
-    def generate_sine_wave_features(self, length: int = 1000, frequency: float = 0.1, 
-                                   amplitude: float = 1.0, phase: float = 0.0) -> np.ndarray:
-        """Generate sine wave features for training data augmentation"""
-        t = np.linspace(0, length, length)
-        sine_wave = amplitude * np.sin(2 * np.pi * frequency * t + phase)
+        self.num_base_features: int = 16  # Updated for basic features
+        self.feature_operations: Optional[List[Optional[Callable[[np.ndarray], np.ndarray]]]] = None
         
-        # Create features from sine wave properties
+        # Spiking neural network parameters
+        self.num_steps = 25  # Number of time steps for SNN simulation
+        self.beta = 0.5  # Neuron decay rate
+        self.spike_grad = surrogate.fast_sigmoid()  # Surrogate gradient function
+        self.current_text = ""  # Store current text for access
+
+    def set_feature_operations(self, operations: Optional[List[Optional[Callable[[np.ndarray], np.ndarray]]]]) -> None:
+        print(f"VERBOSE: Setting feature operations. Received {len(operations) if operations else 'None'} operations.")
+        if operations and len(operations) != self.num_base_features:
+            raise ValueError(f"Number of operations ({len(operations)}) must match the number of base features ({self.num_base_features})")
+        self.feature_operations = operations
+        if operations:
+            print(f"VERBOSE: {sum(1 for op in operations if op is not None)} active feature operations set for {self.num_base_features} base features.")
+
+    def _apply_feature_operations(self, X_data: np.ndarray) -> np.ndarray:
+        print(f"VERBOSE: Attempting to apply feature operations on data with shape {X_data.shape}.")
+        if not self.feature_operations:
+            print("VERBOSE: No feature operations defined. Returning data as is.")
+            return X_data
+
+        if X_data.ndim != 2 or X_data.shape[1] != self.num_base_features:
+            print(f"VERBOSE: Warning: X_data shape ({X_data.shape}) is not as expected for feature operations (expected {self.num_base_features} cols). Skipping transformations.")
+            return X_data
+
+        X_transformed = X_data.astype(float).copy()
+        print(f"VERBOSE: Applying feature operations. Initial X_data shape: {X_data.shape}")
+
+        for i in range(self.num_base_features):
+            if i < len(self.feature_operations):
+                operation = self.feature_operations[i]
+                if operation:
+                    try:
+                        X_transformed[:, i] = operation(X_data[:, i].astype(float))
+                    except Exception as e:
+                        print(f"VERBOSE: Error applying operation to feature index {i}: {e}. Feature {i} remains as original.")
+                        X_transformed[:, i] = X_data[:, i].astype(float)
+        print(f"VERBOSE: Finished applying feature operations. Transformed X_data shape: {X_transformed.shape}")
+        return X_transformed
+
+    def load_text_file(self, file_path: str) -> str:
+        print(f"VERBOSE: Attempting to load text from local file: {file_path}")
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                words = content.lower().split()
+                print(f"VERBOSE: Successfully loaded {len(words)} words from {file_path}.")
+                return ' '.join(words)
+        except FileNotFoundError:
+            print(f"VERBOSE: File {file_path} not found. Using internal sample text.")
+            return self.get_sample_text()
+        except Exception as e:
+            print(f"VERBOSE: Error loading file {file_path}: {e}. Using internal sample text.")
+            return self.get_sample_text()
+
+    def get_sample_text(self) -> str:
+        print("VERBOSE: Providing internal sample text.")
+        sample = """
+        the quick brown fox jumps over the lazy dog the fox is very agile and quick
+        machine learning is revolutionizing technology artificial intelligence learns from data patterns
+        natural language processing enables computers to understand human communication effectively
+        data science combines statistics programming and domain expertise to extract insights
+        python programming language offers powerful libraries for machine learning applications
+        deep learning neural networks can model complex relationships in large datasets
+        the quick brown fox returned the lazy dog slept the quick fox ran again
+        machine learning models improve with more data data patterns are key a a a a a
+        the a and of to in is you that it he was for on are as with his they I at
+        be this have from or one had by word but not what all were we when your can said
+        there use an each which she do how their if will up other about out many then them
+        these so some her would make like him into time has look two more write go see number
+        no way could people my than first water been call who oil its now find long down day
+        did get come made may part this is a very long sentence with many common words to make
+        the frequency distribution more varied and provide enough data for the neural network model
+        to learn some patterns even from this relatively small sample text it is important to have
+        diversity in the input for any machine learning task especially for natural language.
+        """.lower()
+        print(f"VERBOSE: Sample text has {len(sample.split())} words.")
+        return sample
+
+    def preprocess_text(self, text: str) -> List[str]:
+        print(f"VERBOSE: Preprocessing text. Initial length: {len(text)} characters.")
+        words = text.split()
+        valid_words = [word for word in words if word]
+        print(f"VERBOSE: Preprocessing complete. Number of words: {len(valid_words)} (after cleaning and removing empty strings).")
+        return valid_words
+
+    def extract_bigram_frequencies(self, text: str) -> Dict[Tuple[str, str], int]:
+        print("VERBOSE: Starting bigram frequency extraction.")
+        words = self.preprocess_text(text)
+        if len(words) < 2:
+            print("VERBOSE: Not enough words to form bigrams. Extracted 0 bigrams.")
+            self.bigram_frequencies = {}
+            self.sorted_bigrams = []
+            self.unigram_counts = Counter(words)
+            return {}
+
+        self.unigram_counts = Counter(words)
+        print(f"VERBOSE: Unigram counts calculated. Total unigrams: {len(self.unigram_counts)}, e.g., {list(self.unigram_counts.items())[:3]}")
+        bigrams = [(words[i], words[i+1]) for i in range(len(words)-1)]
+        self.bigram_frequencies = dict(Counter(bigrams))
+        print(f"VERBOSE: Extracted {len(self.bigram_frequencies)} unique bigrams. Total bigram occurrences: {len(bigrams)}.")
+        
+        self.sorted_bigrams = [
+            item[0] for item in sorted(self.bigram_frequencies.items(), key=lambda x: (x[1], x[0][0], x[0][1]), reverse=True)
+        ]
+        print(f"VERBOSE: Bigrams sorted by frequency. Top 3: {self.sorted_bigrams[:3] if len(self.sorted_bigrams) >=3 else self.sorted_bigrams}")
+        return self.bigram_frequencies
+
+    def _encode_features_to_spikes(self, features: np.ndarray) -> torch.Tensor:
+        """Convert feature vectors to spike trains using rate coding."""
+        print(f"VERBOSE: Encoding {features.shape} features to spike trains")
+        
+        # Normalize features to [0, 1] for spike rate encoding
+        features_normalized = (features - features.min()) / (features.max() - features.min() + 1e-8)
+        
+        # Convert to torch tensor
+        features_tensor = torch.FloatTensor(features_normalized)
+        
+        # Generate Poisson spike trains
+        spike_data = torch.zeros(self.num_steps, features_tensor.shape[0], features_tensor.shape[1])
+        
+        for step in range(self.num_steps):
+            # Generate spikes based on feature values as firing rates
+            spike_probs = features_tensor
+            spikes = torch.bernoulli(spike_probs)
+            spike_data[step] = spikes
+            
+        print(f"VERBOSE: Generated spike data with shape {spike_data.shape}")
+        return spike_data
+
+    def _create_spiking_network(self, input_size: int) -> nn.Module:
+        """Create a spiking neural network architecture."""
+        print(f"VERBOSE: Creating spiking network with input size {input_size}")
+        
+        snn_model = nn.Sequential(
+            # First spiking layer
+            nn.Linear(input_size, 128),
+            snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad),
+            
+            # Second spiking layer with dropout
+            nn.Linear(128, 64),
+            snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad),
+            
+            # Third spiking layer
+            nn.Linear(64, 32),
+            snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad),
+            
+            # Output layer
+            nn.Linear(32, 1),
+            snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad, output=True)
+        )
+        
+        print("VERBOSE: Spiking neural network architecture created")
+        return snn_model
+
+    def _spiking_forward_pass(self, spike_data: torch.Tensor) -> torch.Tensor:
+        """Perform forward pass through spiking network."""
+        print(f"VERBOSE: Running spiking forward pass on data shape {spike_data.shape}")
+        
+        # Initialize spike and membrane potential recordings
+        spk_rec = []
+        mem_rec = []
+        
+        # Reset network state
+        utils.reset(self.snn_model)
+        
+        # Process each time step
+        for step in range(self.num_steps):
+            spk_out, mem_out = self.snn_model(spike_data[step])
+            spk_rec.append(spk_out)
+            mem_rec.append(mem_out)
+        
+        # Stack recordings
+        spk_rec = torch.stack(spk_rec)
+        mem_rec = torch.stack(mem_rec)
+        
+        # Use rate coding: sum spikes over time as output
+        output = torch.sum(spk_rec, dim=0)
+        
+        print(f"VERBOSE: Forward pass complete, output shape: {output.shape}")
+        return output, spk_rec, mem_rec
+
+    def create_bigram_frequency_features(self) -> List[List[float]]:
+        """Create bigram frequency features using neural information."""
+        print("VERBOSE: Creating bigram frequency features with neural information.")
+        
+        if not self.bigram_frequencies:
+            print("VERBOSE: No bigram frequencies available.")
+            return []
+        
+        # Initialize multilinear stream linker
+        linker = SpikingMultilinearStreamLinker(self)
+        
+        # Get the text content
+        text_content = self.current_text if self.current_text else self.get_sample_text()
+        words = self.preprocess_text(text_content)
+        
+        # Create actual numerical neural features using the linker
+        raw_neural_matrix = linker.create_multilinear_features(text_content)
+        
+        if raw_neural_matrix.size == 0:
+            print("VERBOSE: No neural features generated, falling back to basic features.")
+            return self._create_basic_bigram_features()
+        
+        neural_features = []
+        
+        for i in range(len(words) - 1):
+            if i >= len(raw_neural_matrix) or (i + 1) >= len(raw_neural_matrix):
+                continue
+                
+            # Extract numerical neural features for both words
+            neuron_w1 = raw_neural_matrix[i]
+            neuron_w2 = raw_neural_matrix[i + 1]
+            
+            # Ensure we have numerical arrays
+            if not isinstance(neuron_w1, np.ndarray):
+                neuron_w1 = np.array(neuron_w1, dtype=float)
+            if not isinstance(neuron_w2, np.ndarray):
+                neuron_w2 = np.array(neuron_w2, dtype=float)
+            
+            # Extract neural firing characteristics
+            firing_rate_w1 = float(np.mean(neuron_w1))
+            firing_variance_w1 = float(np.var(neuron_w1))
+            firing_rate_w2 = float(np.mean(neuron_w2))
+            firing_variance_w2 = float(np.var(neuron_w2))
+            
+            # Neural correlation patterns (handle potential NaN values)
+            try:
+                correlation_matrix = np.corrcoef(neuron_w1.flatten(), neuron_w2.flatten())
+                cross_correlation = float(correlation_matrix[0, 1]) if not np.isnan(correlation_matrix[0, 1]) else 0.0
+            except:
+                cross_correlation = 0.0
+            
+            # Temporal neural dynamics
+            activation_difference = float(np.linalg.norm(neuron_w2 - neuron_w1))
+            
+            # Get bigram frequency
+            bigram = (words[i], words[i+1])
+            freq = self.bigram_frequencies.get(bigram, 0)
+            
+            # Basic word features for compatibility
+            word1, word2 = bigram
+            
+            # Construct neural-based feature vector
+            neural_feature_vector = [
+                float(freq),  # Target frequency
+                firing_rate_w1, firing_rate_w2,  # Neural firing rates
+                firing_variance_w1, firing_variance_w2,  # Neural variability
+                cross_correlation,  # Neural synchronization
+                activation_difference,  # Neural transition dynamics
+                float(len(word1)), float(len(word2)),  # Word lengths
+                float(word1.count('e')), float(word2.count('e')),  # Character counts
+                float(self.unigram_counts.get(word1, 0)),  # Unigram counts
+                float(self.unigram_counts.get(word2, 0)),
+                1.0 if word1.endswith('ing') else 0.0,  # Morphological features
+                1.0 if word2.endswith('ing') else 0.0,
+                1.0 if word1.endswith('ed') else 0.0,
+                1.0 if word2.endswith('ed') else 0.0,
+            ]
+            
+            neural_features.append(neural_feature_vector)
+        
+        # Update the number of base features
+        if neural_features:
+            self.num_base_features = len(neural_features[0]) - 1  # Exclude frequency target
+            print(f"VERBOSE: Updated num_base_features to {self.num_base_features}")
+        
+        self.frequency_features = neural_features
+        print(f"VERBOSE: Created {len(neural_features)} neural-enhanced bigram features.")
+        return neural_features
+
+    def _create_basic_bigram_features(self) -> List[List[float]]:
+        """Fallback method to create basic bigram features without neural data."""
+        print("VERBOSE: Creating basic bigram features as fallback.")
         features = []
-        for i in range(len(sine_wave) - 1):
-            current_val = sine_wave[i]
-            next_val = sine_wave[i + 1]
+        
+        for bigram, freq in self.bigram_frequencies.items():
+            w1, w2 = bigram
             
-            # Extract meaningful features from sine wave
-            slope = next_val - current_val
-            magnitude = abs(current_val)
-            phase_position = (i % (1/frequency)) / (1/frequency) if frequency > 0 else 0
+            # Basic word features
+            feature_vector = [
+                float(freq),  # Target frequency
+                float(len(w1)), float(len(w2)),  # Word lengths
+                float(self.unigram_counts.get(w1, 1)),  # Unigram counts
+                float(self.unigram_counts.get(w2, 1)),
+                1.0 if w1.endswith('ing') else 0.0,  # Basic morphological features
+                1.0 if w2.endswith('ed') else 0.0,
+                float(w1.count('e')), float(w2.count('e')),  # Character counts
+                float(w1.count('a')), float(w2.count('a')),
+                1.0 if w1.startswith('un') else 0.0,  # Prefix features
+                1.0 if w2.startswith('un') else 0.0,
+                float(len(set(w1))), float(len(set(w2))),  # Unique character counts
+                1.0 if w1.endswith('ly') else 0.0,  # Additional morphological
+                1.0 if w2.endswith('ly') else 0.0,
+            ]
             
-            feature_vector = [current_val, slope, magnitude, phase_position]
             features.append(feature_vector)
         
-        return np.array(features)
+        if features:
+            self.num_base_features = len(features[0]) - 1
+        
+        return features
 
-    def _process_word_features(self, word_data: Tuple[str, int]) -> Tuple[List[float], float]:
-        """Process features for a single word (thread-safe)"""
-        word1, w1_idx = word_data
-        # Use previous word if available, otherwise empty string
-        prev_word = self.idx_to_word.get(w1_idx-1, "") if w1_idx > 0 else ""
-        state = (prev_word, word1)
+    def train_spiking_predictor(self) -> None:
+        """Train the spiking neural network predictor."""
+        print("VERBOSE: Starting spiking neural network training")
         
-        feature_vector = [
-            self._calculate_interstitial_value(state),
-            len(self.transition_matrix[word1]) / self.vocab_size if self.vocab_size > 0 else 0.0,
-            self.unigram_counts[word1] / sum(self.unigram_counts.values()) if sum(self.unigram_counts.values()) > 0 else 0.0,
-        ]
-        
-        # Fixed target calculation - use a simple metric instead of recursive call
-        target = self._calculate_interstitial_value(state)
-        return feature_vector, target
-
-    def create_interstitial_features(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Create features that capture interstitial markovian relationships using multithreading"""
-        words_to_process = [(word, self.word_to_idx[word]) 
-                          for word in self.word_to_idx.keys() 
-                          if word in self.word_to_idx]
-        if not words_to_process:
-            return np.array([]), np.array([])
-
-        # Process features in parallel
-        features = []
-        targets = []
-        chunk_size = max(1, len(words_to_process) // self.n_threads)
-        chunks = [words_to_process[i:i + chunk_size] 
-                 for i in range(0, len(words_to_process), chunk_size)]
-
-        def process_chunk(chunk):
-            chunk_features = []
-            chunk_targets = []
-            for word_data in chunk:
-                feature_vector, target = self._process_word_features(word_data)
-                chunk_features.append(feature_vector)
-                chunk_targets.append(target)
-            return chunk_features, chunk_targets
-
-        with ThreadPoolExecutor(max_workers=self.n_threads) as executor:
-            futures = [executor.submit(process_chunk, chunk) for chunk in chunks]
-            for future in futures:
-                chunk_features, chunk_targets = future.result()
-                features.extend(chunk_features)
-                targets.extend(chunk_targets)
-
-        return np.array(features), np.array(targets)
-
-    def create_enhanced_interstitial_features(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Enhanced version that includes sine wave data"""
-        # Get original text-based features
-        text_features, text_targets = self.create_interstitial_features()
-        
-        if len(text_features) == 0:
-            return np.array([]), np.array([])
-        
-        # Store text data length for proper split tracking
-        self.text_data_length = len(text_features)
-        
-        # Generate sine wave features with multiple frequencies
-        sine_features_list = []
-        sine_targets_list = []
-        
-        frequencies = [0.05, 0.1, 0.2, 0.5]  # Different sine wave frequencies
-        for freq in frequencies:
-            sine_features = self.generate_sine_wave_features(
-                length=len(text_features), 
-                frequency=freq,
-                amplitude=np.random.uniform(0.5, 2.0),
-                phase=np.random.uniform(0, 2*np.pi)
-            )
-            
-            # Create targets based on sine wave predictability
-            sine_targets = np.array([
-                abs(np.sin(2 * np.pi * freq * i)) for i in range(len(sine_features))
-            ])
-            
-            sine_features_list.append(sine_features)
-            sine_targets_list.append(sine_targets)
-        
-        # Combine all sine wave features
-        all_sine_features = np.vstack(sine_features_list)
-        all_sine_targets = np.hstack(sine_targets_list)
-        
-        # Pad features to match dimensions
-        text_feature_dim = text_features.shape[1]
-        sine_feature_dim = all_sine_features.shape[1]
-        
-        if text_feature_dim > sine_feature_dim:
-            # Pad sine features
-            padding = np.zeros((all_sine_features.shape[0], text_feature_dim - sine_feature_dim))
-            all_sine_features = np.hstack([all_sine_features, padding])
-        elif sine_feature_dim > text_feature_dim:
-            # Pad text features
-            padding = np.zeros((text_features.shape[0], sine_feature_dim - text_feature_dim))
-            text_features = np.hstack([text_features, padding])
-        
-        # Combine text and sine wave features
-        combined_features = np.vstack([text_features, all_sine_features])
-        combined_targets = np.hstack([text_targets, all_sine_targets])
-        
-        return combined_features, combined_targets
-
-    def _create_enhanced_model(self, input_size: int):
-        """Enhanced model that can handle both text and sine wave features"""
-        class EnhancedInterstitialNet(nn.Module):
-            def __init__(self, input_size):
-                super().__init__()
-                
-                # Separate pathways for different feature types
-                self.text_pathway = nn.Sequential(
-                    nn.Linear(input_size, 128),
-                    nn.ReLU(),
-                    nn.Dropout(0.2)
-                )
-                
-                self.sine_pathway = nn.Sequential(
-                    nn.Linear(input_size, 64),
-                    nn.ReLU(),
-                    nn.Dropout(0.1)
-                )
-                
-                # Combined processing
-                self.combined_layers = nn.Sequential(
-                    nn.Linear(128 + 64, 256),
-                    nn.ReLU(),
-                    nn.BatchNorm1d(256),
-                    nn.Dropout(0.3),
-                    
-                    # Convolutional processing for pattern recognition
-                    nn.Unflatten(1, (16, 16)),
-                    nn.Conv1d(16, 32, 3, padding=1),
-                    nn.ReLU(),
-                    nn.Conv1d(32, 16, 3, padding=1),
-                    nn.ReLU(),
-                    nn.Flatten(),
-                    
-                    nn.Linear(16 * 16, 64),
-                    nn.ReLU(),
-                    nn.Linear(64, 1),
-                    nn.Sigmoid()
-                )
-                
-            def forward(self, x):
-                text_out = self.text_pathway(x)
-                sine_out = self.sine_pathway(x)
-                combined = torch.cat([text_out, sine_out], dim=1)
-                return self.combined_layers(combined)
-        
-        self.predictor_model = EnhancedInterstitialNet(input_size)
-
-    def _create_model(self, input_size: int):
-        """Create the neural network model for interstitial prediction"""
-        class InterstitialNet(nn.Module):
-            def __init__(self, input_size):
-                super().__init__()
-                # Calculate dimensions for proper reshaping
-                hidden_size = max(128, ((input_size + 15) // 16) * 16)  # Round up to nearest 16
-                conv_channels = hidden_size // 8
-                conv_length = 8
-                
-                self.layers = nn.Sequential(
-                    # Dense encoder
-                    nn.Linear(input_size, hidden_size),
-                    nn.ReLU(),
-                    nn.Dropout(0.2),
-                    
-                    # Reshape for convolution
-                    nn.Unflatten(1, (conv_channels, conv_length)),
-                    
-                    # Transposed convolutions
-                    nn.ConvTranspose1d(conv_channels, conv_channels*2, 3, stride=2, padding=1, output_padding=1),
-                    nn.ReLU(),
-                    nn.BatchNorm1d(conv_channels*2),
-                    
-                    nn.ConvTranspose1d(conv_channels*2, conv_channels, 3, stride=2, padding=1, output_padding=1),
-                    nn.ReLU(),
-                    
-                    # Flatten and final layers
-                    nn.Flatten(),
-                    nn.Linear(conv_channels * conv_length * 4, 64),  # 4x upsampling from convolutions
-                    nn.ReLU(),
-                    nn.Dropout(0.2),
-                    nn.Linear(64, 1),
-                    nn.Sigmoid()
-                )
-                
-            def forward(self, x):
-                return self.layers(x)
-                
-        self.predictor_model = InterstitialNet(input_size)
-
-    def train_enhanced_interstitial_predictor(self, epochs: int = 100, sine_weight: float = 0.3):
-        """Train with both text and sine wave features - FIXED VERSION"""
-        features, targets = self.create_enhanced_interstitial_features()
-        if len(features) == 0:
-            print("No features created for training")
+        if not self.frequency_features:
+            print("VERBOSE: No frequency features available for SNN training")
             return
-
-        # Store feature normalization parameters
-        self.feature_mean = np.mean(features, axis=0)
-        self.feature_std = np.std(features, axis=0) + 1e-8
-        features_normalized = (features - self.feature_mean) / self.feature_std
-        self.model_features_shape = features.shape[1]
-
-        # Convert to tensors
-        X_tensor = torch.FloatTensor(features_normalized)
-        y_tensor = torch.FloatTensor(targets).unsqueeze(1)
-
-        # Create enhanced model
-        self._create_enhanced_model(features.shape[1])
         
-        # Use different loss weights for text vs sine wave data
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(self.predictor_model.parameters(), lr=0.001, weight_decay=1e-5)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5)
-
-        # Training loop with sine wave integration
-        for epoch in range(epochs):
-            optimizer.zero_grad()
-            outputs = self.predictor_model(X_tensor)
-            
-            # Calculate loss with potential weighting
-            loss = criterion(outputs, y_tensor)
-            
-            # FIXED: Add regularization for sine wave learning with proper tensor sizing
-            if len(targets) > self.text_data_length:
-                # Calculate the split point using stored text_data_length
-                sine_data_start = self.text_data_length
-                sine_data_end = len(targets)
-                sine_data_length = sine_data_end - sine_data_start
-                
-                if sine_data_length > 0:
-                    # Create sine wave target with exact matching size
-                    sine_outputs = outputs[sine_data_start:sine_data_end]
-                    sine_reference = torch.sin(torch.linspace(0, 4*np.pi, sine_data_length)).unsqueeze(1)
-                    
-                    # Ensure tensors have the same size
-                    if sine_outputs.shape[0] == sine_reference.shape[0]:
-                        sine_reg = torch.mean(torch.abs(sine_outputs - sine_reference))
-                        loss += sine_weight * sine_reg
-            
-            loss.backward()
-            optimizer.step()
-            scheduler.step(loss)
-
-            if (epoch + 1) % 10 == 0:
-                print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.6f}")
+        # Prepare data
+        X_raw = np.array([f[1:] for f in self.frequency_features])
+        y = np.array([f[0] for f in self.frequency_features])
         
-        print("Enhanced training completed!")
-
-    def train_interstitial_predictor(self, epochs: int = 100):
-        """Train neural network to predict interstitial markovian values"""
-        features, targets = self.create_interstitial_features()
-        if len(features) == 0:
-            print("No features created for training")
-            return
-
-        # Store feature normalization parameters
-        self.feature_mean = np.mean(features, axis=0)
-        self.feature_std = np.std(features, axis=0) + 1e-8
-        features_normalized = (features - self.feature_mean) / self.feature_std
-        self.model_features_shape = features.shape[1]
-
-        # Convert to tensors
-        X_tensor = torch.FloatTensor(features_normalized)
-        y_tensor = torch.FloatTensor(targets).unsqueeze(1)
-
-        # Create model
-        self._create_model(features.shape[1])
+        print(f"VERBOSE: Training data - X shape: {X_raw.shape}, y shape: {y.shape}")
+        
+        # Apply feature transformations
+        X_transformed = self._apply_feature_operations(X_raw)
+        
+        # Scale features
+        X_scaled = self.scaler.fit_transform(X_transformed)
+        
+        # Convert to spike trains
+        spike_data = self._encode_features_to_spikes(X_scaled)
+        y_tensor = torch.FloatTensor(y).unsqueeze(1)
+        
+        # Create spiking network
+        self.snn_model = self._create_spiking_network(X_scaled.shape[1])
+        
+        # Define loss function and optimizer
         criterion = nn.MSELoss()
-        optimizer = optim.Adam(self.predictor_model.parameters(), lr=0.001)
-
+        optimizer = torch.optim.Adam(self.snn_model.parameters(), lr=0.001)
+        
         # Training loop
-        for epoch in range(epochs):
+        num_epochs = 100
+        print(f"VERBOSE: Training SNN for {num_epochs} epochs")
+        
+        for epoch in range(num_epochs):
             optimizer.zero_grad()
-            outputs = self.predictor_model(X_tensor)
-            loss = criterion(outputs, y_tensor)
+            
+            # Forward pass
+            output, spk_rec, mem_rec = self._spiking_forward_pass(spike_data)
+            
+            # Calculate loss
+            loss = criterion(output, y_tensor)
+            
+            # Backward pass
             loss.backward()
             optimizer.step()
-
-            if (epoch + 1) % 10 == 0:
-                print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.6f}")
-        print("Training completed!")
-
-
-    def generate_next_word(self, prev_word: str, current_word: str) -> str:
-        """Generate next word using weighted interstitial and transition probabilities"""
-        state = (prev_word, current_word)
-        transitions = dict(self.trigram_transition_matrix.get(state, {}))
-        if not transitions:
-            transitions = dict(self.transition_matrix.get(current_word, {}))
-            if not transitions:
-                return random.choice(list(self.unigram_counts.keys())) if self.unigram_counts else ""
-
-        # Get interstitial values for each possible next word
-        next_words = list(transitions.keys())
-        if self.predictor_model and self.feature_mean is not None:
-            # Use model prediction if available
-            features = []
-            for w in next_words:
-                feature_vector = [
-                    self._calculate_interstitial_value((current_word, w)),
-                    len(self.transition_matrix[w]) / self.vocab_size if self.vocab_size > 0 else 0.0,
-                    self.unigram_counts[w] / sum(self.unigram_counts.values()) if sum(self.unigram_counts.values()) > 0 else 0.0,
-                ]
-                
-                # Debug: Check dimensions before normalization
-                feature_vector = np.array(feature_vector)
-                
-                # Ensure dimensions match
-                if feature_vector.shape[0] != self.feature_mean.shape[0]:
-                    # Pad or truncate to match expected dimensions
-                    expected_dim = self.feature_mean.shape[0]
-                    if feature_vector.shape[0] < expected_dim:
-                        # Pad with zeros
-                        padding = np.zeros(expected_dim - feature_vector.shape[0])
-                        feature_vector = np.concatenate([feature_vector, padding])
-                    else:
-                        # Truncate
-                        feature_vector = feature_vector[:expected_dim]
-                
-                feature_vector = (feature_vector - self.feature_mean) / self.feature_std
-                features.append(feature_vector)
             
-            try:
-                features_tensor = torch.FloatTensor(np.array(features))
-                with torch.no_grad():
-                    interstitial_values = self.predictor_model(features_tensor).squeeze().numpy()
-                    if interstitial_values.ndim == 0:  # Handle single prediction
-                        interstitial_values = np.array([interstitial_values])
-            except Exception as e:
-                print(f"Model prediction failed: {e}")
-                # Fallback to direct calculation
-                interstitial_values = np.array([self._calculate_interstitial_value((current_word, w)) for w in next_words])
-        else:
-            # Fallback to direct calculation
-            interstitial_values = np.array([self._calculate_interstitial_value((current_word, w)) for w in next_words])
-
-        transition_probs = np.array([transitions[w] for w in next_words])
-        combined_probs = transition_probs * (interstitial_values + 1e-8)  # Add small epsilon
-        combined_probs = combined_probs / np.sum(combined_probs) if np.sum(combined_probs) > 0 else np.ones_like(combined_probs) / len(combined_probs)
+            if epoch % 20 == 0:
+                print(f"VERBOSE: Epoch {epoch}, Loss: {loss.item():.4f}")
         
-        next_word = np.random.choice(next_words, p=combined_probs)
-        return next_word
+        print("VERBOSE: Spiking neural network training completed")
 
-    def generate_text(self, length: int = 50, seed: Optional[str] = None) -> str:
-        """Generate text using interstitial Markovian values and two-step transitions"""
-        if not self.unigram_counts:
-            return "No data to generate text"
+    def generate_spiking_predictions(self, num_variations: int = 1) -> List[Dict[Tuple[str, str], float]]:
+        """Generate predictions using the trained spiking network."""
+        print(f"VERBOSE: Generating {num_variations} predictions with SNN")
         
-        try:
-            if seed and len(seed.split()) >= 2:
-                prev_word, current_word = seed.split()[-2], seed.split()[-1]
-            else:
-                # Start with random words if seed is insufficient
-                words_list = list(self.unigram_counts.keys())
-                prev_word = random.choice(words_list)
-                current_word = random.choice(words_list)
+        if self.snn_model is None:
+            print("VERBOSE: No trained SNN model available")
+            return []
+        
+        new_frequency_sets = []
+        
+        # Prepare base features
+        base_X = np.array([f[1:] for f in self.frequency_features])
+        
+        for variation in range(num_variations):
+            print(f"VERBOSE: Generating SNN variation {variation + 1}")
             
-            # Generate words
-            words = [prev_word, current_word]  # Include seed words
-            for _ in range(length):
-                next_word = self.generate_next_word(prev_word, current_word)
-                words.append(next_word)
-                prev_word, current_word = current_word, next_word
+            # Add noise to features
+            noise_factor = 0.1 + (variation * 0.02)
+            X_noised = base_X.copy()
             
-            return ' '.join(words)
-        except Exception as e:
-            print(f"Error generating text: {e}")
-            return "Error in text generation"
-
-    def save_model(self, filepath: str) -> bool:
-        """Save the complete model state to disk"""
-        try:
-            # Convert bigram frequencies (tuple keys to strings)
-            bigram_frequencies_str = {}
-            for (w1, w2), count in self.bigram_frequencies.items():
-                key_str = f"{w1}|||{w2}"
-                bigram_frequencies_str[key_str] = count
+            for j in range(X_noised.shape[1]):
+                noise = np.random.normal(0, noise_factor * np.abs(X_noised[:, j] + 0.01))
+                X_noised[:, j] = np.maximum(0, X_noised[:, j] + noise)
             
-            # Convert trigram frequencies (tuple keys to strings)
-            trigram_frequencies_str = {}
-            for (w1, w2, w3), count in self.trigram_frequencies.items():
-                key_str = f"{w1}|||{w2}|||{w3}"
-                trigram_frequencies_str[key_str] = count
+            # Transform and scale
+            X_transformed = self._apply_feature_operations(X_noised)
+            X_scaled = self.scaler.transform(X_transformed)
             
-            # Convert defaultdicts to regular dicts for JSON serialization
-            transition_matrix_dict = {}
-            for k, v in self.transition_matrix.items():
-                transition_matrix_dict[k] = dict(v)
+            # Convert to spikes
+            spike_data = self._encode_features_to_spikes(X_scaled)
             
-            trigram_transition_matrix_dict = {}
-            for k, v in self.trigram_transition_matrix.items():
-                # Convert tuple keys to strings for JSON
-                key_str = f"{k[0]}|||{k[1]}"
-                trigram_transition_matrix_dict[key_str] = dict(v)
+            # Generate predictions
+            with torch.no_grad():
+                predictions, _, _ = self._spiking_forward_pass(spike_data)
+                predictions = predictions.numpy().flatten()
             
-            # Prepare data for saving
-            save_data = {
-                'bigram_frequencies': bigram_frequencies_str,
-                'trigram_frequencies': trigram_frequencies_str,
-                'transition_matrix': transition_matrix_dict,
-                'trigram_transition_matrix': trigram_transition_matrix_dict,
-                'word_to_idx': self.word_to_idx,
-                'idx_to_word': self.idx_to_word,
-                'unigram_counts': dict(self.unigram_counts),
-                'vocab_size': self.vocab_size,
-                'model_features_shape': self.model_features_shape,
-                'feature_mean': self.feature_mean.tolist() if self.feature_mean is not None else None,
-                'feature_std': self.feature_std.tolist() if self.feature_std is not None else None,
-                'n_threads': self.n_threads,
-                'text_data_length': self.text_data_length
+            # Convert to frequency dictionary
+            predictions = np.maximum(predictions, 0.01)
+            new_freq_dict = {
+                bigram: float(predictions[i]) 
+                for i, bigram in enumerate(self.sorted_bigrams) 
+                if i < len(predictions)
             }
             
-            # Save main data as JSON
-            with open(f"{filepath}.json", 'w', encoding='utf-8') as f:
-                json.dump(save_data, f, indent=2, ensure_ascii=False)
-            
-            # Save PyTorch model separately if it exists
-            if self.predictor_model is not None:
-                torch.save(self.predictor_model.state_dict(), f"{filepath}_model.pth")
-            
-            print(f"Model saved successfully to {filepath}")
-            return True
-            
-        except Exception as e:
-            print(f"Error saving model: {e}")
-            return False
-
-    def load_model(self, filepath: str) -> bool:
-        """Load a complete model state from disk"""
-        try:
-            # Load main data
-            with open(f"{filepath}.json", 'r', encoding='utf-8') as f:
-                save_data = json.load(f)
-            
-            # Restore basic attributes
-            self.vocab_size = save_data['vocab_size']
-            self.word_to_idx = save_data['word_to_idx']
-            self.idx_to_word = save_data['idx_to_word']
-            self.unigram_counts = Counter(save_data['unigram_counts'])
-            self.model_features_shape = save_data['model_features_shape']
-            self.n_threads = save_data.get('n_threads', min(8, os.cpu_count()))
-            self.text_data_length = save_data.get('text_data_length', 0)
-            
-            # Restore numpy arrays
-            self.feature_mean = np.array(save_data['feature_mean']) if save_data['feature_mean'] is not None else None
-            self.feature_std = np.array(save_data['feature_std']) if save_data['feature_std'] is not None else None
-            
-            # Restore bigram frequencies (convert string keys back to tuples)
-            self.bigram_frequencies = {}
-            for key_str, count in save_data['bigram_frequencies'].items():
-                parts = key_str.split('|||')
-                if len(parts) == 2:
-                    self.bigram_frequencies[(parts[0], parts[1])] = count
-            
-            # Restore trigram frequencies (convert string keys back to tuples)
-            self.trigram_frequencies = {}
-            for key_str, count in save_data['trigram_frequencies'].items():
-                parts = key_str.split('|||')
-                if len(parts) == 3:
-                    self.trigram_frequencies[(parts[0], parts[1], parts[2])] = count
-            
-            # Restore transition matrices
-            self.transition_matrix = defaultdict(lambda: defaultdict(float))
-            for k, v in save_data['transition_matrix'].items():
-                self.transition_matrix[k] = defaultdict(float, v)
-            
-            self.trigram_transition_matrix = defaultdict(lambda: defaultdict(float))
-            for k_str, v in save_data['trigram_transition_matrix'].items():
-                # Convert string keys back to tuples
-                k_parts = k_str.split('|||')
-                if len(k_parts) == 2:
-                    k = (k_parts[0], k_parts[1])
-                    self.trigram_transition_matrix[k] = defaultdict(float, v)
-            
-            # Load PyTorch model if it exists
-            model_path = f"{filepath}_model.pth"
-            if os.path.exists(model_path) and self.model_features_shape is not None:
-                self._create_enhanced_model(self.model_features_shape)
-                self.predictor_model.load_state_dict(torch.load(model_path))
-                self.predictor_model.eval()
-            
-            print(f"Model loaded successfully from {filepath}")
-            return True
-            
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            return False
-
-    def get_model_info(self) -> Dict[str, Any]:
-        """Get information about the current model state"""
-        return {
-            'vocab_size': self.vocab_size,
-            'bigram_count': len(self.bigram_frequencies),
-            'trigram_count': len(self.trigram_frequencies),
-            'has_neural_model': self.predictor_model is not None,
-            'model_trained': self.feature_mean is not None,
-            'features_shape': self.model_features_shape,
-            'n_threads': self.n_threads,
-            'text_data_length': self.text_data_length
-        }
-def find_words_with_full_stops(text):
-    """Find all words that contain full stops/periods"""
-    words = text.split()
-    words_with_periods = []
-    
-    for word in words:
-        if '.' in word:
-            words_with_periods.append(word)
-    
-    return words_with_periods
-
-def generate_abstract_reasoning_corpus(corpus_words: List[str], num_sequences: int = 5000) -> str:
-    """
-    Generates a synthetic text corpus embodying abstract reasoning pathways.
-    This moves beyond simple word pairs to create transitions between semantic concepts.
-    """
-    # 1. Define semantic clusters for abstract reasoning concepts [4]
-    # This is analogous to identifying regions in a word embedding space [8]
-    reasoning_concepts = {
-        "causality": ["because", "since", "given"],
-        "consequence": ["therefore", "thus", "hence", "consequently", "accordingly"],
-        "contrast": ["however", "nevertheless", "although", "despite", "conversely"],
-        "elaboration": ["furthermore", "moreover", "indeed", "specifically"],
-        "condition": ["if", "unless", "provided", "assuming"]
-    }
-
-    all_concept_words = [word for concept_list in reasoning_concepts.values() for word in concept_list]
-    
-    # 2. Generate abstract reasoning sequences (Concept -> Trigger -> Concept)
-    abstract_sequences = []
-    for _ in range(num_sequences):
-        # Pick a random concept for the premise and conclusion
-        premise_concept_key = random.choice(list(reasoning_concepts.keys()))
-        conclusion_concept_key = random.choice(list(reasoning_concepts.keys()))
-
-        # Select a trigger word that links them
-        trigger_word = random.choice(reasoning_concepts[conclusion_concept_key])
+            new_frequency_sets.append(new_freq_dict)
         
-        # Select random words from the original corpus to act as premise/conclusion subjects
-        premise_word = random.choice(corpus_words)
-        conclusion_word = random.choice(corpus_words)
+        print(f"VERBOSE: Generated {len(new_frequency_sets)} SNN prediction sets")
+        return new_frequency_sets
 
-        # Create a short sequence that represents an abstract reasoning step
-        # This forms a non-local connection between two potentially distant words
-        sequence = [premise_word, trigger_word, conclusion_word]
-        abstract_sequences.append(" ".join(sequence))
+    def expand_text_from_bigrams(self,
+                                 frequency_dict: Dict[Tuple[str, str], float],
+                                 text_length: int = 100,
+                                 seed_phrase: Optional[str] = None) -> str:
+        print(f"VERBOSE: Starting text expansion. Target length: {text_length}. Seed: '{seed_phrase if seed_phrase else 'None'}'")
+        if not frequency_dict:
+            print("VERBOSE: Error: No frequency data provided for text expansion.")
+            return "Error: No frequency data provided."
+
+        transitions = defaultdict(list)
+        for (w1, w2), count in frequency_dict.items():
+            if count > 0: 
+                transitions[w1].append((w2, count))
         
-    print(f"Generated {len(abstract_sequences)} abstract reasoning sequences.")
-    return " . ".join(abstract_sequences) + " . "
+        if not transitions:
+            print("VERBOSE: Error: Frequency data has no usable transitions.")
+            return "Error: Frequency data has no usable transitions."
 
+        generated_text_list = []
+        current_word: Optional[str] = None
+        num_words_to_generate = text_length
+        start_word_selected_from_seed = False
 
-if __name__ == "__main__":
-    predictor = EnhancedInterstitialMarkovianPredictor()
-    
-    try:
-        # Check if user wants to load existing model
-        load_choice = input("Load existing model? (y/n): ").lower().strip()
-        
-        if load_choice == 'y':
-            model_path = input("Enter model path (without extension): ").strip()
-            if predictor.load_model(model_path):
-                print("Model loaded successfully!")
-                print("Model info:", predictor.get_model_info())
+        if seed_phrase:
+            seed_words = self.preprocess_text(seed_phrase) 
+            if seed_words:
+                print(f"VERBOSE: Processed seed phrase: {seed_words}")
+                potential_start_node = seed_words[-1]
+                if potential_start_node in transitions and transitions[potential_start_node]:
+                    generated_text_list.extend(seed_words)
+                    current_word = potential_start_node
+                    start_word_selected_from_seed = True
+                    num_words_to_generate = text_length - len(generated_text_list)
+                    print(f"VERBOSE: Started with seed. Current word: '{current_word}'. Words to generate: {num_words_to_generate}.")
+                    if num_words_to_generate <= 0:
+                        final_text = ' '.join(generated_text_list[:text_length])
+                        print(f"VERBOSE: Seed phrase already meets/exceeds target length. Generated text: '{final_text[:50]}...'")
+                        return final_text
+
+        if not start_word_selected_from_seed:
+            print("VERBOSE: Selecting a starting word (seed not used or invalid).")
+            valid_starting_unigrams = {w:c for w,c in self.unigram_counts.items() if w in transitions and transitions[w]}
+            if valid_starting_unigrams:
+                sorted_starters = sorted(valid_starting_unigrams.items(), key=lambda item: item[1], reverse=True)
+                starters = [item[0] for item in sorted_starters]
+                weights = [item[1] for item in sorted_starters]
+                current_word = random.choices(starters, weights=weights, k=1)[0]
+                print(f"VERBOSE: Selected start word '{current_word}' based on weighted unigram counts.")
+            elif any(transitions.values()):
+                possible_starters = [w1 for w1, w2_list in transitions.items() if w2_list]
+                if possible_starters:
+                    current_word = random.choice(possible_starters)
+                    print(f"VERBOSE: Selected start word '{current_word}' randomly from possible transition starters.")
+                else:
+                    print("VERBOSE: Error: Cannot determine any valid starting word from transitions.")
+                    return "Error: Cannot determine any valid starting word."
             else:
-                print("Failed to load model. Starting fresh...")
-                predictor = EnhancedInterstitialMarkovianPredictor()
+                print("VERBOSE: Error: Cannot determine a starting word (no valid transitions).")
+                return "Error: Cannot determine a starting word (no valid transitions)."
+            
+            if current_word:
+                generated_text_list.append(current_word)
+                num_words_to_generate = text_length - 1
+            else:
+                print("VERBOSE: Error: Failed to select a starting word.")
+                return "Error: Failed to select a starting word."
 
-        # If no model loaded or loading failed, train new model
-        if not predictor.unigram_counts:
-            filename = input("Filename: ")
-            with open(filename, 'r', encoding='utf-8') as f:
-                content = ' '.join(f.read().split()[:KB_LEN])
-            
-            print("Generating abstract reasoning corpus to create a feature space unbound by local transitions...")
-            # --- MODIFICATION START ---
-            # Instead of a simple loop, generate a rich, synthetic corpus
-            # This corpus teaches the model about abstract, non-local reasoning pathways.
-            corpus_words = list(set(content.lower().split()))
-            reasoning_text = generate_abstract_reasoning_corpus(corpus_words)
-            
-            # Combine the abstract reasoning data with the original content
-            combined_content = reasoning_text + content
-            # --- MODIFICATION END ---
-            
-            print("Extracting transition probabilities from combined content...")
-            predictor.extract_transition_probabilities(combined_content)
-            
-            print("Training model on enhanced feature space...")
-            # Use enhanced training with sine waves
-            predictor.train_enhanced_interstitial_predictor(epochs=50, sine_weight=0.2)
-            
-            # Ask if user wants to save the model
-            save_choice = input("Save trained model? (y/n): ").lower().strip()
-            if save_choice == 'y':
-                save_path = input("Enter save path (without extension): ").strip()
-                predictor.save_model(save_path)
+        for i in range(max(0, num_words_to_generate)):
+            if not current_word or current_word not in transitions or not transitions[current_word]:
+                print(f"VERBOSE: Current word '{current_word}' has no further transitions. Attempting to restart.")
+                valid_restart_candidates = [w for w, trans_list in transitions.items() if trans_list]
+                if not valid_restart_candidates:
+                    print("VERBOSE: No valid restart candidates found. Ending generation.")
+                    break 
+                
+                restart_options = {w:c for w,c in self.unigram_counts.items() if w in valid_restart_candidates}
+                if restart_options:
+                    sorted_restart_options = sorted(restart_options.items(), key=lambda item: item[1], reverse=True)
+                    starters = [item[0] for item in sorted_restart_options]
+                    weights = [item[1] for item in sorted_restart_options]
+                    current_word = random.choices(starters, weights=weights, k=1)[0]
+                    print(f"VERBOSE: Restarted with word '{current_word}' (weighted choice).")
+                else:
+                    current_word = random.choice(valid_restart_candidates)
+                    print(f"VERBOSE: Restarted with word '{current_word}' (random choice).")
+                if not current_word:
+                    print("VERBOSE: Failed to select a restart word. Ending generation.")
+                    break 
+
+            possible_next_words, weights = zip(*transitions[current_word])
+            next_word = random.choices(possible_next_words, weights=weights, k=1)[0]
+            generated_text_list.append(next_word)
+            current_word = next_word
+
+        final_text = ' '.join(generated_text_list)
+        print(f"VERBOSE: Text expansion complete. Generated {len(generated_text_list)} words. Preview: '{final_text[:70]}...'")
+        return final_text
+
+
+class SpikingMultilinearStreamLinker:
+    def __init__(self, predictor: SpikingFrequencyPredictor):
+        """Initialize the spiking multilinear stream linker with a frequency predictor."""
+        self.predictor = predictor
+        self.stream_buffers: Dict[str, deque] = {}
+        self.seed_positions: List[Tuple[int, str, float]] = []
+        self.optimal_link_positions: List[int] = []
+        self.multilinear_features: np.ndarray = None
+        self.stream_weights: Dict[str, float] = {}
+        self.spike_encoding_window = 10
         
-        # Interactive text generation
-        while True:
-            seed_input = input("USER: ")
-            if seed_input.lower() == 'quit':
-                break
-            elif seed_input.lower() == 'save':
-                save_path = input("Enter save path (without extension): ").strip()
-                predictor.save_model(save_path)
-                continue
-            elif seed_input.lower() == 'info':
-                print("Model info:", predictor.get_model_info())
+    def initialize_streams(self, stream_names: List[str], buffer_size: int = 100):
+        """Initialize multiple parallel streams for processing."""
+        print(f"VERBOSE: Initializing {len(stream_names)} multilinear streams with buffer size {buffer_size}")
+        for stream_name in stream_names:
+            self.stream_buffers[stream_name] = deque(maxlen=buffer_size)
+            self.stream_weights[stream_name] = 1.0 / len(stream_names)
+        
+    def extract_seed_positions(self, text: str, seed_phrases: List[str]) -> List[Tuple[int, str, float]]:
+        """Extract positions of seed phrases in text with confidence scores."""
+        words = self.predictor.preprocess_text(text)
+        seed_positions = []
+        
+        for seed_phrase in seed_phrases:
+            seed_words = self.predictor.preprocess_text(seed_phrase)
+            if not seed_words:
                 continue
                 
-            generated_text = predictor.generate_text(length=250, seed=seed_input)
-            print("Generated text:", generated_text)
-            print()
+            for i in range(len(words) - len(seed_words) + 1):
+                if words[i:i+len(seed_words)] == seed_words:
+                    confidence = self._calculate_seed_confidence(words, i, len(seed_words))
+                    seed_positions.append((i, seed_phrase, confidence))
+        
+        self.seed_positions = sorted(seed_positions, key=lambda x: x[0])
+        print(f"VERBOSE: Extracted {len(self.seed_positions)} seed positions")
+        return self.seed_positions
+    
+    def _calculate_seed_confidence(self, words: List[str], position: int, length: int) -> float:
+        """Calculate confidence score for seed placement based on local context."""
+        context_window = 5
+        start_context = max(0, position - context_window)
+        end_context = min(len(words), position + length + context_window)
+        
+        context_words = words[start_context:end_context]
+        total_freq = sum(self.predictor.unigram_counts.get(word, 1) for word in context_words)
+        avg_freq = total_freq / len(context_words) if context_words else 1
+        
+        confidence = min(1.0, math.log(avg_freq + 1) / 10.0)
+        return confidence
+    
+    def compute_optimal_link_positions(self, text_length: int, num_links: int = 5) -> List[int]:
+        """Compute optimal positions for linking streams based on NLP features."""
+        if not self.seed_positions:
+            print("VERBOSE: No seed positions available, using uniform distribution")
+            return [int(i * text_length / (num_links + 1)) for i in range(1, num_links + 1)]
+        
+        position_features = []
+        candidate_positions = range(0, text_length, max(1, text_length // (num_links * 3)))
+        
+        for pos in candidate_positions:
+            features = self._extract_position_features(pos, text_length)
+            position_features.append(features)
+        
+        position_features = np.array(position_features)
+        
+        optimal_positions = self._select_optimal_positions(
+            candidate_positions, position_features, num_links
+        )
+        
+        self.optimal_link_positions = sorted(optimal_positions)
+        print(f"VERBOSE: Computed {len(self.optimal_link_positions)} optimal link positions: {self.optimal_link_positions}")
+        return self.optimal_link_positions
+    
+    def _extract_position_features(self, position: int, text_length: int) -> List[float]:
+        """Extract NLP features for a given position."""
+        features = []
+        
+        features.append(position / text_length)
+        features.append(math.sin(2 * math.pi * position / text_length))
+        features.append(math.cos(2 * math.pi * position / text_length))
+        
+        if self.seed_positions:
+            min_seed_distance = min(abs(position - seed_pos[0]) for seed_pos in self.seed_positions)
+            features.append(min_seed_distance / text_length)
             
-    except KeyboardInterrupt:
-        print("\nExiting...")
-    except Exception as e:
-        print(f"Error: {e}")
+            seed_influence = sum(
+                seed_conf * math.exp(-abs(position - seed_pos) / (text_length * 0.1))
+                for seed_pos, _, seed_conf in self.seed_positions
+            )
+            features.append(seed_influence)
+        else:
+            features.extend([1.0, 0.0])
+        
+        features.append(math.log(position + 1))
+        features.append(1.0 if position % 50 == 0 else 0.0)
+        
+        return features
+    
+    def _select_optimal_positions(self, candidates: range, features: np.ndarray, num_links: int) -> List[int]:
+        """Select optimal positions using feature-based scoring."""
+        if len(candidates) <= num_links:
+            return list(candidates)
+        
+        scores = []
+        for i, pos in enumerate(candidates):
+            feature_score = np.sum(features[i] ** 2)
+            
+            diversity_score = 0
+            for j, other_pos in enumerate(candidates):
+                if i != j:
+                    distance = abs(pos - other_pos)
+                    diversity_score += 1.0 / (1.0 + distance)
+            
+            total_score = feature_score - 0.1 * diversity_score
+            scores.append((total_score, pos))
+        
+        scores.sort(reverse=True)
+        return [pos for _, pos in scores[:num_links]]
+    
+    def create_multilinear_features(self, text: str) -> np.ndarray:
+        """Create multilinear feature matrix linking early and later seed information."""
+        words = self.predictor.preprocess_text(text)
+        if not words:
+            return np.array([])
+        
+        syntactic_stream = self._create_syntactic_stream(words)
+        semantic_stream = self._create_semantic_stream(words)
+        positional_stream = self._create_positional_stream(words)
+        frequency_stream = self._create_frequency_stream(words)
+        
+        feature_streams = [syntactic_stream, semantic_stream, positional_stream, frequency_stream]
+        self.multilinear_features = np.column_stack(feature_streams)
+        
+        print(f"VERBOSE: Created multilinear features matrix with shape {self.multilinear_features.shape}")
+        return self.multilinear_features
+    
+    def _create_syntactic_stream(self, words: List[str]) -> np.ndarray:
+        """Create syntactic feature stream."""
+        features = []
+        for word in words:
+            feat = [
+                float(len(word)),
+                1.0 if word.endswith('ing') else 0.0,
+                1.0 if word.endswith('ed') else 0.0,
+                1.0 if word.startswith('un') else 0.0,
+                float(word.count('e')),
+            ]
+            features.append(feat)
+        return np.array(features)
+    
+    def _create_semantic_stream(self, words: List[str]) -> np.ndarray:
+        """Create semantic feature stream using frequency-based embeddings."""
+        features = []
+        for i, word in enumerate(words):
+            context_window = 30
+            context_start = max(0, i - context_window)
+            context_end = min(len(words), i + context_window + 1)
+            context = words[context_start:context_end]
+            
+            feat = [
+                float(self.predictor.unigram_counts.get(word, 1)),
+                float(len(context)),
+                float(sum(self.predictor.unigram_counts.get(w, 1) for w in context)),
+                float(len(set(context))),
+            ]
+            features.append(feat)
+        return np.array(features)
+    
+    def _create_positional_stream(self, words: List[str]) -> np.ndarray:
+        """Create positional feature stream."""
+        features = []
+        text_length = len(words)
+        for i, word in enumerate(words):
+            feat = [
+                float(i) / text_length,
+                math.sin(2 * math.pi * i / text_length),
+                math.cos(2 * math.pi * i / text_length),
+                float(i),
+            ]
+            features.append(feat)
+        return np.array(features)
+    
+    def _create_frequency_stream(self, words: List[str]) -> np.ndarray:
+        """Create frequency-based feature stream."""
+        features = []
+        for i, word in enumerate(words):
+            prev_word = words[i-1] if i > 0 else "<START>"
+            next_word = words[i+1] if i < len(words)-1 else "<END>"
+            
+            bigram_freq_prev = self.predictor.bigram_frequencies.get((prev_word, word), 0)
+            bigram_freq_next = self.predictor.bigram_frequencies.get((word, next_word), 0)
+            
+            feat = [
+                float(bigram_freq_prev),
+                float(bigram_freq_next),
+                math.log(bigram_freq_prev + 1),
+                math.log(bigram_freq_next + 1),
+            ]
+            features.append(feat)
+        return np.array(features)
+
+    def encode_neural_spikes(self, features: np.ndarray) -> np.ndarray:
+        """Encode multilinear features as neural spike patterns."""
+        print(f"VERBOSE: Encoding multilinear features to neural spikes")
+        
+        features_norm = (features - features.min()) / (features.max() - features.min() + 1e-8)
+        
+        spike_patterns = []
+        for i in range(len(features_norm)):
+            spike_train = np.random.poisson(features_norm[i] * 5, self.spike_encoding_window)
+            spike_patterns.append(spike_train.flatten())
+        
+        return np.array(spike_patterns)
+    
+    def link_streams_at_positions(self, text: str, seed_phrases: List[str]) -> Dict[int, Dict[str, Any]]:
+        """Link multilinear streams from earlier to later seed info at optimal positions."""
+        print("VERBOSE: Starting multilinear stream linking process")
+        
+        stream_names = ['syntactic', 'semantic', 'positional', 'frequency']
+        self.initialize_streams(stream_names)
+        
+        words = self.predictor.preprocess_text(text)
+        self.extract_seed_positions(text, seed_phrases)
+        self.compute_optimal_link_positions(len(words))
+        
+        self.create_multilinear_features(text)
+        
+        link_results = {}
+        for link_pos in self.optimal_link_positions:
+            if link_pos < len(words):
+                link_info = self._perform_stream_linking(link_pos, words)
+                link_results[link_pos] = link_info
+        
+        print(f"VERBOSE: Completed stream linking at {len(link_results)} positions")
+        return link_results
+    
+    def _perform_stream_linking(self, position: int, words: List[str]) -> Dict[str, Any]:
+        """Perform actual stream linking at a specific position."""
+        if self.multilinear_features is None or position >= len(self.multilinear_features):
+            return {}
+        
+        current_features = self.multilinear_features[position]
+        
+        earlier_seeds = [s for s in self.seed_positions if s[0] < position]
+        later_seeds = [s for s in self.seed_positions if s[0] > position]
+        
+        earlier_weights = self._calculate_linking_weights(position, earlier_seeds, direction='earlier')
+        later_weights = self._calculate_linking_weights(position, later_seeds, direction='later')
+        
+        linked_features = self._create_linked_features(
+            current_features, earlier_weights, later_weights, position, words
+        )
+        
+        original_feature_count = len(current_features)
+        link_strength = np.linalg.norm(linked_features[:original_feature_count] - current_features)
+        
+        link_info = {
+            'position': position,
+            'word': words[position],
+            'current_features': current_features.tolist(),
+            'linked_features': linked_features.tolist(),
+            'earlier_seed_weights': earlier_weights,
+            'later_seed_weights': later_weights,
+            'link_strength': link_strength,
+            'temporal_features': linked_features[original_feature_count:].tolist()
+        }
+        
+        return link_info
+    
+    def _calculate_linking_weights(self, position: int, seeds: List[Tuple[int, str, float]], 
+                                 direction: str) -> Dict[str, float]:
+        """Calculate weights for linking to earlier or later seeds."""
+        weights = {}
+        
+        for seed_pos, seed_phrase, seed_conf in seeds:
+            distance = abs(position - seed_pos)
+            distance_weight = math.exp(-distance / 20.0)
+            total_weight = distance_weight * seed_conf
+            weights[f"{direction}_{seed_phrase}_{seed_pos}"] = total_weight
+        
+        return weights
+    
+    def _create_linked_features(self, current_features: np.ndarray, 
+                              earlier_weights: Dict[str, float], 
+                              later_weights: Dict[str, float],
+                              position: int, words: List[str]) -> np.ndarray:
+        """Create linked feature vector incorporating earlier and later seed information."""
+        linked_features = current_features.copy()
+        
+        earlier_influence = sum(earlier_weights.values())
+        later_influence = sum(later_weights.values())
+        
+        if earlier_influence > 0:
+            linked_features[:len(linked_features)//2] *= (1 + earlier_influence * 0.1)
+        
+        if later_influence > 0:
+            linked_features[len(linked_features)//2:] *= (1 + later_influence * 0.1)
+        
+        temporal_features = np.array([
+            earlier_influence,
+            later_influence,
+            earlier_influence + later_influence,
+            abs(earlier_influence - later_influence)
+        ])
+        
+        linked_features = np.concatenate([linked_features, temporal_features])
+        
+        return linked_features
+
+
+def enhanced_spiking_text_generation():
+    """Enhanced text generation using spiking neural networks."""
+    print("VERBOSE: Starting spiking neural network text generation")
+    
+    # Initialize spiking components
+    predictor = SpikingFrequencyPredictor()
+    linker = SpikingMultilinearStreamLinker(predictor)
+    
+    # Load and process text
+    text_content = predictor.load_text_file("test.txt")
+    predictor.current_text = text_content  # Store for access in feature creation
+    predictor.extract_bigram_frequencies(text_content)
+    predictor.create_bigram_frequency_features()
+    
+    # Train spiking network
+    predictor.train_spiking_predictor()
+    
+    print("\n" + "="*60)
+    print("SPIKING NEURAL NETWORK TEXT GENERATOR READY")
+    print("="*60)
+    print("Enter text prompts to generate responses. Type 'quit' to exit.")
+    print("="*60)
+    
+    while True:
+        user_input = input("\nUSER: ")
+        if user_input.lower() == 'quit':
+            print("Goodbye!")
+            break
+            
+        # Perform multilinear linking with spiking networks
+        link_results = linker.link_streams_at_positions(text_content, [user_input])
+        
+        # Generate with spiking network
+        spiking_frequencies = predictor.generate_spiking_predictions(num_variations=1)
+        
+        if spiking_frequencies:
+            # Enhance frequencies based on linking results
+            enhanced_frequencies = spiking_frequencies[0].copy()
+            words = predictor.preprocess_text(text_content)
+            
+            for position, link_info in link_results.items():
+                if position < len(words) - 1:
+                    current_word = words[position]
+                    next_word = words[position + 1]
+                    bigram = (current_word, next_word)
+                    
+                    if bigram in enhanced_frequencies:
+                        boost_factor = 1 + (link_info['link_strength'] * 0.1)
+                        enhanced_frequencies[bigram] = float(enhanced_frequencies[bigram] * boost_factor)
+            
+            generated_text = predictor.expand_text_from_bigrams(
+                enhanced_frequencies,
+                text_length=200,
+                seed_phrase=user_input
+            )
+            
+            print("\n" + "="*50)
+            print("SPIKING NEURAL NETWORK GENERATION")
+            print("="*50)
+            print(generated_text)
+            print("="*50)
+        else:
+            print("VERBOSE: No spiking predictions generated")
+
+if __name__ == "__main__":
+    enhanced_spiking_text_generation()
