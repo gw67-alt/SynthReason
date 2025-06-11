@@ -13,6 +13,12 @@ import re
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 import snntorch
+import os
+import pickle
+from datetime import datetime
+
+KB_LEN = 9999
+
 # Check for optional dependencies
 try:
     import tensorflow as tf
@@ -27,7 +33,9 @@ try:
 except ImportError:
     DATASETS_AVAILABLE = False
     print("Hugging Face datasets not available. HF dataset loading will be disabled.")
-KB_LEN = -1
+
+
+
 class SpikingFrequencyPredictor:
     def __init__(self):
         print("VERBOSE: SpikingFrequencyPredictor initialized.")
@@ -45,6 +53,206 @@ class SpikingFrequencyPredictor:
         self.beta = 0.1  # Neuron decay rate
         self.spike_grad = surrogate.fast_sigmoid()  # Surrogate gradient function
         self.current_text = ""  # Store current text for access
+        
+        # Model save/load functionality
+        self.model_save_path = "models/"
+        self.ensure_model_directory()
+
+    def ensure_model_directory(self):
+        """Create model directory if it doesn't exist."""
+        if not os.path.exists(self.model_save_path):
+            os.makedirs(self.model_save_path)
+            print(f"VERBOSE: Created model directory: {self.model_save_path}")
+
+    def save_model(self, model_name: str = None, include_training_data: bool = True) -> str:
+        """
+        Save the complete model state including SNN, features, and metadata.
+        
+        Args:
+            model_name: Custom name for the model. If None, uses timestamp.
+            include_training_data: Whether to save training features and bigram data.
+        
+        Returns:
+            Path to the saved model file.
+        """
+        if model_name is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_name = f"spiking_model_{timestamp}"
+        
+        model_path = os.path.join(self.model_save_path, f"{model_name}.pth")
+        
+        # Prepare checkpoint data
+        checkpoint = {
+            'model_metadata': {
+                'model_name': model_name,
+                'save_timestamp': datetime.now().isoformat(),
+                'num_base_features': self.num_base_features,
+                'num_steps': self.num_steps,
+                'beta': self.beta,
+            },
+            'model_state_dict': self.snn_model.state_dict() if self.snn_model else None,
+            'scaler_state': {
+                'mean_': self.scaler.mean_ if hasattr(self.scaler, 'mean_') else None,
+                'scale_': self.scaler.scale_ if hasattr(self.scaler, 'scale_') else None,
+                'var_': self.scaler.var_ if hasattr(self.scaler, 'var_') else None,
+                'n_features_in_': self.scaler.n_features_in_ if hasattr(self.scaler, 'n_features_in_') else None,
+            }
+        }
+        
+        if include_training_data:
+            checkpoint.update({
+                'bigram_frequencies': self.bigram_frequencies,
+                'frequency_features': self.frequency_features,
+                'sorted_bigrams': self.sorted_bigrams,
+                'unigram_counts': dict(self.unigram_counts),
+                'current_text': self.current_text,
+                'feature_operations': self.feature_operations,
+            })
+        
+        # Save the checkpoint
+        torch.save(checkpoint, model_path)
+        print(f"VERBOSE: Model saved successfully to {model_path}")
+        
+        # Also save a human-readable summary
+        summary_path = os.path.join(self.model_save_path, f"{model_name}_summary.txt")
+        self._save_model_summary(checkpoint, summary_path)
+        
+        return model_path
+
+    def _save_model_summary(self, checkpoint: dict, summary_path: str):
+        """Save a human-readable summary of the model."""
+        with open(summary_path, 'w') as f:
+            f.write("SPIKING NEURAL NETWORK MODEL SUMMARY\n")
+            f.write("=" * 50 + "\n\n")
+            
+            metadata = checkpoint.get('model_metadata', {})
+            f.write(f"Model Name: {metadata.get('model_name', 'Unknown')}\n")
+            f.write(f"Save Date: {metadata.get('save_timestamp', 'Unknown')}\n")
+            f.write(f"Base Features: {metadata.get('num_base_features', 'Unknown')}\n")
+            f.write(f"Time Steps: {metadata.get('num_steps', 'Unknown')}\n")
+            f.write(f"Beta (Decay): {metadata.get('beta', 'Unknown')}\n\n")
+            
+            if 'bigram_frequencies' in checkpoint:
+                bigrams = checkpoint['bigram_frequencies']
+                f.write(f"Bigram Count: {len(bigrams)}\n")
+                f.write(f"Feature Count: {len(checkpoint.get('frequency_features', []))}\n")
+                f.write(f"Text Length: {len(checkpoint.get('current_text', ''))}\n\n")
+                
+                if bigrams:
+                    f.write("Top 10 Bigrams:\n")
+                    sorted_bigrams = sorted(bigrams.items(), key=lambda x: x[1], reverse=True)
+                    for i, ((w1, w2), freq) in enumerate(sorted_bigrams[:10]):
+                        f.write(f"  {i+1}. ({w1}, {w2}): {freq}\n")
+            
+            f.write(f"\nModel Architecture: {'Loaded' if checkpoint.get('model_state_dict') else 'Not Available'}\n")
+            f.write(f"Scaler: {'Fitted' if checkpoint.get('scaler_state', {}).get('mean_') is not None else 'Not Fitted'}\n")
+
+    def load_model(self, model_path: str, load_training_data: bool = True) -> bool:
+        """
+        Load a complete model state from file.
+        
+        Args:
+            model_path: Path to the saved model file.
+            load_training_data: Whether to load training features and bigram data.
+        
+        Returns:
+            True if loading was successful, False otherwise.
+        """
+        try:
+            print(f"VERBOSE: Loading model from {model_path}")
+            
+            # Load checkpoint
+            checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+            
+            # Restore metadata
+            metadata = checkpoint.get('model_metadata', {})
+            self.num_base_features = metadata.get('num_base_features', self.num_base_features)
+            self.num_steps = metadata.get('num_steps', self.num_steps)
+            self.beta = metadata.get('beta', self.beta)
+            
+            print(f"VERBOSE: Loaded model metadata: {metadata.get('model_name', 'Unknown')}")
+            print(f"VERBOSE: Model saved on: {metadata.get('save_timestamp', 'Unknown')}")
+            
+            # Restore scaler state
+            scaler_state = checkpoint.get('scaler_state', {})
+            if scaler_state.get('mean_') is not None:
+                self.scaler.mean_ = scaler_state['mean_']
+                self.scaler.scale_ = scaler_state['scale_']
+                self.scaler.var_ = scaler_state['var_']
+                self.scaler.n_features_in_ = scaler_state['n_features_in_']
+                print("VERBOSE: Scaler state restored")
+            
+            # Restore SNN model
+            model_state_dict = checkpoint.get('model_state_dict')
+            if model_state_dict is not None:
+                # Determine input size from scaler or features
+                input_size = self.num_base_features
+                if hasattr(self.scaler, 'n_features_in_') and self.scaler.n_features_in_:
+                    input_size = self.scaler.n_features_in_
+                
+                # Recreate the model architecture
+                self.snn_model = self._create_spiking_network(input_size)
+                self.snn_model.load_state_dict(model_state_dict)
+                print("VERBOSE: SNN model architecture recreated and weights loaded")
+            
+            # Restore training data if requested
+            if load_training_data:
+                if 'bigram_frequencies' in checkpoint:
+                    self.bigram_frequencies = checkpoint['bigram_frequencies']
+                    print(f"VERBOSE: Loaded {len(self.bigram_frequencies)} bigram frequencies")
+                
+                if 'frequency_features' in checkpoint:
+                    self.frequency_features = checkpoint['frequency_features']
+                    print(f"VERBOSE: Loaded {len(self.frequency_features)} frequency features")
+                
+                if 'sorted_bigrams' in checkpoint:
+                    self.sorted_bigrams = checkpoint['sorted_bigrams']
+                
+                if 'unigram_counts' in checkpoint:
+                    self.unigram_counts = Counter(checkpoint['unigram_counts'])
+                    print(f"VERBOSE: Loaded {len(self.unigram_counts)} unigram counts")
+                
+                if 'current_text' in checkpoint:
+                    self.current_text = checkpoint['current_text']
+                    print(f"VERBOSE: Loaded current text ({len(self.current_text)} characters)")
+                
+                if 'feature_operations' in checkpoint:
+                    self.feature_operations = checkpoint['feature_operations']
+                    print("VERBOSE: Loaded feature operations")
+            
+            print("VERBOSE: Model loading completed successfully")
+            return True
+            
+        except Exception as e:
+            print(f"VERBOSE: Error loading model: {e}")
+            return False
+
+    def list_saved_models(self) -> List[str]:
+        """List all saved models in the models directory."""
+        if not os.path.exists(self.model_save_path):
+            return []
+        
+        model_files = [f for f in os.listdir(self.model_save_path) if f.endswith('.pth')]
+        return sorted(model_files)
+
+    def delete_model(self, model_name: str) -> bool:
+        """Delete a saved model and its summary."""
+        try:
+            model_path = os.path.join(self.model_save_path, f"{model_name}.pth")
+            summary_path = os.path.join(self.model_save_path, f"{model_name}_summary.txt")
+            
+            if os.path.exists(model_path):
+                os.remove(model_path)
+                print(f"VERBOSE: Deleted model file: {model_path}")
+            
+            if os.path.exists(summary_path):
+                os.remove(summary_path)
+                print(f"VERBOSE: Deleted summary file: {summary_path}")
+            
+            return True
+        except Exception as e:
+            print(f"VERBOSE: Error deleting model: {e}")
+            return False
 
     def set_feature_operations(self, operations: Optional[List[Optional[Callable[[np.ndarray], np.ndarray]]]]) -> None:
         print(f"VERBOSE: Setting feature operations. Received {len(operations) if operations else 'None'} operations.")
@@ -756,48 +964,148 @@ class SpikingMultilinearStreamLinker:
             spike_patterns.append(spike_train.flatten())
         
         return np.array(spike_patterns)
-    
+
 
 def enhanced_spiking_text_generation():
-    """Enhanced text generation using spiking neural networks."""
+    """Enhanced text generation using spiking neural networks with save/load functionality."""
     print("VERBOSE: Starting spiking neural network text generation")
     
     # Initialize spiking components
     predictor = SpikingFrequencyPredictor()
     
-    # Load and process text
-    text_content = predictor.load_text_file("test.txt")
-    predictor.current_text = text_content  # Store for access in feature creation
-    predictor.extract_bigram_frequencies(text_content)
-    predictor.create_bigram_frequency_features()
+    # Check for existing models
+    saved_models = predictor.list_saved_models()
+    if saved_models:
+        print(f"\nVERBOSE: Found {len(saved_models)} saved models:")
+        for i, model in enumerate(saved_models):
+            print(f"  {i+1}. {model}")
+        
+        choice = input("\nLoad existing model? (y/n): ").lower()
+        if choice == 'y':
+            model_choice = input("Enter model filename (or number): ")
+            try:
+                if model_choice.isdigit():
+                    model_idx = int(model_choice) - 1
+                    if 0 <= model_idx < len(saved_models):
+                        model_file = saved_models[model_idx]
+                    else:
+                        raise ValueError("Invalid model number")
+                else:
+                    model_file = model_choice if model_choice.endswith('.pth') else f"{model_choice}.pth"
+                
+                model_path = os.path.join(predictor.model_save_path, model_file)
+                if predictor.load_model(model_path):
+                    print("VERBOSE: Model loaded successfully!")
+                else:
+                    print("VERBOSE: Failed to load model, training new one...")
+                    predictor = SpikingFrequencyPredictor()  # Reset
+            except Exception as e:
+                print(f"VERBOSE: Error loading model: {e}, training new one...")
+                predictor = SpikingFrequencyPredictor()  # Reset
     
-    # Train spiking network
-    predictor.train_spiking_predictor()
+    # Train new model if not loaded
+    if predictor.snn_model is None:
+        # Load and process text
+        text_content = predictor.load_text_file("test.txt")
+        predictor.current_text = text_content  # Store for access in feature creation
+        predictor.extract_bigram_frequencies(text_content)
+        predictor.create_bigram_frequency_features()
+        
+        # Train spiking network
+        predictor.train_spiking_predictor()
+        
+        # Auto-save the trained model
+        save_choice = input("\nSave trained model? (y/n): ").lower()
+        if save_choice == 'y':
+            model_name = input("Enter model name (optional): ").strip()
+            if not model_name:
+                model_name = None
+            saved_path = predictor.save_model(model_name)
+            print(f"VERBOSE: Model saved to {saved_path}")
     
     print("\n" + "="*60)
     print("SPIKING NEURAL NETWORK TEXT GENERATOR READY")
     print("="*60)
-    print("Enter text prompts to generate responses. Type 'quit' to exit.")
+    print("Commands:")
+    print("  - Enter text prompts to generate responses")
+    print("  - Type 'save [name]' to save current model")
+    print("  - Type 'load [name]' to load a saved model")
+    print("  - Type 'list' to list saved models")
+    print("  - Type 'delete [name]' to delete a saved model")
+    print("  - Type 'quit' to exit")
     print("="*60)
     
     while True:
-        user_input = input("\nUSER: ")
+        user_input = input("\nUSER: ").strip()
+        
         if user_input.lower() == 'quit':
             print("Goodbye!")
             break
-            
         
-        # Generate with spiking network
+        elif user_input.lower().startswith('save'):
+            parts = user_input.split(maxsplit=1)
+            model_name = parts[1] if len(parts) > 1 else None
+            saved_path = predictor.save_model(model_name)
+            print(f"Model saved to: {saved_path}")
+            continue
+        
+        elif user_input.lower().startswith('load'):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2:
+                print("Please specify a model name to load")
+                continue
+            
+            model_name = parts[1]
+            if not model_name.endswith('.pth'):
+                model_name += '.pth'
+            
+            model_path = os.path.join(predictor.model_save_path, model_name)
+            if predictor.load_model(model_path):
+                print(f"Model loaded successfully: {model_name}")
+            else:
+                print(f"Failed to load model: {model_name}")
+            continue
+        
+        elif user_input.lower() == 'list':
+            saved_models = predictor.list_saved_models()
+            if saved_models:
+                print(f"Saved models ({len(saved_models)}):")
+                for i, model in enumerate(saved_models):
+                    print(f"  {i+1}. {model}")
+            else:
+                print("No saved models found")
+            continue
+        
+        elif user_input.lower().startswith('delete'):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2:
+                print("Please specify a model name to delete")
+                continue
+            
+            model_name = parts[1]
+            if model_name.endswith('.pth'):
+                model_name = model_name[:-4]  # Remove .pth extension
+            
+            if predictor.delete_model(model_name):
+                print(f"Model deleted: {model_name}")
+            else:
+                print(f"Failed to delete model: {model_name}")
+            continue
+        
+        # Generate text with spiking network
+        if predictor.snn_model is None:
+            print("No trained model available. Please train or load a model first.")
+            continue
+        
         spiking_frequencies = predictor.generate_spiking_predictions(num_variations=1)
         
         if spiking_frequencies:
             # Enhance frequencies based on linking results
             enhanced_frequencies = spiking_frequencies[0].copy()
-            words = predictor.preprocess_text(text_content)
             
             generated_text = predictor.expand_text_from_bigrams(
                 enhanced_frequencies,
-                text_length=200,
+                text_length=250,
                 seed_phrase=user_input
             )
             
@@ -808,6 +1116,7 @@ def enhanced_spiking_text_generation():
             print("="*50)
         else:
             print("VERBOSE: No spiking predictions generated")
+
 
 if __name__ == "__main__":
     enhanced_spiking_text_generation()
