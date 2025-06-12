@@ -293,7 +293,7 @@ if __name__ == '__main__':
 
     # --- 3. Initialize and train the SOM ---
     print("--- Training the Self-Organizing Map ---")
-    som = SOM(m=1000, n=1000, dim=FEATURE_DIM, n_iter=1000, alpha=0.5)
+    som = SOM(m=100, n=100, dim=FEATURE_DIM, n_iter=1000, alpha=0.5)
     som.fit(feature_matrix)
     print("SOM training complete.\n")
     
