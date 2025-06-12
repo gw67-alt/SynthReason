@@ -8,7 +8,7 @@ from tqdm import tqdm, trange
 # --------------------------------------------------------------------------
 # CLASS DEFINITIONS
 # --------------------------------------------------------------------------
-KB_LEN = 99999
+KB_LEN = 999999
 class SOM(BaseEstimator, TransformerMixin):
     """
     A more efficient and corrected 2D Self-Organizing Map (SOM).
@@ -242,7 +242,7 @@ def expand_text_from_bigrams_with_som(
         next_word, ambiguous, info = som_wrapper.select(list(candidate_features), list(candidate_words))
         
         if ambiguous:
-            print(f"AMBIGUITY DETECTED -> Candidates: {[(w, round(s, 4)) for w, s in info]}")
+            #print(f"AMBIGUITY DETECTED -> Candidates: {[(w, round(s, 4)) for w, s in info]}")
             # Simple ambiguity resolution: pick randomly from the top contenders
             next_word = random.choice([word for word, score in info])
         
