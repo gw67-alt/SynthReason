@@ -8,7 +8,7 @@ from tqdm import tqdm, trange
 # --------------------------------------------------------------------------
 # CLASS DEFINITIONS
 # --------------------------------------------------------------------------
-KB_LEN = 999999
+KB_LEN = -1
 class SOM(BaseEstimator, TransformerMixin):
     """
     A more efficient and corrected 2D Self-Organizing Map (SOM).
@@ -293,7 +293,7 @@ if __name__ == '__main__':
 
     # --- 3. Initialize and train the SOM ---
     print("--- Training the Self-Organizing Map ---")
-    som = SOM(m=100, n=100, dim=FEATURE_DIM, n_iter=1000, alpha=0.5)
+    som = SOM(m=10, n=10, dim=FEATURE_DIM, n_iter=10000, alpha=0.5)
     som.fit(feature_matrix)
     print("SOM training complete.\n")
     
