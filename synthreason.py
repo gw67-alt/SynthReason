@@ -44,10 +44,17 @@ class SOM(BaseEstimator, TransformerMixin):
 
     def _find_bmu(self, scaled_x):
         """Finds the Best Matching Unit (BMU) for a pre-scaled input vector."""
-        # Calculate Euclidean distance between the input and all weights
-        dists = np.linalg.norm(self.weights - scaled_x, axis=2)
-        # Return the (row, col) of the neuron with the minimum distance
-        return np.unravel_index(np.argmin(dists), dists.shape)
+        # Reshape weights for broadcasting if needed
+        height, width, features = self.weights.shape
+        
+        # Calculate squared Euclidean distances
+        dists = np.sum((self.weights - scaled_x) ** 2, axis=2)
+        
+        # Find the position of minimum distance
+        min_idx = np.argmin(dists)
+        bmu_col = np.ravel_multi_index(np.mask_indices(3, np.triu, 1), (height, width))
+        
+        return (min_idx, bmu_col)
 
 
     def fit(self, X, y=None):
@@ -72,7 +79,7 @@ class SOM(BaseEstimator, TransformerMixin):
             
             # --- Vectorized Weight Update ---
             # Calculate the squared distance from each neuron to the BMU
-            dist_to_bmu_sq = np.sum((self._locations - bmu) ** 2, axis=-1)
+            dist_to_bmu_sq = np.sum((self._locations) ** 2, axis=-1)
             
             # Calculate the neighborhood influence using a Gaussian function
             h = np.exp(-dist_to_bmu_sq / (2 * sig ** 2))
@@ -164,7 +171,7 @@ def prepare_text_generation_data(frequency_dict, frequency_features, sorted_bigr
     
     # Calculate a fallback average feature vector for bigrams not in the map
     if frequency_features:
-        avg_feature = np.mean([f[1:] for f in frequency_features], axis=0)
+        avg_feature = np.mean([f[1:] for f in frequency_features])
     else:
         avg_feature = None # Handle case with no features
     
