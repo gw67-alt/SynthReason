@@ -8,7 +8,7 @@ from tqdm import tqdm, trange
 # --------------------------------------------------------------------------
 # CLASS DEFINITIONS
 # --------------------------------------------------------------------------
-KB_LEN = 999999
+KB_LEN = -1
 class SOM(BaseEstimator, TransformerMixin):
     """
     A more efficient and corrected 2D Self-Organizing Map (SOM).
