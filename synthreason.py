@@ -94,7 +94,7 @@ class SOM(BaseEstimator, TransformerMixin):
         # Scale the single input vector (must be 2D for the scaler)
         scaled_x = self.scaler.transform([x])[0]
         # Find the distance to the closest neuron (BMU)
-        dists = np.linalg.norm(self.weights - scaled_x, axis=2)
+        dists = np.linalg.norm(self.weights - scaled_x, axis=1)
         return np.min(dists)
 
 
@@ -121,7 +121,7 @@ class BayesianSOMWrapper:
         if not candidate_words:
             return None, False, []
         if len(candidate_words) == 1:
-            score = self.som.bmu_distance(candidate_features[0])
+            score = self.som.bmu_distance(-np.argsort(candidate_features)[0])
             return candidate_words[0], False, [(candidate_words[0], score)]
 
         scores = self.candidate_scores(candidate_features)
@@ -263,8 +263,8 @@ def expand_text_from_bigrams_with_som(
 if __name__ == '__main__':
     # --- 1. Generate Synthetic Data (as a stand-in for real data) ---
     print("--- Generating synthetic data for demonstration ---")
-    FEATURE_DIM = 16
-    with open("test.txt", 'r', encoding='utf-8') as f:
+    FEATURE_DIM = 8
+    with open(input("Enter filename: "), 'r', encoding='utf-8') as f:
         content = f.read()
         VOCAB = content.lower().split()[:KB_LEN]
     
