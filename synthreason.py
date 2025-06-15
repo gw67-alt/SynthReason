@@ -277,7 +277,12 @@ if __name__ == '__main__':
             if bigram not in frequency_dict:
                 sorted_bigrams.append(bigram)
             frequency_dict[bigram] += 1
-            
+    for i in range(len(content.split("the")[1])-2): # Increased count for a denser transition map
+       
+            bigram = (VOCAB[i-1], VOCAB[i])
+            if bigram not in frequency_dict:
+                sorted_bigrams.append(bigram)
+            frequency_dict[bigram] += 1   
     # Create corresponding feature vectors for each unique bigram
     frequency_features = []
     for bigram in sorted_bigrams:
