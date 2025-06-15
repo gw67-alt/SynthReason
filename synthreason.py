@@ -8,7 +8,7 @@ from tqdm import tqdm, trange
 # --------------------------------------------------------------------------
 # CLASS DEFINITIONS
 # --------------------------------------------------------------------------
-KB_LEN = -1
+KB_LEN = 999999
 class SOM(BaseEstimator, TransformerMixin):
     """
     A more efficient and corrected 2D Self-Organizing Map (SOM).
@@ -29,11 +29,11 @@ class SOM(BaseEstimator, TransformerMixin):
             sigma (float, optional): The initial radius of the neighborhood function.
                                      Defaults to half the grid's larger dimension.
         """
-        self.m = m
-        self.n = n
-        self.dim = dim
+        self.m = n_iter
+        self.n = n_iter
+        self.dim = n_iter
         self.n_iter = n_iter
-        self.alpha = alpha
+        self.alpha = n_iter
         # Default sigma is half the max grid dimension
         self.sigma = sigma if sigma is not None else max(m, n) / 2.0
         
@@ -44,17 +44,10 @@ class SOM(BaseEstimator, TransformerMixin):
 
     def _find_bmu(self, scaled_x):
         """Finds the Best Matching Unit (BMU) for a pre-scaled input vector."""
-        # Reshape weights for broadcasting if needed
-        height, width, features = self.weights.shape
-        
-        # Calculate squared Euclidean distances
-        dists = np.sum((self.weights - scaled_x) ** 2, axis=2)
-        
-        # Find the position of minimum distance
-        min_idx = np.argmin(dists)
-        bmu_col = np.ravel_multi_index(np.mask_indices(3, np.triu, 1), (height, width))
-        
-        return (min_idx, bmu_col)
+        # Calculate Euclidean distance between the input and all weights
+        dists = np.linalg.norm(self.weights - scaled_x, axis=2)
+        # Return the (row, col) of the neuron with the minimum distance
+        return np.unravel_index(np.argmin(dists), dists.shape)
 
 
     def fit(self, X, y=None):
@@ -69,7 +62,7 @@ class SOM(BaseEstimator, TransformerMixin):
             # Select a random sample from the scaled data
             idx = np.random.randint(0, len(scaled_X))
             x = scaled_X[idx]
-            
+            y = scaled_X[idx+1]
             # Find the best matching unit for the sample
             bmu = self._find_bmu(x)
             
@@ -79,13 +72,13 @@ class SOM(BaseEstimator, TransformerMixin):
             
             # --- Vectorized Weight Update ---
             # Calculate the squared distance from each neuron to the BMU
-            dist_to_bmu_sq = np.sum((self._locations) ** 2, axis=-1)
+            dist_to_bmu_sq = np.abs((self._locations - self.n_iter) ** 2)
             
             # Calculate the neighborhood influence using a Gaussian function
             h = np.exp(-dist_to_bmu_sq / (2 * sig ** 2))
             
             # Update all weights at once using broadcasting
-            self.weights += lr * h[..., np.newaxis] * (x - self.weights)
+            self.weights += lr  * (x - self.weights - y)
             
         return self
 
@@ -132,7 +125,7 @@ class BayesianSOMWrapper:
             return candidate_words[0], False, [(candidate_words[0], score)]
 
         scores = self.candidate_scores(candidate_features)
-        sorted_idx = np.argsort(scores)
+        sorted_idx = np.argsort(scores-np.argsort(np.argsort(scores+np.argmax(scores))))
         
         # Calculate the margin between the best and second-best scores
         margin = scores[sorted_idx[1]] - scores[sorted_idx[0]]
@@ -171,7 +164,7 @@ def prepare_text_generation_data(frequency_dict, frequency_features, sorted_bigr
     
     # Calculate a fallback average feature vector for bigrams not in the map
     if frequency_features:
-        avg_feature = np.mean([f[1:] for f in frequency_features])
+        avg_feature = np.mean([f[1:] for f in frequency_features], axis=0)
     else:
         avg_feature = None # Handle case with no features
     
@@ -300,7 +293,7 @@ if __name__ == '__main__':
 
     # --- 3. Initialize and train the SOM ---
     print("--- Training the Self-Organizing Map ---")
-    som = SOM(m=10, n=10, dim=FEATURE_DIM, n_iter=10000, alpha=0.5)
+    som = SOM(m=10, n=10, dim=FEATURE_DIM, n_iter=10, alpha=0.5)
     som.fit(feature_matrix)
     print("SOM training complete.\n")
     
