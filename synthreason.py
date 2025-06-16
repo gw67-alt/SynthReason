@@ -4,6 +4,9 @@ from sklearn.preprocessing import StandardScaler
 from collections import defaultdict
 import random
 from tqdm import tqdm, trange
+import pickle
+import os
+import json
 
 # --------------------------------------------------------------------------
 # CLASS DEFINITIONS
@@ -29,11 +32,11 @@ class SOM(BaseEstimator, TransformerMixin):
             sigma (float, optional): The initial radius of the neighborhood function.
                                      Defaults to half the grid's larger dimension.
         """
-        self.m = n_iter
-        self.n = n_iter
-        self.dim = n_iter
+        self.m = m
+        self.n = n
+        self.dim = dim
         self.n_iter = n_iter
-        self.alpha = n_iter
+        self.alpha = alpha
         # Default sigma is half the max grid dimension
         self.sigma = sigma if sigma is not None else max(m, n) / 2.0
         
@@ -49,7 +52,6 @@ class SOM(BaseEstimator, TransformerMixin):
         # Return the (row, col) of the neuron with the minimum distance
         return np.unravel_index(np.argmin(dists), dists.shape)
 
-
     def fit(self, X, y=None):
         """
         Trains the SOM on the input data X with progress tracking.
@@ -62,7 +64,7 @@ class SOM(BaseEstimator, TransformerMixin):
             # Select a random sample from the scaled data
             idx = np.random.randint(0, len(scaled_X))
             x = scaled_X[idx]
-            y = scaled_X[idx+1]
+            
             # Find the best matching unit for the sample
             bmu = self._find_bmu(x)
             
@@ -72,16 +74,15 @@ class SOM(BaseEstimator, TransformerMixin):
             
             # --- Vectorized Weight Update ---
             # Calculate the squared distance from each neuron to the BMU
-            dist_to_bmu_sq = np.abs((self._locations - self.n_iter) ** 2)
+            dist_to_bmu_sq = np.sum((self._locations - bmu) ** 2, axis=2)
             
             # Calculate the neighborhood influence using a Gaussian function
             h = np.exp(-dist_to_bmu_sq / (2 * sig ** 2))
             
             # Update all weights at once using broadcasting
-            self.weights += lr  * (x - self.weights - y)
+            self.weights += lr * h[:, :, np.newaxis] * (x - self.weights)
             
         return self
-
 
     def transform(self, X):
         """Transforms the input data X to the coordinates of their BMUs."""
@@ -94,7 +95,7 @@ class SOM(BaseEstimator, TransformerMixin):
         # Scale the single input vector (must be 2D for the scaler)
         scaled_x = self.scaler.transform([x])[0]
         # Find the distance to the closest neuron (BMU)
-        dists = np.linalg.norm(self.weights - scaled_x, axis=1)
+        dists = np.linalg.norm(self.weights - scaled_x, axis=2)
         return np.min(dists)
 
 
@@ -121,11 +122,11 @@ class BayesianSOMWrapper:
         if not candidate_words:
             return None, False, []
         if len(candidate_words) == 1:
-            score = self.som.bmu_distance(-np.argsort(candidate_features)[0])
+            score = self.som.bmu_distance(candidate_features[0])
             return candidate_words[0], False, [(candidate_words[0], score)]
 
         scores = self.candidate_scores(candidate_features)
-        sorted_idx = np.argsort(scores-np.argsort(np.argsort(scores+np.argmax(scores))))
+        sorted_idx = np.argsort(scores)
         
         # Calculate the margin between the best and second-best scores
         margin = scores[sorted_idx[1]] - scores[sorted_idx[0]]
@@ -139,6 +140,173 @@ class BayesianSOMWrapper:
             # Otherwise, return the best candidate
             best_idx = sorted_idx[0]
             return candidate_words[best_idx], False, [(candidate_words[best_idx], scores[best_idx])]
+
+
+class SOMTextGenerator:
+    """
+    Main class that encapsulates the entire text generation system with save/load functionality.
+    """
+    def __init__(self, som_params=None, ambiguity_threshold=0.15):
+        self.som_params = som_params or {'m': 10, 'n': 10, 'dim': 8, 'n_iter': 100, 'alpha': 0.5}
+        self.ambiguity_threshold = ambiguity_threshold
+        
+        # These will be populated during training or loading
+        self.som = None
+        self.bayesian_som = None
+        self.transitions = None
+        self.bigram_feature_map = None
+        self.avg_feature = None
+        self.sorted_bigrams = None
+        self.frequency_dict = None
+        self.frequency_features = None
+        
+    def train_from_file(self, filename):
+        """Train the model from a text file."""
+        print("--- Loading and processing text file ---")
+        with open(filename, 'r', encoding='utf-8') as f:
+            content = f.read()
+            VOCAB = content.lower().split()[:KB_LEN]
+        
+        print("--- Generating bigrams and features ---")
+        sorted_bigrams = []
+        frequency_dict = defaultdict(int)
+        
+        # Create random bigrams and frequency data
+        sorted_bigrams = []
+        frequency_dict = defaultdict(int)
+        for i in trange(len(VOCAB)-1, desc="Training vocabulary", unit="iter"): # Increased count for a denser transition map
+           
+            bigram = (VOCAB[i], VOCAB[i+1])
+            if bigram not in frequency_dict:
+                sorted_bigrams.append(bigram)
+            frequency_dict[bigram] += 1
+            for word in content.split("is")[0]: # Increased count for a denser transition map
+               
+                bigram = (word, VOCAB[i])
+                if bigram not in frequency_dict:
+                    sorted_bigrams.append(bigram)
+                frequency_dict[bigram] += 1   
+        
+        # Create corresponding feature vectors for each unique bigram
+        frequency_features = []
+        feature_dim = self.som_params['dim']
+        for bigram in sorted_bigrams:
+            # The first element is the bigram itself, followed by feature values
+            features = [bigram] + list(np.random.rand(feature_dim))
+            frequency_features.append(features)
+
+        print(f"Generated {len(sorted_bigrams)} unique bigrams with {feature_dim}-dimensional features.")
+        
+        # Store the data
+        self.sorted_bigrams = sorted_bigrams
+        self.frequency_dict = frequency_dict
+        self.frequency_features = frequency_features
+        
+        # Train the SOM
+        self._train_som()
+        
+        # Prepare data structures
+        self._prepare_generation_data()
+        
+    def _train_som(self):
+        """Train the SOM on the feature data."""
+        print("--- Training the Self-Organizing Map ---")
+        feature_matrix = np.array([f[1:] for f in self.frequency_features])
+        
+        self.som = SOM(**self.som_params)
+        self.som.fit(feature_matrix)
+        
+        # Create the Bayesian wrapper
+        self.bayesian_som = BayesianSOMWrapper(self.som, self.ambiguity_threshold)
+        print("SOM training complete.")
+        
+    def _prepare_generation_data(self):
+        """Prepare efficient lookup structures for text generation."""
+        print("--- Preparing data for text generation ---")
+        self.transitions, self.bigram_feature_map, self.avg_feature = prepare_text_generation_data(
+            self.frequency_dict,
+            self.frequency_features,
+            self.sorted_bigrams
+        )
+        print("Data preparation complete.")
+        
+    def generate_text(self, text_length=100, seed_phrase=None):
+        """Generate text using the trained model."""
+        if not self.bayesian_som:
+            raise ValueError("Model not trained. Call train_from_file() first or load a saved model.")
+            
+        return expand_text_from_bigrams_with_som(
+            transitions=self.transitions,
+            bigram_feature_map=self.bigram_feature_map,
+            avg_feature=self.avg_feature,
+            som_wrapper=self.bayesian_som,
+            text_length=text_length,
+            seed_phrase=seed_phrase
+        )
+    
+    def save_model(self, filepath):
+        """Save the trained model and all associated data."""
+        if not self.som:
+            raise ValueError("No model to save. Train a model first.")
+            
+        save_data = {
+            'som_params': self.som_params,
+            'ambiguity_threshold': self.ambiguity_threshold,
+            'som': self.som,
+            'sorted_bigrams': self.sorted_bigrams,
+            'frequency_dict': dict(self.frequency_dict),  # Convert defaultdict to dict
+            'frequency_features': self.frequency_features,
+            'transitions': dict(self.transitions),  # Convert defaultdict to dict
+            'bigram_feature_map': self.bigram_feature_map,
+            'avg_feature': self.avg_feature
+        }
+        
+        with open(filepath, 'wb') as f:
+            pickle.dump(save_data, f)
+        
+        print(f"Model saved to {filepath}")
+    
+    def load_model(self, filepath):
+        """Load a previously saved model."""
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Model file {filepath} not found.")
+            
+        with open(filepath, 'rb') as f:
+            save_data = pickle.load(f)
+        
+        # Restore all the data
+        self.som_params = save_data['som_params']
+        self.ambiguity_threshold = save_data['ambiguity_threshold']
+        self.som = save_data['som']
+        self.sorted_bigrams = save_data['sorted_bigrams']
+        self.frequency_dict = defaultdict(int, save_data['frequency_dict'])
+        self.frequency_features = save_data['frequency_features']
+        self.transitions = defaultdict(list, save_data['transitions'])
+        self.bigram_feature_map = save_data['bigram_feature_map']
+        self.avg_feature = save_data['avg_feature']
+        
+        # Recreate the Bayesian wrapper
+        self.bayesian_som = BayesianSOMWrapper(self.som, self.ambiguity_threshold)
+        
+        print(f"Model loaded from {filepath}")
+    
+    def get_model_info(self):
+        """Get information about the current model."""
+        if not self.som:
+            return "No model loaded."
+            
+        info = {
+            'SOM dimensions': f"{self.som.m}x{self.som.n}",
+            'Feature dimension': self.som.dim,
+            'Training iterations': self.som.n_iter,
+            'Learning rate': self.som.alpha,
+            'Ambiguity threshold': self.ambiguity_threshold,
+            'Number of bigrams': len(self.sorted_bigrams) if self.sorted_bigrams else 0,
+            'Vocabulary size': len(self.transitions) if self.transitions else 0
+        }
+        
+        return info
+
 
 # --------------------------------------------------------------------------
 # HELPER FUNCTIONS FOR TEXT GENERATION
@@ -201,7 +369,7 @@ def expand_text_from_bigrams_with_som(
         if seed_words:
             generated_text_list.extend(seed_words)
             current_word = seed_words[-1]
-            # **FIX**: Check if the seed word is a dead end. If so, don't use it.
+            # Check if the seed word is a dead end. If so, don't use it.
             if current_word not in transitions:
                 current_word = None
 
@@ -216,14 +384,14 @@ def expand_text_from_bigrams_with_som(
     for _ in range(num_words_to_generate):
         candidate_words = transitions.get(current_word, [])
         
-        # --- ROBUSTNESS FIX: Handle dead ends ---
+        # Handle dead ends
         if not candidate_words:
             # If we hit a dead end, teleport to a new random word and continue
             current_word = random.choice(all_possible_starters)
             # We don't append the new word here, we let the loop find its candidates
             continue
             
-        # --- Efficient Feature Lookup ---
+        # Efficient Feature Lookup
         candidate_features = [
             bigram_feature_map.get((current_word, w2), avg_feature) 
             for w2 in candidate_words
@@ -237,12 +405,10 @@ def expand_text_from_bigrams_with_som(
             continue
         candidate_features, candidate_words = zip(*valid_candidates)
 
-
         # Use the SOM wrapper to select the next word
         next_word, ambiguous, info = som_wrapper.select(list(candidate_features), list(candidate_words))
         
         if ambiguous:
-            #print(f"AMBIGUITY DETECTED -> Candidates: {[(w, round(s, 4)) for w, s in info]}")
             # Simple ambiguity resolution: pick randomly from the top contenders
             next_word = random.choice([word for word, score in info])
         
@@ -257,77 +423,90 @@ def expand_text_from_bigrams_with_som(
 
 
 # --------------------------------------------------------------------------
-# EXAMPLE USAGE
+# EXAMPLE USAGE WITH SAVE/LOAD
 # --------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    # --- 1. Generate Synthetic Data (as a stand-in for real data) ---
-    print("--- Generating synthetic data for demonstration ---")
-    FEATURE_DIM = 8
-    with open(input("Enter filename: "), 'r', encoding='utf-8') as f:
-        content = f.read()
-        VOCAB = content.lower().split()[:KB_LEN]
-    
-    # Create random bigrams and frequency data
-    sorted_bigrams = []
-    frequency_dict = defaultdict(int)
-    for i in range(len(VOCAB)-1): # Increased count for a denser transition map
-       
-            bigram = (VOCAB[i], VOCAB[i+1])
-            if bigram not in frequency_dict:
-                sorted_bigrams.append(bigram)
-            frequency_dict[bigram] += 1
-    for i in range(len(content.split("the")[1])-2): # Increased count for a denser transition map
-       
-            bigram = (VOCAB[i-1], VOCAB[i])
-            if bigram not in frequency_dict:
-                sorted_bigrams.append(bigram)
-            frequency_dict[bigram] += 1   
-    # Create corresponding feature vectors for each unique bigram
-    frequency_features = []
-    for bigram in sorted_bigrams:
-        # The first element is the bigram itself, followed by feature values
-        features = [bigram] + list(np.random.rand(FEATURE_DIM))
-        frequency_features.append(features)
-
-    print(f"Generated {len(sorted_bigrams)} unique bigrams with {FEATURE_DIM}-dimensional features.\n")
-
-    # --- 2. Prepare the feature matrix for the SOM ---
-    # We extract only the feature values (ignoring the first element, which is the bigram tuple)
-    feature_matrix = np.array([f[1:] for f in frequency_features])
-
-    # --- 3. Initialize and train the SOM ---
-    print("--- Training the Self-Organizing Map ---")
-    som = SOM(m=10, n=10, dim=FEATURE_DIM, n_iter=10, alpha=0.5)
-    som.fit(feature_matrix)
-    print("SOM training complete.\n")
-    
-    # Wrap the trained SOM with our ambiguity detector
-    bayesian_som = BayesianSOMWrapper(som, ambiguity_threshold=0.1)
-
-    # --- 4. Prepare data structures for efficient text generation ---
-    print("--- Preparing data for text generation ---")
-    transitions, bigram_feature_map, avg_feature = prepare_text_generation_data(
-        frequency_dict,
-        frequency_features,
-        sorted_bigrams
+    # Initialize the text generator
+    generator = SOMTextGenerator(
+        som_params={'m': 10, 'n': 10, 'dim': 8, 'n_iter': 50, 'alpha': 0.5},
+        ambiguity_threshold=0.1
     )
-    print("Data preparation complete.\n")
-
-    # --- 5. Generate Text ---
-    print("--- Generating Text ---")
+    
+    print("SOM Text Generator with Save/Load")
+    print("Commands:")
+    print("  train <filename> - Train a new model from text file")
+    print("  load <filename> - Load a saved model")
+    print("  save <filename> - Save the current model")
+    print("  generate <text> - Generate text with optional seed")
+    print("  info - Show model information")
+    print("  quit - Exit")
+    print()
+    
     while True:
-        user_input = input("USER: ")
-        print(f"Seed phrase: '{user_input}'")
-        
-        generated_text = expand_text_from_bigrams_with_som(
-            transitions=transitions,
-            bigram_feature_map=bigram_feature_map,
-            avg_feature=avg_feature,
-            som_wrapper=bayesian_som,
-            text_length=275,
-            seed_phrase=user_input
-        )
-
-        print("\n--- Final Generated Text ---")
-        print(generated_text)
+        try:
+            command = input(">>> ").strip().split(None, 1)
+            if not command:
+                continue
+                
+            cmd = command[0].lower()
+            
+            if cmd == 'quit':
+                break
+                
+            elif cmd == 'train':
+                if len(command) < 2:
+                    print("Usage: train <filename>")
+                    continue
+                filename = command[1]
+                try:
+                    generator.train_from_file(filename)
+                    print("Training complete!")
+                except Exception as e:
+                    print(f"Error training model: {e}")
+                    
+            elif cmd == 'load':
+                if len(command) < 2:
+                    print("Usage: load <filename>")
+                    continue
+                filename = command[1]
+                try:
+                    generator.load_model(filename)
+                except Exception as e:
+                    print(f"Error loading model: {e}")
+                    
+            elif cmd == 'save':
+                if len(command) < 2:
+                    print("Usage: save <filename>")
+                    continue
+                filename = command[1]
+                try:
+                    generator.save_model(filename)
+                except Exception as e:
+                    print(f"Error saving model: {e}")
+                    
+            elif cmd == 'generate':
+                seed = command[1] if len(command) > 1 else None
+                try:
+                    text = generator.generate_text(text_length=100, seed_phrase=seed)
+                    print(f"\nGenerated text:\n{text}\n")
+                except Exception as e:
+                    print(f"Error generating text: {e}")
+                    
+            elif cmd == 'info':
+                info = generator.get_model_info()
+                if isinstance(info, dict):
+                    for key, value in info.items():
+                        print(f"{key}: {value}")
+                else:
+                    print(info)
+                print()
+                    
+            else:
+                print("Unknown command. Type 'quit' to exit.")
+                
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            break
+        except Exception as e:
+            print(f"Unexpected error: {e}")
