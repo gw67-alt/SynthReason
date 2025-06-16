@@ -12,6 +12,7 @@ import json
 # CLASS DEFINITIONS
 # --------------------------------------------------------------------------
 KB_LEN = -1
+
 class SOM(BaseEstimator, TransformerMixin):
     """
     A more efficient and corrected 2D Self-Organizing Map (SOM).
@@ -99,6 +100,273 @@ class SOM(BaseEstimator, TransformerMixin):
         return np.min(dists)
 
 
+class AdaptiveSOM(SOM):
+    """SOM with adaptive coordinate systems that change during training."""
+    
+    def __init__(self, m=8, n=8, dim=16, n_iter=100, alpha=0.3, sigma=None, 
+                 adaptive_threshold=0.1, coordinate_learning_rate=0.01):
+        super().__init__(m, n, dim, n_iter, alpha, sigma)
+        self.adaptive_threshold = adaptive_threshold
+        self.coordinate_lr = coordinate_learning_rate
+        # Initialize adaptive coordinates (can differ from grid positions)
+        self.adaptive_coords = self._locations.astype(float).copy()
+        
+    def _update_adaptive_coordinates(self, bmu, x, lr):
+        """Update the coordinate positions based on weight vector movement"""
+        # Calculate weight vector movement for all neurons
+        old_weights = self.weights.copy()
+        
+        # After weight update, adjust coordinates based on movement
+        weight_movement = np.linalg.norm(self.weights - old_weights, axis=2)
+        
+        # Move coordinates of neurons that had significant weight changes
+        significant_movement = weight_movement > self.adaptive_threshold
+        
+        for i in range(self.m):
+            for j in range(self.n):
+                if significant_movement[i, j]:
+                    # Move coordinate toward the direction of weight change
+                    direction = np.random.randn(2) * 0.1  # Small random perturbation
+                    self.adaptive_coords[i, j] += self.coordinate_lr * lr * direction
+
+    def fit(self, X, y=None):
+        """Trains the SOM with adaptive coordinates."""
+        scaled_X = self.scaler.fit_transform(X)
+        
+        for it in trange(self.n_iter, desc="Training Adaptive SOM", unit="iter"):
+            idx = np.random.randint(0, len(scaled_X))
+            x = scaled_X[idx]
+            
+            bmu = self._find_bmu(x)
+            lr = self.alpha * (1 - it / self.n_iter)
+            sig = self.sigma * (1 - it / self.n_iter)
+            
+            # Use adaptive coordinates for distance calculation
+            dist_to_bmu_sq = np.sum((self.adaptive_coords - self.adaptive_coords[bmu]) ** 2, axis=2)
+            h = np.exp(-dist_to_bmu_sq / (2 * sig ** 2))
+            
+            old_weights = self.weights.copy()
+            self.weights += lr * h[:, :, np.newaxis] * (x - self.weights)
+            
+            # Update adaptive coordinates
+            self._update_adaptive_coordinates(bmu, x, lr)
+            
+        return self
+
+
+class NonEuclideanSOM(SOM):
+    """SOM with non-Euclidean coordinate systems."""
+    
+    def __init__(self, m=8, n=8, dim=16, n_iter=100, alpha=0.3, sigma=None, 
+                 geometry='euclidean'):
+        super().__init__(m, n, dim, n_iter, alpha, sigma)
+        self.geometry = geometry
+        self._setup_coordinate_system()
+        
+    def _setup_coordinate_system(self):
+        """Initialize coordinates based on chosen geometry"""
+        if self.geometry == 'spherical':
+            self._locations = self._spherical_coordinates()
+        elif self.geometry == 'hyperbolic':
+            self._locations = self._hyperbolic_coordinates()
+        elif self.geometry == 'toroidal':
+            self._locations = self._toroidal_coordinates()
+            
+    def _spherical_coordinates(self):
+        """Generate spherical coordinate system"""
+        coords = np.zeros((self.m, self.n, 3))  # 3D for sphere
+        for i in range(self.m):
+            for j in range(self.n):
+                theta = 2 * np.pi * i / self.m
+                phi = np.pi * j / self.n
+                coords[i, j] = [
+                    np.sin(phi) * np.cos(theta),
+                    np.sin(phi) * np.sin(theta),
+                    np.cos(phi)
+                ]
+        return coords
+        
+    def _hyperbolic_coordinates(self):
+        """Generate hyperbolic coordinate system using Poincaré disk model"""
+        coords = np.zeros((self.m, self.n, 2))
+        for i in range(self.m):
+            for j in range(self.n):
+                # Map to unit disk
+                r = (i / self.m) * 0.9  # Keep within unit disk
+                theta = 2 * np.pi * j / self.n
+                coords[i, j] = [r * np.cos(theta), r * np.sin(theta)]
+        return coords
+        
+    def _toroidal_coordinates(self):
+        """Generate toroidal coordinate system"""
+        coords = np.zeros((self.m, self.n, 2))
+        for i in range(self.m):
+            for j in range(self.n):
+                # Toroidal mapping with periodic boundary conditions
+                coords[i, j] = [i / self.m, j / self.n]
+        return coords
+        
+    def _hyperbolic_distance(self, p1, p2):
+        """Calculate hyperbolic distance between points in Poincaré disk"""
+        norm_p1 = np.linalg.norm(p1)
+        norm_p2 = np.linalg.norm(p2)
+        
+        if norm_p1 >= 1 or norm_p2 >= 1:
+            return np.inf
+            
+        numerator = np.linalg.norm(p1 - p2)**2
+        denominator = (1 - norm_p1**2) * (1 - norm_p2**2)
+        
+        return np.arccosh(1 + 2 * numerator / denominator)
+        
+    def _toroidal_distance(self, p1, p2):
+        """Calculate distance on torus with periodic boundaries"""
+        dx = min(abs(p1[0] - p2[0]), 1 - abs(p1[0] - p2[0]))
+        dy = min(abs(p1[1] - p2[1]), 1 - abs(p1[1] - p2[1]))
+        return np.sqrt(dx**2 + dy**2)
+
+    def fit(self, X, y=None):
+        """Trains the SOM with non-Euclidean geometry."""
+        scaled_X = self.scaler.fit_transform(X)
+        
+        for it in trange(self.n_iter, desc=f"Training {self.geometry} SOM", unit="iter"):
+            idx = np.random.randint(0, len(scaled_X))
+            x = scaled_X[idx]
+            
+            bmu = self._find_bmu(x)
+            lr = self.alpha * (1 - it / self.n_iter)
+            sig = self.sigma * (1 - it / self.n_iter)
+            
+            # Calculate distances based on geometry
+            if self.geometry == 'spherical':
+                # Use spherical distance
+                bmu_coord = self._locations[bmu]
+                dist_to_bmu_sq = np.zeros((self.m, self.n))
+                for i in range(self.m):
+                    for j in range(self.n):
+                        # Spherical distance (great circle)
+                        dot_product = np.dot(self._locations[i, j], bmu_coord)
+                        dot_product = np.clip(dot_product, -1, 1)
+                        dist_to_bmu_sq[i, j] = np.arccos(dot_product)**2
+                        
+            elif self.geometry == 'hyperbolic':
+                # Use hyperbolic distance
+                bmu_coord = self._locations[bmu]
+                dist_to_bmu_sq = np.zeros((self.m, self.n))
+                for i in range(self.m):
+                    for j in range(self.n):
+                        dist = self._hyperbolic_distance(self._locations[i, j], bmu_coord)
+                        dist_to_bmu_sq[i, j] = dist**2 if dist != np.inf else 1000
+                        
+            elif self.geometry == 'toroidal':
+                # Use toroidal distance
+                bmu_coord = self._locations[bmu]
+                dist_to_bmu_sq = np.zeros((self.m, self.n))
+                for i in range(self.m):
+                    for j in range(self.n):
+                        dist = self._toroidal_distance(self._locations[i, j], bmu_coord)
+                        dist_to_bmu_sq[i, j] = dist**2
+                        
+            else:
+                # Default Euclidean
+                dist_to_bmu_sq = np.sum((self._locations - self._locations[bmu]) ** 2, axis=2)
+            
+            h = np.exp(-dist_to_bmu_sq / (2 * sig ** 2))
+            self.weights += lr * h[:, :, np.newaxis] * (x - self.weights)
+            
+        return self
+
+
+class DynamicCoordinateSOM(SOM):
+    """SOM with time-varying coordinate systems that change throughout training."""
+    
+    def __init__(self, m=8, n=8, dim=16, n_iter=100, alpha=0.3, sigma=None):
+        super().__init__(m, n, dim, n_iter, alpha, sigma)
+        self.coordinate_transforms = [
+            self._linear_transform,
+            self._polar_transform,
+            self._logarithmic_transform,
+            self._fractal_transform
+        ]
+        
+    def _get_current_coordinates(self, iteration):
+        """Get coordinates based on current training iteration"""
+        # Cycle through different coordinate systems
+        transform_idx = (iteration // (self.n_iter // len(self.coordinate_transforms))) % len(self.coordinate_transforms)
+        return self.coordinate_transforms[transform_idx](iteration)
+        
+    def _linear_transform(self, iteration):
+        """Standard linear coordinate system"""
+        return self._locations.astype(float)
+        
+    def _polar_transform(self, iteration):
+        """Transform to polar coordinates with time-varying parameters"""
+        coords = np.zeros((self.m, self.n, 2))
+        time_factor = iteration / self.n_iter
+        
+        for i in range(self.m):
+            for j in range(self.n):
+                r = (i + time_factor) / self.m
+                theta = 2 * np.pi * (j + time_factor) / self.n
+                coords[i, j] = [r * np.cos(theta), r * np.sin(theta)]
+        return coords
+        
+    def _logarithmic_transform(self, iteration):
+        """Implement logarithmic coordinate scaling"""
+        coords = np.zeros((self.m, self.n, 2))
+        time_factor = iteration / self.n_iter
+        
+        for i in range(self.m):
+            for j in range(self.n):
+                x = (i + 1) / self.m  # Avoid log(0)
+                y = (j + 1) / self.n
+                scale = 1.0 + time_factor
+                coords[i, j] = [
+                    np.log(x) * scale,
+                    np.log(y) * scale
+                ]
+        return coords
+        
+    def _fractal_transform(self, iteration):
+        """Implement fractal-based coordinate system"""
+        coords = np.zeros((self.m, self.n, 2))
+        scale = 1.0 + 0.5 * np.sin(2 * np.pi * iteration / self.n_iter)
+        
+        for i in range(self.m):
+            for j in range(self.n):
+                # Sierpinski triangle-inspired coordinates
+                x = i / self.m
+                y = j / self.n
+                coords[i, j] = [
+                    x * scale + 0.1 * np.sin(10 * x * iteration / self.n_iter),
+                    y * scale + 0.1 * np.cos(10 * y * iteration / self.n_iter)
+                ]
+        return coords
+
+    def fit(self, X, y=None):
+        """Trains the SOM with dynamic coordinate systems."""
+        scaled_X = self.scaler.fit_transform(X)
+        
+        for it in trange(self.n_iter, desc="Training Dynamic SOM", unit="iter"):
+            idx = np.random.randint(0, len(scaled_X))
+            x = scaled_X[idx]
+            
+            # Get current coordinate system
+            current_coords = self._get_current_coordinates(it)
+            
+            bmu = self._find_bmu(x)
+            lr = self.alpha * (1 - it / self.n_iter)
+            sig = self.sigma * (1 - it / self.n_iter)
+            
+            # Calculate distances using current coordinate system
+            dist_to_bmu_sq = np.sum((current_coords - current_coords[bmu]) ** 2, axis=2)
+            h = np.exp(-dist_to_bmu_sq / (2 * sig ** 2))
+            
+            self.weights += lr * h[:, :, np.newaxis] * (x - self.weights)
+            
+        return self
+
+
 class BayesianSOMWrapper:
     """
     Wraps the SOM to add a layer of Bayesian-inspired ambiguity detection.
@@ -146,9 +414,10 @@ class SOMTextGenerator:
     """
     Main class that encapsulates the entire text generation system with save/load functionality.
     """
-    def __init__(self, som_params=None, ambiguity_threshold=0.15):
+    def __init__(self, som_params=None, ambiguity_threshold=0.15, coordinate_system='euclidean'):
         self.som_params = som_params or {'m': 10, 'n': 10, 'dim': 8, 'n_iter': 100, 'alpha': 0.5}
         self.ambiguity_threshold = ambiguity_threshold
+        self.coordinate_system = coordinate_system
         
         # These will be populated during training or loading
         self.som = None
@@ -174,14 +443,12 @@ class SOMTextGenerator:
         # Create random bigrams and frequency data
         sorted_bigrams = []
         frequency_dict = defaultdict(int)
-        for i in trange(len(VOCAB)-1, desc="Training vocabulary", unit="iter"): # Increased count for a denser transition map
-           
+        for i in trange(len(VOCAB)-1, desc="Training vocabulary", unit="iter"):
             bigram = (VOCAB[i], VOCAB[i+1])
             if bigram not in frequency_dict:
                 sorted_bigrams.append(bigram)
             frequency_dict[bigram] += 1
-            for word in content.split("is")[0]: # Increased count for a denser transition map
-               
+            for word in content.split("is")[0]:
                 bigram = (word, VOCAB[i])
                 if bigram not in frequency_dict:
                     sorted_bigrams.append(bigram)
@@ -209,16 +476,23 @@ class SOMTextGenerator:
         self._prepare_generation_data()
         
     def _train_som(self):
-        """Train the SOM on the feature data."""
-        print("--- Training the Self-Organizing Map ---")
+        """Train the SOM with enhanced coordinate systems."""
+        print("--- Training the Enhanced Self-Organizing Map ---")
         feature_matrix = np.array([f[1:] for f in self.frequency_features])
         
-        self.som = SOM(**self.som_params)
+        # Choose SOM type based on coordinate system
+        if self.coordinate_system == 'adaptive':
+            self.som = AdaptiveSOM(**self.som_params)
+        elif self.coordinate_system in ['spherical', 'hyperbolic', 'toroidal']:
+            self.som = NonEuclideanSOM(geometry=self.coordinate_system, **self.som_params)
+        elif self.coordinate_system == 'dynamic':
+            self.som = DynamicCoordinateSOM(**self.som_params)
+        else:
+            self.som = SOM(**self.som_params)
+            
         self.som.fit(feature_matrix)
-        
-        # Create the Bayesian wrapper
         self.bayesian_som = BayesianSOMWrapper(self.som, self.ambiguity_threshold)
-        print("SOM training complete.")
+        print("Enhanced SOM training complete.")
         
     def _prepare_generation_data(self):
         """Prepare efficient lookup structures for text generation."""
@@ -252,11 +526,12 @@ class SOMTextGenerator:
         save_data = {
             'som_params': self.som_params,
             'ambiguity_threshold': self.ambiguity_threshold,
+            'coordinate_system': self.coordinate_system,
             'som': self.som,
             'sorted_bigrams': self.sorted_bigrams,
-            'frequency_dict': dict(self.frequency_dict),  # Convert defaultdict to dict
+            'frequency_dict': dict(self.frequency_dict),
             'frequency_features': self.frequency_features,
-            'transitions': dict(self.transitions),  # Convert defaultdict to dict
+            'transitions': dict(self.transitions),
             'bigram_feature_map': self.bigram_feature_map,
             'avg_feature': self.avg_feature
         }
@@ -277,6 +552,7 @@ class SOMTextGenerator:
         # Restore all the data
         self.som_params = save_data['som_params']
         self.ambiguity_threshold = save_data['ambiguity_threshold']
+        self.coordinate_system = save_data.get('coordinate_system', 'euclidean')
         self.som = save_data['som']
         self.sorted_bigrams = save_data['sorted_bigrams']
         self.frequency_dict = defaultdict(int, save_data['frequency_dict'])
@@ -300,6 +576,7 @@ class SOMTextGenerator:
             'Feature dimension': self.som.dim,
             'Training iterations': self.som.n_iter,
             'Learning rate': self.som.alpha,
+            'Coordinate system': self.coordinate_system,
             'Ambiguity threshold': self.ambiguity_threshold,
             'Number of bigrams': len(self.sorted_bigrams) if self.sorted_bigrams else 0,
             'Vocabulary size': len(self.transitions) if self.transitions else 0
@@ -423,23 +700,25 @@ def expand_text_from_bigrams_with_som(
 
 
 # --------------------------------------------------------------------------
-# EXAMPLE USAGE WITH SAVE/LOAD
+# EXAMPLE USAGE WITH ENHANCED COORDINATE SYSTEMS
 # --------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    # Initialize the text generator
+    # Initialize the text generator with enhanced coordinate systems
     generator = SOMTextGenerator(
         som_params={'m': 10, 'n': 10, 'dim': 8, 'n_iter': 50, 'alpha': 0.5},
-        ambiguity_threshold=0.1
+        ambiguity_threshold=0.1,
+        coordinate_system='adaptive'  # Options: 'euclidean', 'adaptive', 'spherical', 'hyperbolic', 'toroidal', 'dynamic'
     )
     
-    print("SOM Text Generator with Save/Load")
+    print("Enhanced SOM Text Generator with Variable Coordinate Systems")
     print("Commands:")
     print("  train <filename> - Train a new model from text file")
     print("  load <filename> - Load a saved model")
     print("  save <filename> - Save the current model")
     print("  generate <text> - Generate text with optional seed")
     print("  info - Show model information")
+    print("  coordinate <system> - Change coordinate system (euclidean/adaptive/spherical/hyperbolic/toroidal/dynamic)")
     print("  quit - Exit")
     print()
     
@@ -492,6 +771,20 @@ if __name__ == '__main__':
                     print(f"\nGenerated text:\n{text}\n")
                 except Exception as e:
                     print(f"Error generating text: {e}")
+                    
+            elif cmd == 'coordinate':
+                if len(command) < 2:
+                    print("Usage: coordinate <system>")
+                    print("Available systems: euclidean, adaptive, spherical, hyperbolic, toroidal, dynamic")
+                    continue
+                system = command[1].lower()
+                valid_systems = ['euclidean', 'adaptive', 'spherical', 'hyperbolic', 'toroidal', 'dynamic']
+                if system in valid_systems:
+                    generator.coordinate_system = system
+                    print(f"Coordinate system changed to: {system}")
+                    print("Note: You need to retrain the model for changes to take effect.")
+                else:
+                    print(f"Invalid coordinate system. Choose from: {', '.join(valid_systems)}")
                     
             elif cmd == 'info':
                 info = generator.get_model_info()
