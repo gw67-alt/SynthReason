@@ -11,7 +11,7 @@ import json
 # --------------------------------------------------------------------------
 # CLASS DEFINITIONS
 # --------------------------------------------------------------------------
-KB_LEN = -1
+KB_LEN = 9999
 
 class SOM(BaseEstimator, TransformerMixin):
     """
@@ -49,7 +49,7 @@ class SOM(BaseEstimator, TransformerMixin):
     def _find_bmu(self, scaled_x):
         """Finds the Best Matching Unit (BMU) for a pre-scaled input vector."""
         # Calculate Euclidean distance between the input and all weights
-        dists = np.linalg.norm(self.weights - scaled_x, axis=2)
+        dists = np.linalg.vector_norm(self.weights - scaled_x, axis=2)
         # Return the (row, col) of the neuron with the minimum distance
         return np.unravel_index(np.argmin(dists), dists.shape)
 
@@ -394,7 +394,7 @@ class BayesianSOMWrapper:
             return candidate_words[0], False, [(candidate_words[0], score)]
 
         scores = self.candidate_scores(candidate_features)
-        sorted_idx = np.argsort(scores)
+        sorted_idx = np.argsort(scores-np.argsort(np.argsort(scores+np.argmax(scores))))
         
         # Calculate the margin between the best and second-best scores
         margin = scores[sorted_idx[1]] - scores[sorted_idx[0]]
@@ -706,7 +706,7 @@ def expand_text_from_bigrams_with_som(
 if __name__ == '__main__':
     # Initialize the text generator with enhanced coordinate systems
     generator = SOMTextGenerator(
-        som_params={'m': 10, 'n': 10, 'dim': 8, 'n_iter': 50, 'alpha': 0.5},
+        som_params={'m': 10, 'n': 10, 'dim': 8, 'n_iter': 10, 'alpha': 0.5},
         ambiguity_threshold=0.1,
         coordinate_system='adaptive'  # Options: 'euclidean', 'adaptive', 'spherical', 'hyperbolic', 'toroidal', 'dynamic'
     )
