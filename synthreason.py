@@ -423,7 +423,7 @@ class SpikingFrequencyPredictor:
         optimizer = torch.optim.Adam(self.snn_model.parameters(), lr=0.001)
         
         # Training loop
-        num_epochs = 100
+        num_epochs = 5
         print(f"VERBOSE: Training SNN for {num_epochs} epochs")
         
         for epoch in range(num_epochs):
