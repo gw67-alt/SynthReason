@@ -1,320 +1,314 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
-#include <cmath>
-#include <memory>
 #include <string>
+#include <map>
+#include <unordered_map>
 #include <algorithm>
-
-class ModuloProcessor {
+#include <sstream>
+#include <set>
+#include <chrono>
+#include <iomanip>
+#include <random>
+#include <cmath>
+class ComprehensiveWordToIndexMapper {
 private:
-    std::vector<int> data;
-    size_t partition_size;
-    size_t total_partitions;
-    std::string current_filename;
-    
+    std::unordered_map<std::string, int> word_to_index;
+    std::unordered_map<int, std::string> index_to_word;
+    std::vector<std::string> all_words;
+    std::set<std::string> word_set;
+    std::mt19937 rng; // Random number generator
+
 public:
-    ModuloProcessor(size_t n, size_t part_size) 
-        : data(n), partition_size(part_size) {
-        total_partitions = std::ceil(static_cast<double>(n) / partition_size);
-    }
-    
-    // Perform modulo operations across the entire space
-    void performModuloOperations(int divisor) {
-        for (size_t i = 0; i < data.size(); ++i) {
-            data[i] = static_cast<int>(i) % divisor;
-        }
-    }
-    
-    // Save current data state back to file (overwrite existing)
-    void saveBackToFile(const std::string& filename) {
-        current_filename = filename;
-        std::ofstream file(filename, std::ios::binary | std::ios::trunc);
+    ComprehensiveWordToIndexMapper() : rng(std::chrono::steady_clock::now().time_since_epoch().count()) {}
+
+    // Load and randomize words from file
+    bool loadWordsFromFile(const std::string& filename) {
+        std::ifstream file(filename);
         if (!file.is_open()) {
-            std::cerr << "Error opening file for saving: " << filename << std::endl;
-            return;
-        }
-        
-        // Write file header with metadata
-        size_t data_size = data.size();
-        file.write(reinterpret_cast<const char*>(&data_size), sizeof(data_size));
-        file.write(reinterpret_cast<const char*>(&partition_size), sizeof(partition_size));
-        file.write(reinterpret_cast<const char*>(&total_partitions), sizeof(total_partitions));
-        
-        // Write partitioned data
-        for (size_t partition = 0; partition < total_partitions; ++partition) {
-            size_t start_idx = partition * partition_size;
-            size_t end_idx = std::min(start_idx + partition_size, data.size());
-            
-            // Write partition header
-            size_t partition_length = end_idx - start_idx;
-            file.write(reinterpret_cast<const char*>(&partition_length), sizeof(partition_length));
-            
-            // Write partition data
-            file.write(reinterpret_cast<const char*>(&data[start_idx]), 
-                      partition_length * sizeof(int));
-        }
-        
-        file.close();
-        std::cout << "Data saved back to file: " << filename << std::endl;
-    }
-    
-    // Append new modulo results to existing file
-    void appendToFile(const std::string& filename, int new_divisor) {
-        // First perform new modulo operation
-        std::vector<int> new_data = data;  // Copy current data
-        for (size_t i = 0; i < new_data.size(); ++i) {
-            new_data[i] = static_cast<int>(i) % new_divisor;
-        }
-        
-        std::ofstream file(filename, std::ios::binary | std::ios::app);
-        if (!file.is_open()) {
-            std::cerr << "Error opening file for appending: " << filename << std::endl;
-            return;
-        }
-        
-        // Write append marker and divisor info
-        int append_marker = -1;  // Special marker for appended data
-        file.write(reinterpret_cast<const char*>(&append_marker), sizeof(append_marker));
-        file.write(reinterpret_cast<const char*>(&new_divisor), sizeof(new_divisor));
-        
-        // Write new data in partitions
-        for (size_t partition = 0; partition < total_partitions; ++partition) {
-            size_t start_idx = partition * partition_size;
-            size_t end_idx = std::min(start_idx + partition_size, new_data.size());
-            
-            size_t partition_length = end_idx - start_idx;
-            file.write(reinterpret_cast<const char*>(&partition_length), sizeof(partition_length));
-            file.write(reinterpret_cast<const char*>(&new_data[start_idx]), 
-                      partition_length * sizeof(int));
-        }
-        
-        file.close();
-        std::cout << "New modulo results (divisor=" << new_divisor 
-                  << ") appended to file: " << filename << std::endl;
-    }
-    
-    // Update specific partition and save back to file
-    void updatePartitionAndSave(size_t partition_idx, const std::vector<int>& new_values) {
-        if (partition_idx >= total_partitions) {
-            std::cerr << "Invalid partition index: " << partition_idx << std::endl;
-            return;
-        }
-        
-        size_t start_idx = partition_idx * partition_size;
-        size_t end_idx = std::min(start_idx + partition_size, data.size());
-        
-        // Update the partition data
-        for (size_t i = 0; i < new_values.size() && (start_idx + i) < end_idx; ++i) {
-            data[start_idx + i] = new_values[i];
-        }
-        
-        // Save back to file
-        if (!current_filename.empty()) {
-            saveBackToFile(current_filename);
-            std::cout << "Partition " << partition_idx << " updated and saved." << std::endl;
-        }
-    }
-    
-    // Load data from file with full restoration
-    bool loadFromFile(const std::string& filename) {
-        std::ifstream file(filename, std::ios::binary);
-        if (!file.is_open()) {
-            std::cerr << "Error opening file for loading: " << filename << std::endl;
+            std::cerr << "Error: Cannot open words file " << filename << std::endl;
             return false;
         }
-        
-        current_filename = filename;
-        
-        // Read file header
-        size_t data_size, file_partition_size, file_total_partitions;
-        file.read(reinterpret_cast<char*>(&data_size), sizeof(data_size));
-        file.read(reinterpret_cast<char*>(&file_partition_size), sizeof(file_partition_size));
-        file.read(reinterpret_cast<char*>(&file_total_partitions), sizeof(file_total_partitions));
-        
-        // Resize data vector and update partition info
-        data.resize(data_size);
-        partition_size = file_partition_size;
-        total_partitions = file_total_partitions;
-        
-        // Read partitioned data
-        for (size_t partition = 0; partition < total_partitions; ++partition) {
-            size_t partition_length;
-            file.read(reinterpret_cast<char*>(&partition_length), sizeof(partition_length));
-            
-            size_t start_idx = partition * partition_size;
-            file.read(reinterpret_cast<char*>(&data[start_idx]), 
-                     partition_length * sizeof(int));
+
+        std::string word;
+        std::cout << "Loading English words from " << filename << "..." << std::endl;
+
+        while (std::getline(file, word)) {
+            // Clean the word (remove whitespace, convert to lowercase)
+            word.erase(std::remove_if(word.begin(), word.end(), ::isspace), word.end());
+            std::transform(word.begin(), word.end(), word.begin(), ::tolower);
+
+            if (!word.empty() && word.find_first_not_of("abcdefghijklmnopqrstuvwxyz") == std::string::npos) {
+                // Only add if it's a valid alphabetical word and not already present
+                if (word_set.find(word) == word_set.end()) {
+                    all_words.push_back(word);
+                    word_set.insert(word);
+                }
+            }
         }
-        
+
         file.close();
-        std::cout << "Data loaded from file: " << filename << std::endl;
-        return true;
+
+        // Randomize the word order AFTER loading
+        randomizeWordOrder();
+
+        // Rebuild the index mappings after randomization
+        rebuildIndexMappings();
+
+        std::cout << "Loaded and randomized " << all_words.size() << " unique English words" << std::endl;
+        return !all_words.empty();
     }
-    
-    // Save specific partitions to separate files
-    void savePartitionsToSeparateFiles(const std::string& base_filename) {
-        for (size_t partition = 0; partition < total_partitions; ++partition) {
-            std::string partition_filename = base_filename + "_partition_" + 
-                                           std::to_string(partition) + ".bin";
-            
-            std::ofstream file(partition_filename, std::ios::binary);
-            if (!file.is_open()) {
-                std::cerr << "Error creating partition file: " << partition_filename << std::endl;
-                continue;
+
+    // Randomize the order of words using std::shuffle
+    void randomizeWordOrder() {
+        if (!all_words.empty()) {
+            std::cout << "Randomizing word order..." << std::endl;
+            std::shuffle(all_words.begin(), all_words.end(), rng);
+            std::cout << "Word order randomized successfully!" << std::endl;
+        }
+    }
+
+    // Rebuild index mappings after randomization
+    void rebuildIndexMappings() {
+        word_to_index.clear();
+        index_to_word.clear();
+
+        for (size_t i = 0; i < all_words.size(); ++i) {
+            word_to_index[all_words[i]] = static_cast<int>(i);
+            index_to_word[static_cast<int>(i)] = all_words[i];
+        }
+    }
+
+    // Get word by index (now randomized)
+    std::string getWordByIndex(int index) const {
+        if (index >= 0 && index < static_cast<int>(all_words.size())) {
+            return all_words[index];
+        }
+        return "unknown";
+    }
+
+    // Get random word by modulo (using randomized order)
+    std::string getRandomWordByModulo(int value) const {
+        if (all_words.empty()) return "empty";
+        int index = std::abs(value) % static_cast<int>(all_words.size());
+        return all_words[index];
+    }
+
+    // Get truly random word
+    std::string getRandomWord() {
+        if (all_words.empty()) return "empty";
+        std::uniform_int_distribution<int> dist(0, static_cast<int>(all_words.size()) - 1);
+        return all_words[dist(rng)];
+    }
+
+    // Get multiple random words
+    std::vector<std::string> getRandomWords(size_t count) {
+        std::vector<std::string> random_words;
+        if (all_words.empty()) return random_words;
+
+        std::uniform_int_distribution<int> dist(0, static_cast<int>(all_words.size()) - 1);
+
+        for (size_t i = 0; i < count; ++i) {
+            random_words.push_back(all_words[dist(rng)]);
+        }
+
+        return random_words;
+    }
+
+    // Re-randomize words during runtime
+    void reshuffleWords() {
+        randomizeWordOrder();
+        rebuildIndexMappings();
+        std::cout << "Words reshuffled!" << std::endl;
+    }
+
+    // Get index by word
+    int getIndexByWord(const std::string& word) const {
+        std::string lowercase_word = word;
+        std::transform(lowercase_word.begin(), lowercase_word.end(),
+                      lowercase_word.begin(), ::tolower);
+
+        auto it = word_to_index.find(lowercase_word);
+        return (it != word_to_index.end()) ? it->second : -1;
+    }
+
+    // Check if word exists
+    bool wordExists(const std::string& word) const {
+        std::string lowercase_word = word;
+        std::transform(lowercase_word.begin(), lowercase_word.end(),
+                      lowercase_word.begin(), ::tolower);
+        return word_set.find(lowercase_word) != word_set.end();
+    }
+
+    // Get total word count
+    size_t getTotalWords() const {
+        return all_words.size();
+    }
+
+    // Display statistics about loaded words
+    void displayWordStatistics() const {
+        std::cout << "\n=== Word Statistics ===" << std::endl;
+        std::cout << "Total words loaded: " << all_words.size() << std::endl;
+
+        // Show first 10 words after randomization
+        std::cout << "\nFirst 10 words after randomization:" << std::endl;
+        for (size_t i = 0; i < std::min(size_t(10), all_words.size()); ++i) {
+            std::cout << "  " << i << ": " << all_words[i] << std::endl;
+        }
+    }
+};
+
+
+// Standalone EnhancedNaturalTextModuloProcessor
+class EnhancedNaturalTextModuloProcessor {
+private:
+    ComprehensiveWordToIndexMapper word_mapper;
+    std::vector<int> data;
+    std::vector<std::string> natural_text;
+    size_t n;
+    size_t partition_size;
+
+public:
+    EnhancedNaturalTextModuloProcessor(size_t n_, size_t part_size, const std::string& words_file)
+        : n(n_), partition_size(part_size) {
+        data.resize(n);
+        natural_text.resize(n);
+
+        if (!word_mapper.loadWordsFromFile(words_file)) {
+            std::cerr << "Failed to load words file. Using default word lists." << std::endl;
+        } else {
+            word_mapper.displayWordStatistics();
+        }
+    }
+
+    // Generate natural sentence using comprehensive word list
+    std::string generateEnhancedNaturalSentence(int modulo_value, size_t index, int divisor) {
+        if (word_mapper.getTotalWords() == 0) {
+            return "Default fallback sentence.";
+        }
+
+        // Use modulo operations to select words from the comprehensive list
+        std::string word1 = word_mapper.getRandomWordByModulo(modulo_value);
+        std::string word2 = word_mapper.getRandomWordByModulo(modulo_value * 3 + index);
+        std::string word3 = word_mapper.getRandomWordByModulo(modulo_value * 7 + divisor);
+        std::string word4 = word_mapper.getRandomWordByModulo(modulo_value * 11 + index * 2);
+
+        // Create different sentence structures
+        int structure = modulo_value % 5;
+
+        switch (structure) {
+            case 0:
+                return "The " + word1 + " " + word2 + " creates " + word3 + " in the " + word4 + ".";
+            case 1:
+                return "When " + word1 + " meets " + word2 + ", " + word3 + " becomes " + word4 + ".";
+            case 2:
+                return "Through " + word1 + " and " + word2 + ", we discover " + word3 + " " + word4 + ".";
+            case 3:
+                return "The essence of " + word1 + " transforms " + word2 + " into " + word3 + " " + word4 + ".";
+            default:
+                return "In the realm of " + word1 + ", " + word2 + " " + word3 + " with " + word4 + ".";
+        }
+    }
+
+    // Modular multiplication stub
+    int modularMultiplication(int a, int b, int mod) {
+        return (a * b) % mod;
+    }
+
+    // Main text generation method
+    void performModuloAndGenerateText(const std::vector<int>& divisors) {
+        std::cout << "=== Enhanced Text Generation with " << word_mapper.getTotalWords()
+                  << " English Words ===" << std::endl;
+
+        auto start_time = std::chrono::high_resolution_clock::now();
+
+        for (size_t div_idx = 0; div_idx < divisors.size(); ++div_idx) {
+            int divisor = divisors[div_idx];
+            std::cout << "Applying modulo " << divisor << " and generating enhanced text..." << std::endl;
+
+            for (size_t i = 0; i < data.size(); ++i) {
+                if (div_idx == 0) {
+                    data[i] = static_cast<int>(i) % divisor;
+                } else {
+                    data[i] = modularMultiplication(data[i], divisor, divisor + 1);
+                }
+
+                // Use enhanced text generation
+                natural_text[i] = generateEnhancedNaturalSentence(data[i], i, divisor);
             }
-            
-            size_t start_idx = partition * partition_size;
-            size_t end_idx = std::min(start_idx + partition_size, data.size());
-            size_t partition_length = end_idx - start_idx;
-            
-            // Write partition metadata
-            file.write(reinterpret_cast<const char*>(&partition), sizeof(partition));
-            file.write(reinterpret_cast<const char*>(&partition_length), sizeof(partition_length));
-            
-            // Write partition data
-            file.write(reinterpret_cast<const char*>(&data[start_idx]), 
-                      partition_length * sizeof(int));
-            
-            file.close();
+
+            double progress = ((div_idx + 1.0) / divisors.size()) * 100.0;
+            std::cout << "Progress: " << std::fixed << std::setprecision(1) << progress << "%" << std::endl;
         }
-        
-        std::cout << "Saved " << total_partitions << " partitions to separate files." << std::endl;
+
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        std::cout << "Enhanced text generation completed in " << duration.count() << "ms" << std::endl;
     }
-    
-    // Merge partition files back into main file
-    void mergePartitionFiles(const std::string& base_filename, const std::string& output_filename) {
-        std::ofstream output_file(output_filename, std::ios::binary);
-        if (!output_file.is_open()) {
-            std::cerr << "Error creating output file: " << output_filename << std::endl;
-            return;
+
+    // Display sample generated text
+    void displaySampleNaturalText(size_t count) {
+        std::cout << "\nSample generated text:" << std::endl;
+        for (size_t i = 0; i < std::min(count, natural_text.size()); ++i) {
+            std::cout << "  " << i << ": " << natural_text[i] << std::endl;
         }
-        
-        // Write file header
-        size_t data_size = data.size();
-        output_file.write(reinterpret_cast<const char*>(&data_size), sizeof(data_size));
-        output_file.write(reinterpret_cast<const char*>(&partition_size), sizeof(partition_size));
-        output_file.write(reinterpret_cast<const char*>(&total_partitions), sizeof(total_partitions));
-        
-        // Read and merge partition files
-        for (size_t partition = 0; partition < total_partitions; ++partition) {
-            std::string partition_filename = base_filename + "_partition_" + 
-                                           std::to_string(partition) + ".bin";
-            
-            std::ifstream partition_file(partition_filename, std::ios::binary);
-            if (!partition_file.is_open()) {
-                std::cerr << "Warning: Could not open " << partition_filename << std::endl;
-                continue;
-            }
-            
-            // Read partition metadata
-            size_t file_partition_idx, partition_length;
-            partition_file.read(reinterpret_cast<char*>(&file_partition_idx), sizeof(file_partition_idx));
-            partition_file.read(reinterpret_cast<char*>(&partition_length), sizeof(partition_length));
-            
-            // Write partition header to output
-            output_file.write(reinterpret_cast<const char*>(&partition_length), sizeof(partition_length));
-            
-            // Copy partition data
-            std::vector<int> partition_data(partition_length);
-            partition_file.read(reinterpret_cast<char*>(partition_data.data()), 
-                              partition_length * sizeof(int));
-            output_file.write(reinterpret_cast<const char*>(partition_data.data()), 
-                            partition_length * sizeof(int));
-            
-            partition_file.close();
-        }
-        
-        output_file.close();
-        std::cout << "Merged partition files into: " << output_filename << std::endl;
     }
-    
-    // Auto-save functionality with backup
-    void enableAutoSave(const std::string& filename, bool create_backup = true) {
-        if (create_backup && !current_filename.empty()) {
-            std::string backup_filename = current_filename + ".backup";
-            saveBackToFile(backup_filename);
-            std::cout << "Backup created: " << backup_filename << std::endl;
+
+    // Stub: Save natural text to file
+    void saveNaturalTextToFile(const std::string& filename) {
+        std::ofstream out(filename);
+        for (const auto& line : natural_text) {
+            out << line << '\n';
         }
-        
-        current_filename = filename;
-        saveBackToFile(filename);
+        std::cout << "Saved natural text to " << filename << std::endl;
     }
-    
-    // Display current data state
-    void displayData(size_t max_elements = 20) const {
-        std::cout << "Current data (showing first " << std::min(max_elements, data.size()) 
-                  << " elements): ";
-        for (size_t i = 0; i < std::min(max_elements, data.size()); ++i) {
-            std::cout << data[i] << " ";
-        }
-        std::cout << std::endl;
+
+    // Stub: Themed partition files
+    void createThemedPartitionFiles(const std::string&) {
+        // Stub: Implement as needed
     }
-    
-    // Get partition information
-    void printPartitionInfo() const {
-        std::cout << "Total elements: " << data.size() << std::endl;
-        std::cout << "Partition size: " << partition_size << std::endl;
-        std::cout << "Total partitions: " << total_partitions << std::endl;
-        std::cout << "Current file: " << (current_filename.empty() ? "None" : current_filename) << std::endl;
+
+    // Stub: Merge partitions into story
+    void mergePartitionsIntoStory(const std::string&, const std::string&) {
+        // Stub: Implement as needed
+    }
+
+    // Stub: Generate word cloud data
+    void generateWordCloudData(const std::string&) {
+        // Stub: Implement as needed
     }
 };
 
 int main() {
-    const size_t n = 1000;
-    const size_t partition_size = 100;
-    const std::string main_filename = "modulo_data.bin";
-    
-    // Create processor instance
-    ModuloProcessor processor(n, partition_size);
-    processor.printPartitionInfo();
-    
-    // Perform initial modulo operations
-    std::cout << "\n=== Initial Modulo Operations ===" << std::endl;
-    processor.performModuloOperations(7);
-    processor.displayData();
-    
-    // Save to file
-    processor.saveBackToFile(main_filename);
-    
-    // Perform new operations and save back
-    std::cout << "\n=== Updating with New Modulo Operations ===" << std::endl;
-    processor.performModuloOperations(13);
-    processor.displayData();
-    processor.saveBackToFile(main_filename);  // Overwrite with new data
-    
-    // Append additional results
-    std::cout << "\n=== Appending New Results ===" << std::endl;
-    processor.appendToFile(main_filename + "_extended", 17);
-    
-    // Update specific partition
-    std::cout << "\n=== Updating Specific Partition ===" << std::endl;
-    std::vector<int> new_partition_values = {100, 101, 102, 103, 104};
-    processor.updatePartitionAndSave(0, new_partition_values);
-    processor.displayData();
-    
-    // Save partitions to separate files
-    std::cout << "\n=== Saving Partitions to Separate Files ===" << std::endl;
-    processor.savePartitionsToSeparateFiles("data");
-    
-    // Test loading from file
-    std::cout << "\n=== Testing Load from File ===" << std::endl;
-    ModuloProcessor new_processor(1, 1);  // Start with minimal size
-    if (new_processor.loadFromFile(main_filename)) {
-        new_processor.printPartitionInfo();
-        new_processor.displayData();
-    }
-    
-    // Enable auto-save with backup
-    std::cout << "\n=== Auto-save with Backup ===" << std::endl;
-    processor.performModuloOperations(23);
-    processor.enableAutoSave("auto_saved_data.bin", true);
-    
-    // Merge partition files back
-    std::cout << "\n=== Merging Partition Files ===" << std::endl;
-    processor.mergePartitionFiles("data", "merged_data.bin");
-    
-    std::cout << "\n=== Save-back functionality demonstration complete ===" << std::endl;
-    
+    const size_t n = 500000;
+    const size_t partition_size = 5000;
+
+    std::cout << "🎨 Enhanced Natural Text Generation with Comprehensive English Dictionary 🎨" << std::endl;
+    std::cout << std::string(80, '═') << std::endl;
+
+    // Initialize enhanced processor with words file
+    EnhancedNaturalTextModuloProcessor processor(n, partition_size, "words_alpha.txt");
+
+    // Perform modulo operations and generate natural text
+    std::vector<int> divisors = {7,67,243,23546,1346,346,2346,346,346,1346,1234,6216,1346};
+    processor.performModuloAndGenerateText(divisors);
+
+    // Display sample generated text
+    processor.displaySampleNaturalText(8);
+
+    // Save natural text to formatted file
+    processor.saveNaturalTextToFile("enhanced_natural_text_collection.txt");
+
+    // Create themed partition files
+    processor.createThemedPartitionFiles("enhanced_themed_partition");
+
+    // Merge partitions into a cohesive story
+    processor.mergePartitionsIntoStory("enhanced_themed_partition", "enhanced_mathematical_chronicles.txt");
+
+    // Generate word cloud data
+    processor.generateWordCloudData("enhanced_word_cloud_data.csv");
+
+    std::cout << "\n🎉 Enhanced Natural Text Generation Complete! 🎉" << std::endl;
+
     return 0;
 }
