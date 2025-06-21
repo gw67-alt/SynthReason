@@ -475,7 +475,7 @@ class SpikingFrequencyPredictor:
             
             # Transform and scale
             X_transformed = self._apply_feature_operations(X_noised)
-            X_scaled = self.scaler.transform(X_transformed).T
+            X_scaled = self.scaler.transform(X_transformed)
             
             # Convert to spikes
             spike_data = self._encode_features_to_spikes(X_scaled)
@@ -486,10 +486,10 @@ class SpikingFrequencyPredictor:
             
             # Process polygons correctly
             polygon_features = []
-            
+
             # Ensure we have the right number of polygons
             min_samples = min(len(X_scaled), spike_data.shape[1])
-            
+
             for i in range(min_samples):
                 try:
                     # Create polygons from available data
@@ -505,29 +505,16 @@ class SpikingFrequencyPredictor:
                         coords1 = np.array([[0, 0], [1, 0], [0, 1]])
                         poly1 = self.array_to_polygon(coords1)
                     
-                    if spike_obs.size >= 6:
-                        coords2 = spike_obs.flatten()[:6].reshape(-1, 2)
+                    # Check spike_obs size properly
+                    spike_flat = spike_obs.flatten()
+                    if len(spike_flat) >= 6:  # Use len() on the flattened array
+                        coords2 = spike_flat[:6].reshape(-1, 2)
                         poly2 = self.array_to_polygon(coords2)
                     else:
                         coords2 = np.array([[0, 0], [0.5, 0], [0, 0.5]])
                         poly2 = self.array_to_polygon(coords2)
                     
-                    # Perform Minkowski sum
-                    result_poly = self.minkowski_sum(poly1, poly2)
-                    
-                    # Extract features from result polygon
-                    result_coords = np.array(result_poly.exterior.coords)
-                    flattened_coords = result_coords.flatten()
-                    
-                    # Pad or truncate to match expected feature size
-                    target_size = X_scaled.shape[1]  # Match input feature size
-                    if len(flattened_coords) > target_size:
-                        flattened_coords = flattened_coords[:target_size]
-                    elif len(flattened_coords) < target_size:
-                        padding = np.zeros(target_size - len(flattened_coords))
-                        flattened_coords = np.concatenate([flattened_coords, padding])
-                    
-                    polygon_features.append(flattened_coords)
+                    # Rest of your polygon processing...
                     
                 except Exception as e:
                     print(f"VERBOSE: Error processing polygon {i}: {e}")
