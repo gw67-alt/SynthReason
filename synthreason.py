@@ -175,7 +175,7 @@ class SpikingFrequencyPredictor:
                 # But if you want each duplicate to be separate (for sampling), use a unique key:
                 key = (bigram[1], bigram[0], d)  # Unique key for each duplicate
                 if expanded_frequencies[key]:
-                    expanded_frequencies[key] = self.bigram_frequencies[bigram] * (100000.5 ** d)
+                    expanded_frequencies[key] = self.bigram_frequencies[bigram] * (1.5 ** d)
 
         # If you want to return the frequencies:
         return expanded_frequencies
@@ -988,7 +988,7 @@ def enhanced_spiking_text_generation():
     linker = SpikingMultilinearStreamLinker(predictor)
     
     # Load and process text
-    text_content = predictor.load_text_file("test.txt")
+    text_content = predictor.load_text_file("xaa")
     predictor.current_text = text_content  # Store for access in feature creation
     predictor.extract_bigram_frequencies(text_content)
     predictor.create_bigram_frequency_features()
