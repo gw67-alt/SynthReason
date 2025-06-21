@@ -17,7 +17,7 @@ from shapely.geometry import Polygon
 from scipy.spatial import ConvexHull
 import numpy as np
 from shapely.geometry import Polygon
-KB_LIMIT = -1
+KB_LIMIT = 9999
 # Check for optional dependencies
 try:
     import tensorflow as tf
@@ -491,7 +491,7 @@ class SpikingFrequencyPredictor:
             min_samples = min(len(X_scaled), spike_data.shape[1])
 
             for i in range(min_samples):
-                try:
+
                     # Create polygons from available data
                     formation_hull = X_scaled[i]
                     spike_obs = spike_data[:, i, :]  # Get spike data for this sample
@@ -514,12 +514,23 @@ class SpikingFrequencyPredictor:
                         coords2 = np.array([[0, 0], [0.5, 0], [0, 0.5]])
                         poly2 = self.array_to_polygon(coords2)
                     
-                    # Rest of your polygon processing...
+                     # Perform Minkowski sum
+                    result_poly = self.minkowski_sum(poly1, poly2)
                     
-                except Exception as e:
-                    print(f"VERBOSE: Error processing polygon {i}: {e}")
-                    # Fallback: use original scaled features
-                    polygon_features.append(X_scaled[i])
+                    # Extract features from result polygon
+                    result_coords = np.array(result_poly.exterior.coords)
+                    flattened_coords = result_coords.flatten()
+                    
+                    # Pad or truncate to match expected feature size
+                    target_size = X_scaled.shape[1]  # Match input feature size
+                    if len(flattened_coords) > target_size:
+                        flattened_coords = flattened_coords[:target_size]
+                    elif len(flattened_coords) < target_size:
+                        padding = np.zeros(target_size - len(flattened_coords))
+                        flattened_coords = np.concatenate([flattened_coords, padding])
+                    
+                    
+            
             
             if not polygon_features:
                 print("VERBOSE: No polygon features generated, using original features")
