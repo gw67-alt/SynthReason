@@ -878,7 +878,7 @@ class SpikingMultilinearStreamLinker:
         
         spike_patterns = []
         for i in range(len(features_norm)):
-            spike_train = np.random.poisson(features_norm[i] * 5, self.spike_encoding_window)
+            spike_train = np.random.poisson(features_norm[i] * 15, self.spike_encoding_window)
             spike_patterns.append(spike_train.flatten())
         
         return np.array(spike_patterns)
