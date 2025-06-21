@@ -13,7 +13,11 @@ import re
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 import snntorch
-
+from shapely.geometry import Polygon
+from scipy.spatial import ConvexHull
+import numpy as np
+from shapely.geometry import Polygon
+KB_LIMIT = -1
 # Check for optional dependencies
 try:
     import tensorflow as tf
@@ -42,7 +46,7 @@ class SpikingFrequencyPredictor:
         self.feature_operations: Optional[List[Optional[Callable[[np.ndarray], np.ndarray]]]] = None
         
         # Spiking neural network parameters
-        self.num_steps = 25  # Number of time steps for SNN simulation
+        self.num_steps = 5  # Number of time steps for SNN simulation
         self.beta = 0.5  # Neuron decay rate
         self.spike_grad = surrogate.fast_sigmoid()  # Surrogate gradient function
         self.current_text = ""  # Store current text for access
@@ -85,7 +89,7 @@ class SpikingFrequencyPredictor:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                words = content.lower().split()[:99999]
+                words = content.lower().split()[:KB_LIMIT]
                 print(f"VERBOSE: Successfully loaded {len(words)} words from {file_path}.")
                 return ' '.join(words)
         except FileNotFoundError:
@@ -154,47 +158,40 @@ class SpikingFrequencyPredictor:
         print(f"VERBOSE: Preprocessing complete. Number of words: {len(valid_words)} (after cleaning and removing empty strings).")
         return valid_words
 
-    def spread_bigrams_exponential_decay(self, target_size_multiplier=5, decay_rate=0.1):
-        """Spread bigrams using exponential decay for lower frequencies"""
+    def spread_bigrams_exponential_decay(self, target_size_multiplier=5, decay_rate=0.1, smoothing_alpha=0.01):
+        """Spread bigrams using exponential decay for lower frequencies with probability smoothing"""
         original_bigrams = list(self.bigram_frequencies.keys())
         target_size = len(original_bigrams) * target_size_multiplier
         
-        # Generate additional synthetic bigrams if needed
-        synthetic_bigrams = []
-        vocab_words = list(set([word for bigram in original_bigrams for word in bigram]))
-        
-        while len(original_bigrams) + len(synthetic_bigrams) < target_size:
-            # Create synthetic bigrams from vocabulary
-            word1 = np.random.choice(vocab_words)
-            word2 = np.random.choice(vocab_words)
-            synthetic_bigram = (word1, word2)
-            
-            if synthetic_bigram not in original_bigrams and synthetic_bigram not in synthetic_bigrams:
-                synthetic_bigrams.append(synthetic_bigram)
-        
-        # Assign exponentially decaying frequencies
-        all_bigrams = original_bigrams + synthetic_bigrams
         expanded_frequencies = {}
-        
-        for i, bigram in enumerate(all_bigrams):
-            if bigram in self.bigram_frequencies:
-                # Use original frequency with decay
-                base_freq = self.bigram_frequencies[bigram]
-                expanded_frequencies[bigram] = base_freq * np.exp(-decay_rate * i)
-            else:
-                # Assign very low frequency to synthetic bigrams
-                expanded_frequencies[bigram] = np.exp(-decay_rate * (i + len(original_bigrams)))
-        
-        # Sort by new frequencies
-        self.sorted_bigrams = [
-            item[0] for item in sorted(
-                expanded_frequencies.items(),
-                key=lambda x: (x[1], x[0][0], x[0][1]),
-                reverse=True
-            )
-        ]
-        
+        for bigram in original_bigrams:
+            duplicate_count = 2  # Duplicate each bigram once, so it appears twice
+            for d in range(duplicate_count):
+                # For each duplicate, create a unique key (if needed), or just use the bigram
+                # Here, we'll use the bigram as the key (not recommended if you want unique entries)
+                # For sampling, you might want to use a unique identifier, but for simple frequency halving:
+                # If you want to sum the probabilities: (not recommended for halving)
+                # expanded_frequencies[bigram] = expanded_frequencies.get(bigram, 0) + self.bigram_frequencies[bigram] * (0.5 ** d)
+                # But if you want each duplicate to be separate (for sampling), use a unique key:
+                key = (bigram[1], bigram[0], d)  # Unique key for each duplicate
+                if expanded_frequencies[key]:
+                    expanded_frequencies[key] = self.bigram_frequencies[bigram] * (100000.5 ** d)
+
+        # If you want to return the frequencies:
         return expanded_frequencies
+
+
+    def _apply_smoothing(self, frequencies, alpha=0.01):
+        """Apply Laplace smoothing and normalize to probabilities"""
+        # Add smoothing constant to all frequencies
+        smoothed_freqs = {bigram: freq + alpha for bigram, freq in frequencies.items()}
+        
+        # Normalize to create probability distribution
+        total_mass = sum(smoothed_freqs.values())
+        smoothed_probs = {bigram: freq / total_mass for bigram, freq in smoothed_freqs.items()}
+        
+        return smoothed_probs
+
 
     def _encode_features_to_spikes(self, features: np.ndarray) -> torch.Tensor:
         """Convert feature vectors to spike trains using rate coding."""
@@ -444,6 +441,16 @@ class SpikingFrequencyPredictor:
         
         print("VERBOSE: Spiking neural network training completed")
 
+    def array_to_polygon(self, arr):
+        arr = np.array(arr, dtype=np.float32)
+        arr = arr.reshape(-1, 2)
+        return Polygon(arr)
+    def minkowski_sum(self, poly1, poly2):
+        points1 = np.array(poly1.exterior.coords)
+        points2 = np.array(poly2.exterior.coords)
+        sum_points = [p1 + p2 for p1 in points1 for p2 in points2]
+        hull = ConvexHull(sum_points)
+        return Polygon([sum_points[v] for v in hull.vertices])
     def generate_spiking_predictions(self, num_variations: int = 1) -> List[Dict[Tuple[str, str], float]]:
         """Generate predictions using the trained spiking network."""
         print(f"VERBOSE: Generating {num_variations} predictions with SNN")
@@ -453,8 +460,6 @@ class SpikingFrequencyPredictor:
             return []
         
         new_frequency_sets = []
-        
-        # Prepare base features
         base_X = np.array([f[1:] for f in self.frequency_features])
         
         for variation in range(num_variations):
@@ -470,28 +475,102 @@ class SpikingFrequencyPredictor:
             
             # Transform and scale
             X_transformed = self._apply_feature_operations(X_noised)
-            X_scaled = self.scaler.transform(X_transformed)
+            X_scaled = self.scaler.transform(X_transformed).T
             
             # Convert to spikes
             spike_data = self._encode_features_to_spikes(X_scaled)
             
+            # Fix the polygon processing section
+            X_scaled_tensor = torch.tensor(X_scaled, dtype=torch.float32)
+            spike_data_tensor = torch.tensor(spike_data, dtype=torch.float32)
+            
+            # Process polygons correctly
+            polygon_features = []
+            
+            # Ensure we have the right number of polygons
+            min_samples = min(len(X_scaled), spike_data.shape[1])
+            
+            for i in range(min_samples):
+                try:
+                    # Create polygons from available data
+                    formation_hull = X_scaled[i]
+                    spike_obs = spike_data[:, i, :]  # Get spike data for this sample
+                    
+                    # Create polygons (ensure minimum 3 points for valid polygon)
+                    if len(formation_hull) >= 6:  # At least 3 coordinate pairs
+                        coords1 = formation_hull[:6].reshape(-1, 2)  # First 3 points
+                        poly1 = self.array_to_polygon(coords1)
+                    else:
+                        # Create a simple triangle if not enough points
+                        coords1 = np.array([[0, 0], [1, 0], [0, 1]])
+                        poly1 = self.array_to_polygon(coords1)
+                    
+                    if spike_obs.size >= 6:
+                        coords2 = spike_obs.flatten()[:6].reshape(-1, 2)
+                        poly2 = self.array_to_polygon(coords2)
+                    else:
+                        coords2 = np.array([[0, 0], [0.5, 0], [0, 0.5]])
+                        poly2 = self.array_to_polygon(coords2)
+                    
+                    # Perform Minkowski sum
+                    result_poly = self.minkowski_sum(poly1, poly2)
+                    
+                    # Extract features from result polygon
+                    result_coords = np.array(result_poly.exterior.coords)
+                    flattened_coords = result_coords.flatten()
+                    
+                    # Pad or truncate to match expected feature size
+                    target_size = X_scaled.shape[1]  # Match input feature size
+                    if len(flattened_coords) > target_size:
+                        flattened_coords = flattened_coords[:target_size]
+                    elif len(flattened_coords) < target_size:
+                        padding = np.zeros(target_size - len(flattened_coords))
+                        flattened_coords = np.concatenate([flattened_coords, padding])
+                    
+                    polygon_features.append(flattened_coords)
+                    
+                except Exception as e:
+                    print(f"VERBOSE: Error processing polygon {i}: {e}")
+                    # Fallback: use original scaled features
+                    polygon_features.append(X_scaled[i])
+            
+            if not polygon_features:
+                print("VERBOSE: No polygon features generated, using original features")
+                polygon_tensor = spike_data_tensor
+            else:
+                # Convert to proper tensor format
+                polygon_array = np.array(polygon_features)
+                
+                # Ensure compatibility with spike_data shape
+                if polygon_array.shape[0] < spike_data.shape[1]:
+                    # Pad with zeros if needed
+                    padding_rows = spike_data.shape[1] - polygon_array.shape[0]
+                    padding = np.zeros((padding_rows, polygon_array.shape[1]))
+                    polygon_array = np.vstack([polygon_array, padding])
+                
+                # Reshape to match spike_data format: (time_steps, batch_size, features)
+                polygon_tensor = torch.tensor(polygon_array.T, dtype=torch.float32)
+                polygon_tensor = polygon_tensor.unsqueeze(0).repeat(spike_data.shape[0], 1, 1)
+            
             # Generate predictions
             with torch.no_grad():
-                predictions, _, _ = self._spiking_forward_pass(spike_data)
-                predictions = predictions.numpy().flatten()
+                predictions, _, _ = self._spiking_forward_pass(polygon_tensor)
             
             # Convert to frequency dictionary
-            predictions = np.maximum(predictions, 0.01)
+            predictions_np = predictions.numpy().flatten()
+            predictions_np = np.maximum(predictions_np, 0.01)
+            
             new_freq_dict = {
-                bigram: float(predictions[i]) 
+                bigram: float(predictions_np[i]) 
                 for i, bigram in enumerate(self.sorted_bigrams) 
-                if i < len(predictions)
+                if i < len(predictions_np)
             }
             
             new_frequency_sets.append(new_freq_dict)
         
         print(f"VERBOSE: Generated {len(new_frequency_sets)} SNN prediction sets")
         return new_frequency_sets
+        
 
     def expand_text_from_bigrams(self,
                                  frequency_dict: Dict[Tuple[str, str], float],
