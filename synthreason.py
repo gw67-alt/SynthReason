@@ -763,7 +763,7 @@ class SpikingMultilinearStreamLinker:
             features.extend([1.0, 0.0])
         
         features.append(math.log(position + 1))
-        features.append(1.0 if position % 50 == 0 else 0.0)
+        features.append(1.0 if position % 10 == 0 else 0.0)
         
         return features
     
