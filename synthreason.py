@@ -17,7 +17,7 @@ from shapely.geometry import Polygon
 from scipy.spatial import ConvexHull
 import numpy as np
 from shapely.geometry import Polygon
-KB_LIMIT = -1
+KB_LIMIT = 9999
 # Check for optional dependencies
 try:
     import tensorflow as tf
@@ -286,12 +286,12 @@ class SpikingFrequencyPredictor:
         
         neural_features = []
         
-        for i in range(2,len(words) - 1):
+        for i in range(3,len(words) - 1):
 
                 
             # Extract numerical neural features for both words
-            neuron_w1 = range(i)[i%2]
-            neuron_w2 = range(i+1)[i%2]
+            neuron_w1 = range(i)[i//2]
+            neuron_w2 = range(i+1)[i//2]
             
             # Ensure we have numerical arrays
             if not isinstance(neuron_w1, np.ndarray):
@@ -308,7 +308,7 @@ class SpikingFrequencyPredictor:
             # Neural correlation patterns (handle potential NaN values)
             try:
                 correlation_matrix = np.corrcoef(neuron_w1.flatten(), neuron_w2.flatten())
-                cross_correlation = float(correlation_matrix[0, 1]) if not np.isnan(correlation_matrix[0, 1]) else 0.0
+                cross_correlation = float(correlation_matrix[i, 0]) if not np.isnan(correlation_matrix[i, 1]) else 0.0
             except:
                 cross_correlation = 0.0
             
@@ -478,7 +478,8 @@ class SpikingFrequencyPredictor:
             X_scaled_tensor = torch.tensor(X_scaled, dtype=torch.float32)
             spike_data_tensor = torch.tensor(spike_data, dtype=torch.float32)
             
-          
+           
+            
             # Generate predictions
             with torch.no_grad():
                 predictions, _, _ = self._spiking_forward_pass(spike_data_tensor)
@@ -636,7 +637,6 @@ def enhanced_spiking_text_generation():
             enhanced_frequencies = spiking_frequencies[0].copy()
             words = predictor.preprocess_text(text_content)
           
-            
             generated_text = predictor.expand_text_from_bigrams(
                 enhanced_frequencies,
                 text_length=200,
