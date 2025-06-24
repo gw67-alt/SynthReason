@@ -286,8 +286,8 @@ class SpikingFrequencyPredictor:
         
         for i in range(3, len(words) - 1):
             # Extract numerical neural features for both words
-            neuron_w1 = np.array([float(i % 7), float((i * 2) % 5)], dtype=float)  # Fixed neural representation
-            neuron_w2 = np.array([float((i + 1) % 7), float(((i + 1) * 2) % 5)], dtype=float)
+            neuron_w1 = np.array([float(i % 17), float((i * 12) % 5)], dtype=float)  # Fixed neural representation
+            neuron_w2 = np.array([float((i + 1) % 17), float(((i + 1) * 2) % 15)], dtype=float)
             
             # Extract neural firing characteristics
             firing_rate_w1 = float(np.mean(neuron_w1))
@@ -404,6 +404,7 @@ class SpikingFrequencyPredictor:
         optimizer = torch.optim.Adam(self.snn_model.parameters(), lr=0.001)
         
         # Training loop
+        num_epochs = 5
         num_epochs = 5
         print(f"VERBOSE: Training SNN for {num_epochs} epochs")
         
