@@ -13,25 +13,11 @@ import re
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 import snntorch
-from shapely.geometry import Polygon
-from scipy.spatial import ConvexHull
 import numpy as np
-from shapely.geometry import Polygon
-KB_LIMIT = 9999
-# Check for optional dependencies
-try:
-    import tensorflow as tf
-    TENSORFLOW_AVAILABLE = True
-except ImportError:
-    TENSORFLOW_AVAILABLE = False
-    print("TensorFlow not available. Neural network training will be disabled.")
+from snntorch import spikegen
 
-try:
-    from datasets import load_dataset
-    DATASETS_AVAILABLE = True
-except ImportError:
-    DATASETS_AVAILABLE = False
-    print("Hugging Face datasets not available. HF dataset loading will be disabled.")
+KB_LIMIT = 2097152
+# Check for optional dependencies
 
 class SpikingFrequencyPredictor:
     def __init__(self):
@@ -204,13 +190,10 @@ class SpikingFrequencyPredictor:
         features_tensor = torch.FloatTensor(features_normalized)
         
         # Generate Poisson spike trains
-        spike_data = torch.zeros(self.num_steps, features_tensor.shape[0], features_tensor.shape[1])
-        
-        for step in range(self.num_steps):
-            # Generate spikes based on feature values as firing rates
-            spike_probs = features_tensor
-            spikes = torch.bernoulli(spike_probs)
-            spike_data[step] = spikes
+        spikegen.target_rate_code(num_steps=50, rate=1)
+        features_tensor = torch.FloatTensor(features_normalized)
+        spike_data = spikegen.rate(features_tensor, num_steps=100)
+
             
         print(f"VERBOSE: Generated spike data with shape {spike_data.shape}")
         return spike_data
@@ -221,19 +204,19 @@ class SpikingFrequencyPredictor:
         
         snn_model = nn.Sequential(
             # First spiking layer
-            nn.Linear(input_size, 128),
+            nn.Linear(input_size, 2048),
             snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad),
             
             # Second spiking layer with dropout
-            nn.Linear(128, 64),
+            nn.Linear(2048, 1024),#a*b = KB limit
             snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad),
             
             # Third spiking layer
-            nn.Linear(64, 32),
+            nn.Linear(1024, 128),
             snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad),
             
             # Output layer
-            nn.Linear(32, 1),
+            nn.Linear(128, 1),
             snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad, output=True)
         )
         
