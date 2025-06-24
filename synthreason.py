@@ -16,7 +16,7 @@ import snntorch
 import numpy as np
 from snntorch import spikegen
 
-KB_LIMIT = 2097152
+KB_LIMIT = 131072
 # Check for optional dependencies
 
 class SpikingFrequencyPredictor:
@@ -160,12 +160,11 @@ class SpikingFrequencyPredictor:
                 # expanded_frequencies[bigram] = expanded_frequencies.get(bigram, 0) + self.bigram_frequencies[bigram] * (0.5 ** d)
                 # But if you want each duplicate to be separate (for sampling), use a unique key:
                 key = (bigram[1], bigram[0], d)  # Unique key for each duplicate
-                if expanded_frequencies[key]:
+                if key not in expanded_frequencies:  # Fixed condition
                     expanded_frequencies[key] = self.bigram_frequencies[bigram] * (1.5 ** d)
 
         # If you want to return the frequencies:
         return expanded_frequencies
-
 
     def _apply_smoothing(self, frequencies, alpha=0.01):
         """Apply Laplace smoothing and normalize to probabilities"""
@@ -178,25 +177,47 @@ class SpikingFrequencyPredictor:
         
         return smoothed_probs
 
-
     def _encode_features_to_spikes(self, features: np.ndarray) -> torch.Tensor:
-        """Convert feature vectors to spike trains using rate coding."""
+        """Convert feature vectors to spike trains using rate coding, then unfold and fold the spikes."""
         print(f"VERBOSE: Encoding {features.shape} features to spike trains")
         
-        # Normalize features to [0, 1] for spike rate encoding
+        # Normalize features to [0, 1]
         features_normalized = (features - features.min()) / (features.max() - features.min() + 1e-8)
-        
-        # Convert to torch tensor
         features_tensor = torch.FloatTensor(features_normalized)
         
-        # Generate Poisson spike trains
-        spikegen.target_rate_code(num_steps=50, rate=1)
-        features_tensor = torch.FloatTensor(features_normalized)
-        spike_data = spikegen.rate(features_tensor, num_steps=100)
-
+        # Generate Poisson spike trains: (num_steps, num_samples, num_features)
+        spike_data = spikegen.rate(features_tensor, num_steps=self.num_steps)
+        
+        # Process spike data through fold/unfold operations
+        processed_steps = []
+        for step in range(self.num_steps):
+            single_spike = spike_data[step]  # shape: (num_samples, num_features)
             
-        print(f"VERBOSE: Generated spike data with shape {spike_data.shape}")
-        return spike_data
+            # Ensure we have the right number of features for reshaping to 4x4
+            if single_spike.shape[1] == 16:
+                # Reshape to (batch, 1, 4, 4) for 2D operations
+                single_spike_reshaped = single_spike.view(-1, 1, 4, 4)
+                
+                # Apply unfold operation
+                unfold = nn.Unfold(kernel_size=(2, 2), stride=2)
+                patches = unfold(single_spike_reshaped)  # (batch, 4, 4)
+                
+                # Apply fold operation to reconstruct
+                fold = nn.Fold(output_size=(4, 4), kernel_size=(2, 2), stride=2)
+                reconstructed = fold(patches)  # (batch, 1, 4, 4)
+                
+                # Flatten back to original feature dimension for network input
+                reconstructed_flat = reconstructed.view(-1, 16)  # (batch, 16)
+                processed_steps.append(reconstructed_flat)
+            else:
+                # If not 16 features, skip fold/unfold and use original
+                processed_steps.append(single_spike)
+        
+        # Stack processed steps back into (num_steps, num_samples, num_features)
+        processed_spike_data = torch.stack(processed_steps)
+        
+        print(f"VERBOSE: Generated processed spike data with shape {processed_spike_data.shape}")
+        return processed_spike_data
 
     def _create_spiking_network(self, input_size: int) -> nn.Module:
         """Create a spiking neural network architecture."""
@@ -204,15 +225,14 @@ class SpikingFrequencyPredictor:
         
         snn_model = nn.Sequential(
             # First spiking layer
-            nn.Linear(input_size, 2048),
+            nn.Linear(input_size, 512),
             snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad),
-            
             # Second spiking layer with dropout
-            nn.Linear(2048, 1024),#a*b = KB limit
+            nn.Linear(512, 256),  # Reduced size to avoid memory issues
             snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad),
             
             # Third spiking layer
-            nn.Linear(1024, 128),
+            nn.Linear(256, 128),
             snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad),
             
             # Output layer
@@ -258,29 +278,16 @@ class SpikingFrequencyPredictor:
             print("VERBOSE: No bigram frequencies available.")
             return []
         
-        # Initialize multilinear stream linker
-        
         # Get the text content
         text_content = self.current_text if self.current_text else self.get_sample_text()
         words = self.preprocess_text(text_content)
         
-        # Create actual numerical neural features using the linker
-     
-        
         neural_features = []
         
-        for i in range(3,len(words) - 1):
-
-                
+        for i in range(3, len(words) - 1):
             # Extract numerical neural features for both words
-            neuron_w1 = range(i)[i//2]
-            neuron_w2 = range(i+1)[i//2]
-            
-            # Ensure we have numerical arrays
-            if not isinstance(neuron_w1, np.ndarray):
-                neuron_w1 = np.array(neuron_w1, dtype=float)
-            if not isinstance(neuron_w2, np.ndarray):
-                neuron_w2 = np.array(neuron_w2, dtype=float)
+            neuron_w1 = np.array([float(i % 7), float((i * 2) % 5)], dtype=float)  # Fixed neural representation
+            neuron_w2 = np.array([float((i + 1) % 7), float(((i + 1) * 2) % 5)], dtype=float)
             
             # Extract neural firing characteristics
             firing_rate_w1 = float(np.mean(neuron_w1))
@@ -291,7 +298,7 @@ class SpikingFrequencyPredictor:
             # Neural correlation patterns (handle potential NaN values)
             try:
                 correlation_matrix = np.corrcoef(neuron_w1.flatten(), neuron_w2.flatten())
-                cross_correlation = float(correlation_matrix[i, 0]) if not np.isnan(correlation_matrix[i, 1]) else 0.0
+                cross_correlation = float(correlation_matrix[0, 1]) if not np.isnan(correlation_matrix[0, 1]) else 0.0
             except:
                 cross_correlation = 0.0
             
@@ -418,16 +425,6 @@ class SpikingFrequencyPredictor:
         
         print("VERBOSE: Spiking neural network training completed")
 
-    def array_to_polygon(self, arr):
-        arr = np.array(arr, dtype=np.float32)
-        arr = arr.reshape(-1, 2)
-        return Polygon(arr)
-    def minkowski_sum(self, poly1, poly2):
-        points1 = np.array(poly1.exterior.coords)
-        points2 = np.array(poly2.exterior.coords)
-        sum_points = [p1 + p2 for p1 in points1 for p2 in points2]
-        hull = ConvexHull(sum_points)
-        return Polygon([sum_points[v] for v in hull.vertices])
     def generate_spiking_predictions(self, num_variations: int = 1) -> List[Dict[Tuple[str, str], float]]:
         """Generate predictions using the trained spiking network."""
         print(f"VERBOSE: Generating {num_variations} predictions with SNN")
@@ -457,15 +454,9 @@ class SpikingFrequencyPredictor:
             # Convert to spikes
             spike_data = self._encode_features_to_spikes(X_scaled)
             
-            # Fix the polygon processing section
-            X_scaled_tensor = torch.tensor(X_scaled, dtype=torch.float32)
-            spike_data_tensor = torch.tensor(spike_data, dtype=torch.float32)
-            
-           
-            
             # Generate predictions
             with torch.no_grad():
-                predictions, _, _ = self._spiking_forward_pass(spike_data_tensor)
+                predictions, _, _ = self._spiking_forward_pass(spike_data)
             
             # Convert to frequency dictionary
             predictions_np = predictions.numpy().flatten()
@@ -481,7 +472,6 @@ class SpikingFrequencyPredictor:
         
         print(f"VERBOSE: Generated {len(new_frequency_sets)} SNN prediction sets")
         return new_frequency_sets
-        
 
     def expand_text_from_bigrams(self,
                                  frequency_dict: Dict[Tuple[str, str], float],
@@ -580,6 +570,7 @@ class SpikingFrequencyPredictor:
         final_text = ' '.join(generated_text_list)
         print(f"VERBOSE: Text expansion complete. Generated {len(generated_text_list)} words. Preview: '{final_text[:70]}...'")
         return final_text
+
 
 
 def enhanced_spiking_text_generation():
