@@ -1,7 +1,7 @@
 import numpy as np
-import random
 from collections import defaultdict, deque, Counter
 from typing import Dict, List, Tuple, Optional, Callable
+import random
 import torch
 import torch.nn as nn
 import snntorch as snn
@@ -10,7 +10,7 @@ from snntorch import utils
 from snntorch import spikegen
 from sklearn.preprocessing import StandardScaler
 
-KB_LIMIT = 131072
+KB_LIMIT = 13177
 
 class SpikingFrequencyPredictor:
     def __init__(self):
@@ -56,19 +56,24 @@ class SpikingFrequencyPredictor:
         words = self.preprocess_text(text_content)
         neural_features = []
 
-        # Infinite combinatorial generator (lambda calculus style)
+        # Lambda calculus inspired feature generator
         def infinite_features(w1, w2, idx):
-            # You can extend this with more combinatorial logic as needed
+            # Lambda calculus fixed-point combinator
+            Y = lambda f: (lambda x: f(lambda y: x(x)(y)))(lambda x: f(lambda y: x(x)(y)))
+            
+            # Combinatorial feature calculation using fixed-point
+            comb_feature = Y(lambda f: lambda n: 1 if n == 0 else n * f(n-1))(idx % 17)
+            
             return [
-                float(idx),                      # index in text
-                float(len(w1)),                  # length of word1
-                float(len(w2)),                  # length of word2
-                float(len(w1) * len(w2)),        # product of lengths
-                float(abs(len(w1) - len(w2))),   # length difference
-                float((idx**2) % 17)             # modular feature
+                comb_feature,            # Lambda combinatorial feature
+                idx if words[idx] == "the" else 0,
+                idx if words[idx] == "is" else 0,
+                idx if words[idx] == "and" else 0,
+                idx if words[idx] == "or" else 0
+            
             ]
 
-        for i in range(3, len(words) - 1):
+        for i in range(len(words) - 1):
             bigram = (words[i], words[i+1])
             freq = self.bigram_frequencies.get(bigram, 0)
             w1, w2 = bigram
@@ -105,11 +110,11 @@ class SpikingFrequencyPredictor:
 
     def _create_spiking_network(self, input_size: int) -> nn.Module:
         snn_model = nn.Sequential(
-            nn.Linear(input_size, 128),
+            nn.Linear(input_size, 512),
             snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad),
-            nn.Linear(128, 64),
+            nn.Linear(512, 512),
             snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad),
-            nn.Linear(64, 1),
+            nn.Linear(512, 1),
             snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad, output=True)
         )
         return snn_model
@@ -126,30 +131,6 @@ class SpikingFrequencyPredictor:
         mem_rec = torch.stack(mem_rec)
         output = torch.sum(spk_rec, dim=0)
         return output, spk_rec, mem_rec
-
-    def train_spiking_predictor(self) -> None:
-        if not self.frequency_features:
-            print("No frequency features available for SNN training")
-            return
-        X_raw = np.array([f[1:] for f in self.frequency_features])
-        y = np.array([f[0] for f in self.frequency_features])
-        X_transformed = self._apply_feature_operations(X_raw)
-        X_scaled = self.scaler.fit_transform(X_transformed)
-        spike_data = self._encode_features_to_spikes(X_scaled)
-        y_tensor = torch.FloatTensor(y).unsqueeze(1)
-        self.snn_model = self._create_spiking_network(X_scaled.shape[1])
-        criterion = nn.MSELoss()
-        optimizer = torch.optim.Adam(self.snn_model.parameters(), lr=0.001)
-        num_epochs = 5
-        for epoch in range(num_epochs):
-            optimizer.zero_grad()
-            output, spk_rec, mem_rec = self._spiking_forward_pass(spike_data)
-            loss = criterion(output, y_tensor)
-            loss.backward()
-            optimizer.step()
-            if epoch % 1 == 0:
-                print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
-                
     def load_text_file(self, file_path: str) -> str:
         print(f"VERBOSE: Attempting to load text from local file: {file_path}")
         try:
@@ -164,6 +145,7 @@ class SpikingFrequencyPredictor:
         except Exception as e:
             print(f"VERBOSE: Error loading file {file_path}: {e}. Using internal sample text.")
             return self.get_sample_text()
+            
     def generate_spiking_predictions(self, num_variations: int = 1) -> List[Dict[Tuple[str, str], float]]:
         """Generate predictions using the trained spiking network."""
         print(f"VERBOSE: Generating {num_variations} predictions with SNN")
@@ -199,7 +181,7 @@ class SpikingFrequencyPredictor:
             
             # Convert to frequency dictionary
             predictions_np = predictions.numpy().flatten()
-            predictions_np = np.maximum(predictions_np, 0.01)
+            predictions_np = np.argsort(predictions_np)
             
             new_freq_dict = {
                 bigram: float(predictions_np[i]) 
@@ -308,6 +290,29 @@ class SpikingFrequencyPredictor:
         final_text = ' '.join(generated_text_list)
         print(f"VERBOSE: Text expansion complete. Generated {len(generated_text_list)} words. Preview: '{final_text[:70]}...'")
         return final_text
+    def train_spiking_predictor(self) -> None:
+        if not self.frequency_features:
+            print("No frequency features available for SNN training")
+            return
+        X_raw = np.array([f[1:] for f in self.frequency_features])
+        y = np.array([f[0] for f in self.frequency_features])
+        X_transformed = self._apply_feature_operations(X_raw)
+        X_scaled = self.scaler.fit_transform(X_transformed)
+        spike_data = self._encode_features_to_spikes(X_scaled)
+        y_tensor = torch.FloatTensor(y).unsqueeze(1)
+        self.snn_model = self._create_spiking_network(X_scaled.shape[1])
+        criterion = nn.MSELoss()
+        optimizer = torch.optim.Adam(self.snn_model.parameters(), lr=0.001)
+        num_epochs = 5
+        for epoch in range(num_epochs):
+            optimizer.zero_grad()
+            output, spk_rec, mem_rec = self._spiking_forward_pass(spike_data)
+            loss = criterion(output, y_tensor)
+            loss.backward()
+            optimizer.step()
+            if epoch % 1 == 0:
+                print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
+
 # Example usage
 if __name__ == "__main__":
     """Enhanced text generation using spiking neural networks."""
