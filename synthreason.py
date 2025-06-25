@@ -65,7 +65,7 @@ class SpikingFrequencyPredictor:
             comb_feature = Y(lambda f: lambda n: 1 if n == 0 else n * f(n-1))(idx % 17)
             
             return [
-                comb_feature,            # Lambda combinatorial feature
+                idx,            # Lambda combinatorial feature
                 idx if words[idx] == "the" else 0,
                 idx if words[idx] == "is" else 0,
                 idx if words[idx] == "and" else 0,
