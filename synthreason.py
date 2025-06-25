@@ -9,7 +9,7 @@ from snntorch import surrogate
 from snntorch import utils
 from snntorch import spikegen
 from sklearn.preprocessing import StandardScaler
-
+import re
 KB_LIMIT = 13177
 
 class SpikingFrequencyPredictor:
@@ -47,7 +47,8 @@ class SpikingFrequencyPredictor:
             )
         ]
         return self.bigram_frequencies
-
+    def contains_integer(self, s):
+        return bool(re.search(r'[-+]?\b\d+\b', s))
     # Lambda infinite combinatorial feature generator
     def create_bigram_frequency_features(self) -> List[List[float]]:
         if not self.bigram_frequencies:
@@ -65,11 +66,11 @@ class SpikingFrequencyPredictor:
             comb_feature = Y(lambda f: lambda n: 1 if n == 0 else n * f(n-1))(idx % 17)
             
             return [
-                idx,            # Lambda combinatorial feature
                 idx if words[idx+1] == "the" else 0,
-                idx if words[idx] == "is" else 0,
-                idx if words[idx] == "and" else 0,
-                idx if words[idx] == "or" else 0
+                idx if words[idx-1] == "is" else 0,
+                idx if words[idx-2] == "and" else 0,
+                idx if words[idx-3] == "or" else 0,
+                0 if self.contains_integer(words[idx]) else idx
             
             ]
 
