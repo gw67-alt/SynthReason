@@ -66,7 +66,7 @@ class SpikingFrequencyPredictor:
             
             return [
                 idx,            # Lambda combinatorial feature
-                idx if words[idx] == "the" else 0,
+                idx if words[idx+1] == "the" else 0,
                 idx if words[idx] == "is" else 0,
                 idx if words[idx] == "and" else 0,
                 idx if words[idx] == "or" else 0
