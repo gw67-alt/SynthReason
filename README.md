@@ -5,7 +5,7 @@ Generative AI model
 
 ## Overview
 
-SynthReason-3.0 is a generative AI model designed to create synthetic reasoning and responses. It leverages advanced machine learning techniques to generate coherent and contextually relevant content.
+SynthReason-5.0 is a generative AI model designed to create synthetic reasoning and responses. It leverages advanced machine learning techniques to generate coherent and contextually relevant content.
 
 ## Features
 
