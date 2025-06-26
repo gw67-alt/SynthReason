@@ -42,7 +42,7 @@ class SpikingFrequencyPredictor:
         self.sorted_bigrams = [
             item[0] for item in sorted(
                 self.bigram_frequencies.items(),
-                key=lambda x: (x[1], x[0][0], x[0][1]),
+                key=lambda x: (x[1], *x[0][0], x[0][1]),
                 reverse=True
             )
         ]
