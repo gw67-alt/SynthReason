@@ -55,6 +55,7 @@ class SpikingFrequencyPredictor:
             return []
         text_content = self.current_text
         words = self.preprocess_text(text_content)
+
         neural_features = []
 
         # Lambda calculus inspired feature generator
@@ -64,22 +65,22 @@ class SpikingFrequencyPredictor:
             
             # Combinatorial feature calculation using fixed-point
             comb_feature = Y(lambda f: lambda n: 1 if n == 0 else n * f(n-1))(idx % 17)
-            
+            freq = self.bigram_frequencies.get(bigram, 0)
+
             return [
-                idx if words[idx+1] == "the" else 0,
-                idx if words[idx-1] == "is" else 0,
-                idx if words[idx-2] == "and" else 0,
-                idx if words[idx-3] == "or" else 0,
-                0 if self.contains_integer(words[idx]) else idx
+                idx if words[freq] == "the" else 0,
+                idx if words[idx] == "is" else 0,
+                idx if words[idx] == "and" else 0,
+                idx if words[idx] == "or" else 0,
+
             
             ]
 
         for i in range(len(words) - 1):
             bigram = (words[i], words[i+1])
-            freq = self.bigram_frequencies.get(bigram, 0)
             w1, w2 = bigram
             features = infinite_features(w1, w2, i)
-            neural_features.append([float(freq)] + features)
+            neural_features.append(features)
 
         if neural_features:
             self.num_base_features = len(neural_features[0]) - 1
