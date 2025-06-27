@@ -16,20 +16,30 @@ def build_vocab(text):
     idx_to_word = {i: w for w, i in word_to_idx.items()}
     return word_to_idx, idx_to_word
 
-# --- 2. Simple Environment: output the next word in a sequence ---
 class TextEnv:
     def __init__(self, text, word_to_idx):
         self.words = text.split()
         self.word_to_idx = word_to_idx
-        self.idx_to_word = {i: w for w, i in word_to_idx.items()}  # Correct mapping
+        self.idx_to_word = {i: w for w, i in word_to_idx.items()}
         self.reset()
 
-    def reset(self):
-        self.pos = 0
+    def reset(self, seed_text=None):
+        if seed_text is not None:
+            # Find the position of the seed text in the document
+            seed_words = seed_text.split()
+            found = False
+            for i in range(len(self.words) - len(seed_words) + 1):
+                if self.words[i:i+len(seed_words)] == seed_words:
+                    self.pos = i + len(seed_words) - 1
+                    found = True
+                    break
+            if not found:
+                self.pos = 0  # fallback if not found
+        else:
+            self.pos = 0
         return self._get_state()
 
     def _get_state(self):
-        # State: one-hot encoding of current word index (or 0 if out of range)
         if self.pos < len(self.words):
             word = self.words[self.pos]
             idx = self.word_to_idx.get(word, 0)
@@ -40,15 +50,13 @@ class TextEnv:
         return state
 
     def step(self, action_idx):
-        # Reward: +1 if the chosen word matches the next word in the document
         done = self.pos >= len(self.words) - 1
         correct_idx = self.word_to_idx.get(self.words[self.pos+1], self.word_to_idx['<UNK>']) if not done else 0
-        reward = 1.0 if action_idx == correct_idx else 0.0
+        reward = 1.0 if action_idx == correct_idx else 0.1
         self.pos += 1
         next_state = self._get_state()
         return next_state, reward, self.pos >= len(self.words) - 1
 
-# --- 3. Policy Network: outputs logits for all words in vocab ---
 class PolicyNet(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
@@ -70,20 +78,18 @@ class PolicyNet(nn.Module):
             action = torch.argmax(probs).item()
         return action, torch.log(probs[action])
 
-# --- 4. Training Loop ---
-def train():
-    # Load document and build vocab
+def train(seed_text=None):
     with open("test.txt", "r", encoding="utf-8") as f:
-        text = ' '.join(f.read().split()[:999])
+        text = ' '.join(f.read().split()[:9999])
     word_to_idx, idx_to_word = build_vocab(text)
     vocab_size = len(word_to_idx)
 
     env = TextEnv(text, word_to_idx)
     policy = PolicyNet(vocab_size)
     optimizer = optim.Adam(policy.parameters(), lr=0.01)
-    gamma = 0.5
+    gamma = 0.3
 
-    for episode in range(5):
+    for episode in range(3):
         state = env.reset()
         done = False
         log_probs = []
@@ -98,7 +104,6 @@ def train():
             state = next_state
             total_reward += reward
 
-        # Compute discounted returns
         returns = []
         G = 0
         for r in reversed(rewards):
@@ -106,7 +111,6 @@ def train():
             returns.insert(0, G)
         returns = torch.FloatTensor(returns)
 
-        # Policy gradient loss
         loss = -sum(log_prob * G for log_prob, G in zip(log_probs, returns))
         optimizer.zero_grad()
         loss.backward()
@@ -115,9 +119,11 @@ def train():
         if (episode + 1) % 10 == 0:
             print(f"Episode {episode+1}, Total Reward: {total_reward}")
 
-    # Test: generate a sequence
-    state = env.reset()
+    # Test: generate a sequence from seed
     print("\nGenerated sequence:")
+    state = env.reset(seed_text=seed_text)
+    if seed_text:
+        print(seed_text, end=' ')
     for _ in range(200):
         action, _ = policy.act(state, explore=True)
         print(idx_to_word[action], end=' ')
@@ -127,4 +133,7 @@ def train():
     print()
 
 if __name__ == "__main__":
-    train()
+    # Example: pass a seed text here, or set to None
+    while True:
+        
+        train(seed_text=input("USER:"))
