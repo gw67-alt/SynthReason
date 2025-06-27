@@ -51,7 +51,7 @@ class TextEnv:
 
     def step(self, action_idx):
         done = self.pos >= len(self.words) - 1
-        correct_idx = self.word_to_idx.get(self.words[self.pos+1], self.word_to_idx['<UNK>']) if not done else 0
+        correct_idx = self.word_to_idx.get(self.words[self.pos], self.word_to_idx['<UNK>']) if not done else 0
         reward = 1.0 if action_idx != correct_idx else 0.1
         self.pos += 1
         next_state = self._get_state()
