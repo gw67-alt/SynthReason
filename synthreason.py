@@ -79,7 +79,7 @@ class PolicyNet(nn.Module):
         return action, torch.log(probs[action])
 
 def train(seed_text=None):
-    with open("test.txt", "r", encoding="utf-8") as f:
+    with open(input("Filename: "), "r", encoding="utf-8") as f:
         text = ' '.join(f.read().split()[:1999])
     word_to_idx, idx_to_word = build_vocab(text)
     vocab_size = len(word_to_idx)
