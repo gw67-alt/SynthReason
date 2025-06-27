@@ -61,9 +61,9 @@ class PolicyNet(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
         self.fc = nn.Sequential(
-            nn.Linear(vocab_size, 64),
+            nn.Linear(vocab_size, 256),
             nn.ReLU(),
-            nn.Linear(64, vocab_size)
+            nn.Linear(256, vocab_size)
         )
 
     def forward(self, x):
@@ -80,13 +80,13 @@ class PolicyNet(nn.Module):
 
 def train(seed_text=None):
     with open("test.txt", "r", encoding="utf-8") as f:
-        text = ' '.join(f.read().split()[:9999])
+        text = ' '.join(f.read().split()[:1999])
     word_to_idx, idx_to_word = build_vocab(text)
     vocab_size = len(word_to_idx)
 
     env = TextEnv(text, word_to_idx)
     policy = PolicyNet(vocab_size)
-    optimizer = optim.Adam(policy.parameters(), lr=0.01)
+    optimizer = optim.Adam(policy.parameters(), lr=0.11)
     gamma = 0.3
 
     for episode in range(3):
