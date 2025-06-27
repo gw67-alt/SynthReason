@@ -75,7 +75,7 @@ class PolicyNet(nn.Module):
         if explore:
             action = torch.multinomial(probs, 1).item()
         else:
-            action = torch.argmax(probs).item()
+            action = torch.softmax(probs).item()
         return action, torch.log(probs[action])
 
 def train(seed_text, text):
