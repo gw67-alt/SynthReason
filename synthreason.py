@@ -275,7 +275,7 @@ class SpikingFrequencyPredictor:
                     sorted_restart_options = sorted(restart_options.items(), key=lambda item: item[1], reverse=True)
                     starters = [item[0] for item in sorted_restart_options]
                     weights = [item[1] for item in sorted_restart_options]
-                    current_word = random.choices(starters, weights=weights, k=1)[0]
+                    current_word = random.argmax(starters)[0]
                     print(f"VERBOSE: Restarted with word '{current_word}' (weighted choice).")
                 else:
                     current_word = random.choice(valid_restart_candidates)
@@ -297,7 +297,7 @@ class SpikingFrequencyPredictor:
             print("No frequency features available for SNN training")
             return
         X_raw = np.array([f[1:] for f in self.frequency_features])
-        y = np.array([f[0] for f in self.frequency_features])
+        y = np.array([f for f in self.frequency_features])
         X_transformed = self._apply_feature_operations(X_raw)
         X_scaled = self.scaler.fit_transform(X_transformed)
         spike_data = self._encode_features_to_spikes(X_scaled)
