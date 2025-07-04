@@ -10,7 +10,7 @@ from snntorch import utils
 from snntorch import spikegen
 from sklearn.preprocessing import StandardScaler
 import re
-KB_LIMIT = 13177
+KB_LIMIT = 1317
 
 class SpikingFrequencyPredictor:
     def __init__(self):
@@ -32,12 +32,76 @@ class SpikingFrequencyPredictor:
         return [word for word in words if word]
 
     def extract_bigram_frequencies(self, text: str) -> Dict[Tuple[str, str], int]:
+        with open("xaa", 'r', encoding='utf-8') as f:
+            content = f.read()
+            fineTune = content.lower().split()[:KB_LIMIT]
+        
         words = self.preprocess_text(text)
         self.unigram_counts = Counter(words)
         bigram_counts = Counter()
+        psychologyWords = [
+          "behavior",
+          "cognition",
+          "consciousness",
+          "perception",
+          "memory",
+          "learning",
+          "motivation",
+          "emotion",
+          "personality",
+          "development",
+          "therapy",
+          "psychoanalysis",
+          "behaviorism",
+          "conditioning",
+          "reinforcement",
+          "stimulus",
+          "response",
+          "neurotransmitter",
+          "synapse",
+          "dopamine",
+          "serotonin",
+          "anxiety",
+          "depression",
+          "trauma",
+          "resilience",
+          "attachment",
+          "identity",
+          "self-esteem",
+          "empathy",
+          "intelligence",
+          "creativity",
+          "stress",
+          "coping",
+          "defense mechanism",
+          "unconscious",
+          "subconscious",
+          "cognitive bias",
+          "schema",
+          "attribution",
+          "conformity",
+          "obedience",
+          "prejudice",
+          "stereotype",
+          "aggression",
+          "altruism",
+          "psychotherapy",
+          "counseling",
+          "assessment",
+          "diagnosis",
+          "intervention",
+          "rehabilitation"
+        ];
+
         for i in range(len(words) - 1):
-            bigram = (words[i], words[i + 1])
-            bigram_counts[bigram] += 1
+            for word in psychologyWords:
+                if word in fineTune:
+                    for j in range(len(fineTune) - 1):
+                        if fineTune[j] not in psychologyWords:
+                            bigram = (fineTune[j], fineTune[j+1])
+                            bigram_counts[bigram] += 1
+            bigram = (words[i], words[i+1])
+            bigram_counts[bigram] += 2
         self.bigram_frequencies = dict(bigram_counts)
         self.sorted_bigrams = [
             item[0] for item in sorted(
@@ -275,7 +339,7 @@ class SpikingFrequencyPredictor:
                     sorted_restart_options = sorted(restart_options.items(), key=lambda item: item[1], reverse=True)
                     starters = [item[0] for item in sorted_restart_options]
                     weights = [item[1] for item in sorted_restart_options]
-                    current_word = random.argmax(starters)[0]
+                    current_word = random.choices(starters, weights=weights, k=1)[0]
                     print(f"VERBOSE: Restarted with word '{current_word}' (weighted choice).")
                 else:
                     current_word = random.choice(valid_restart_candidates)
@@ -297,7 +361,7 @@ class SpikingFrequencyPredictor:
             print("No frequency features available for SNN training")
             return
         X_raw = np.array([f[1:] for f in self.frequency_features])
-        y = np.array([f for f in self.frequency_features])
+        y = np.array([f[0] for f in self.frequency_features])
         X_transformed = self._apply_feature_operations(X_raw)
         X_scaled = self.scaler.fit_transform(X_transformed)
         spike_data = self._encode_features_to_spikes(X_scaled)
