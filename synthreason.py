@@ -10,7 +10,7 @@ from snntorch import utils
 from snntorch import spikegen
 from sklearn.preprocessing import StandardScaler
 import re
-KB_LIMIT = 1317
+KB_LIMIT = 5000
 
 class SpikingFrequencyPredictor:
     def __init__(self):
