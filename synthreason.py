@@ -132,7 +132,7 @@ class SpikingFrequencyPredictor:
             freq = self.bigram_frequencies.get(bigram, 0)
 
             return [
-                idx if words[freq] == "the" else 0,
+                idx if words[freq if freq < len(words) else 0] == "the" else 0,
                 idx if words[idx] == "is" else 0,
                 idx if words[idx] == "and" else 0,
                 idx if words[idx] == "or" else 0,
