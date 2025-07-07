@@ -101,7 +101,7 @@ class SpikingFrequencyPredictor:
                             bigram = (fineTune[j], fineTune[j+1])
                             bigram_counts[bigram] += 1
             bigram = (words[i], words[i+1])
-            bigram_counts[bigram] += 2
+            bigram_counts[bigram] += i
         self.bigram_frequencies = dict(bigram_counts)
         self.sorted_bigrams = [
             item[0] for item in sorted(
@@ -361,7 +361,7 @@ class SpikingFrequencyPredictor:
             print("No frequency features available for SNN training")
             return
         X_raw = np.array([f[1:] for f in self.frequency_features])
-        y = np.array([f[0] for f in self.frequency_features])
+        y = np.array([f[:] for f in self.frequency_features])
         X_transformed = self._apply_feature_operations(X_raw)
         X_scaled = self.scaler.fit_transform(X_transformed)
         spike_data = self._encode_features_to_spikes(X_scaled)
