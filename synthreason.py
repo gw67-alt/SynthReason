@@ -94,12 +94,10 @@ class SpikingFrequencyPredictor:
         ];
 
         for i in range(len(words) - 1):
-            for word in psychologyWords:
-                if word in fineTune:
-                    for j in range(len(fineTune) - 1):
-                        if fineTune[j] not in psychologyWords:
-                            bigram = (fineTune[j], fineTune[j+1])
-                            bigram_counts[bigram] += 1
+            if words[i] in psychologyWords:
+                for j in range(len(fineTune) - 1):
+                        bigram = (fineTune[j],words[i+1])
+                        bigram_counts[bigram] += 3
             bigram = (words[i], words[i+1])
             bigram_counts[bigram] += i
         self.bigram_frequencies = dict(bigram_counts)
