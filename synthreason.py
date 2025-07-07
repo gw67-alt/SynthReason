@@ -224,7 +224,7 @@ class NeuronAwareTextProcessor:
             print("Using sample text")
         
         # Clean and tokenize
-        words = re.sub(r'[^\w\s]', '', content.lower()).split()
+        words = content.lower().split()
         words = [w for w in words if w]
         
         # Build vocabulary
