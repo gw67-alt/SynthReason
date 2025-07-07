@@ -1,431 +1,400 @@
 import numpy as np
-from collections import defaultdict, deque, Counter
-from typing import Dict, List, Tuple, Optional, Callable
-import random
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import snntorch as snn
-from snntorch import surrogate
-from snntorch import utils
-from snntorch import spikegen
+from snntorch import surrogate, utils, spikegen
 from sklearn.preprocessing import StandardScaler
+from torch_geometric.data import Data
+from torch_geometric.nn import GCNConv, global_mean_pool
+import matplotlib.pyplot as plt
+from collections import defaultdict, Counter
+import random
 import re
-KB_LIMIT = 5000
 
-class SpikingFrequencyPredictor:
-    def __init__(self):
-        self.bigram_frequencies: Dict[Tuple[str, str], int] = {}
-        self.frequency_features: List[List[float]] = []
-        self.snn_model: Optional[nn.Module] = None
-        self.scaler = StandardScaler()
-        self.sorted_bigrams: List[Tuple[str, str]] = []
-        self.unigram_counts: Dict[str, int] = Counter()
-        self.num_base_features: int = 6  # Updated for combinatorial features
-        self.feature_operations: Optional[List[Optional[Callable[[np.ndarray], np.ndarray]]]] = None
-        self.num_steps = 5
-        self.beta = 0.5
-        self.spike_grad = surrogate.fast_sigmoid()
-        self.current_text = ""
 
-    def preprocess_text(self, text: str) -> List[str]:
-        words = text.split()
-        return [word for word in words if word]
-
-    def extract_bigram_frequencies(self, text: str) -> Dict[Tuple[str, str], int]:
-        with open("xaa", 'r', encoding='utf-8') as f:
-            content = f.read()
-            fineTune = content.lower().split()[:KB_LIMIT]
+class NeuronManagedSNN(nn.Module):
+    def __init__(self, num_neurons):
+        super().__init__()
+        # Preserve neuron count throughout network
+        self.input_layer = nn.Linear(num_neurons, num_neurons)
+        self.snn_layer = snn.Leaky(beta=0.5, init_hidden=False, spike_grad=surrogate.fast_sigmoid())
+        self.num_neurons = num_neurons
         
-        words = self.preprocess_text(text)
-        self.unigram_counts = Counter(words)
-        bigram_counts = Counter()
-        psychologyWords = [
-          "behavior",
-          "cognition",
-          "consciousness",
-          "perception",
-          "memory",
-          "learning",
-          "motivation",
-          "emotion",
-          "personality",
-          "development",
-          "therapy",
-          "psychoanalysis",
-          "behaviorism",
-          "conditioning",
-          "reinforcement",
-          "stimulus",
-          "response",
-          "neurotransmitter",
-          "synapse",
-          "dopamine",
-          "serotonin",
-          "anxiety",
-          "depression",
-          "trauma",
-          "resilience",
-          "attachment",
-          "identity",
-          "self-esteem",
-          "empathy",
-          "intelligence",
-          "creativity",
-          "stress",
-          "coping",
-          "defense mechanism",
-          "unconscious",
-          "subconscious",
-          "cognitive bias",
-          "schema",
-          "attribution",
-          "conformity",
-          "obedience",
-          "prejudice",
-          "stereotype",
-          "aggression",
-          "altruism",
-          "psychotherapy",
-          "counseling",
-          "assessment",
-          "diagnosis",
-          "intervention",
-          "rehabilitation"
-        ];
+    def forward(self, x, mem=None):
+        x = self.input_layer(x)
+        if mem is None:
+            spk, mem = self.snn_layer(x)
+        else:
+            spk, mem = self.snn_layer(x, mem)
+        return spk, mem
 
-        for i in range(len(words) - 1):
-            if words[i] in psychologyWords:
-                for j in range(len(fineTune) - 1):
-                        bigram = (' '.join(fineTune[j:j+3]),words[i+1])
-                        bigram_counts[bigram] += 3
-            bigram = (words[i], words[i+1])
-            bigram_counts[bigram] += i
-        self.bigram_frequencies = dict(bigram_counts)
-        self.sorted_bigrams = [
-            item[0] for item in sorted(
-                self.bigram_frequencies.items(),
-                key=lambda x: (x[1], *x[0][0], x[0][1]),
-                reverse=True
-            )
-        ]
-        return self.bigram_frequencies
-    def contains_integer(self, s):
-        return bool(re.search(r'[-+]?\b\d+\b', s))
-    # Lambda infinite combinatorial feature generator
-    def create_bigram_frequency_features(self) -> List[List[float]]:
-        if not self.bigram_frequencies:
-            return []
-        text_content = self.current_text
-        words = self.preprocess_text(text_content)
-
-        neural_features = []
-
-        # Lambda calculus inspired feature generator
-        def infinite_features(w1, w2, idx):
-            # Lambda calculus fixed-point combinator
-            Y = lambda f: (lambda x: f(lambda y: x(x)(y)))(lambda x: f(lambda y: x(x)(y)))
+def run_snn_with_proper_tracking(spike_data, snn_model):
+    """Run SNN while properly tracking all neuron states"""
+    spk_rec = []
+    mem_rec = []
+    utils.reset(snn_model)
+    mem = None
+    
+    #print(f"Input spike_data shape: {spike_data.shape}")
+    
+    for step in range(spike_data.shape[0]):  # num_steps
+        if spike_data.shape[1] > 0:  # Check samples exist
+            # Use first sample for processing
+            input_data = spike_data[step][0]  # Shape: [num_features]
+            #print(f"Step {step}, input shape: {input_data.shape}")
             
-            # Combinatorial feature calculation using fixed-point
-            comb_feature = Y(lambda f: lambda n: 1 if n == 0 else n * f(n-1))(idx % 17)
-            freq = self.bigram_frequencies.get(bigram, 0)
-
-            return [
-                idx if words[freq if freq < len(words) else 0] == "the" else 0,
-                idx if words[idx] == "is" else 0,
-                idx if words[idx] == "and" else 0,
-                idx if words[idx] == "or" else 0,
-
+            spk, mem = snn_model(input_data, mem)
+            spk_rec.append(spk)
+            mem_rec.append(mem)
             
-            ]
+            #print(f"Step {step}, spike shape: {spk.shape}, mem shape: {mem.shape}")
+    
+    spk_rec = torch.stack(spk_rec)  # [num_steps, num_neurons]
+    mem_rec = torch.stack(mem_rec)  # [num_steps, num_neurons]
+    
+    #print(f"Final spk_rec shape: {spk_rec.shape}")
+    #print(f"Final mem_rec shape: {mem_rec.shape}")
+    
+    return spk_rec, mem_rec
 
-        for i in range(len(words) - 1):
-            bigram = (words[i], words[i+1])
-            w1, w2 = bigram
-            features = infinite_features(w1, w2, i)
-            neural_features.append(features)
+def create_neuron_aligned_graph(spk_rec, mem_rec):
+    """Create graph ensuring each neuron becomes a node"""
+    print(f"Creating graph from spk_rec: {spk_rec.shape}, mem_rec: {mem_rec.shape}")
+    
+    # Transpose to get [num_neurons, num_steps]
+    node_features = spk_rec.T  
+    node_features = torch.cat([node_features, mem_rec.T], dim=1)  # [num_neurons, 2*num_steps]
+    
+    print(f"Node features shape: {node_features.shape}")
+    
+    # Ensure we have the right number of nodes
+    num_nodes = node_features.shape[0]
+    print(f"Number of graph nodes: {num_nodes}")
+    
+    # Create edges between neurons
+    edge_index = []
+    if num_nodes > 1:
+        # Create a more structured connectivity pattern
+        for i in range(num_nodes):
+            for j in range(i+1, min(i+4, num_nodes)):  # Connect to next 3 neurons
+                edge_index.extend([[i, j], [j, i]])  # Bidirectional edges
+    
+    if edge_index:
+        edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+    else:
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+    
+    print(f"Edge index shape: {edge_index.shape}")
+    
+    data = Data(x=node_features, edge_index=edge_index)
+    return data
 
-        if neural_features:
-            self.num_base_features = len(neural_features[0]) - 1
+class DataAwareFGCN(nn.Module):
+    def __init__(self, in_dim, hidden_dim=64, out_dim=32):
+        super().__init__()
+        self.gcn1 = GCNConv(in_dim, hidden_dim)
+        self.gcn2 = GCNConv(hidden_dim, out_dim)
+        self.attn = nn.Linear(out_dim, 1)
+        
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        
+        print(f"GCN input shape: {x.shape}")
+        print(f"Edge index shape: {edge_index.shape}")
+        
+        # Apply graph convolutions
+        x = F.relu(self.gcn1(x, edge_index))
+        x = F.relu(self.gcn2(x, edge_index))
+        
+        # Spatial attention
+        attn_weights = torch.sigmoid(self.attn(x))
+        x = x * attn_weights
+        
+        print(f"GCN output shape: {x.shape}")
+        
+        return x
 
-        self.frequency_features = neural_features
-        return neural_features
+def neuron_to_image_mapping(node_features, target_size=8):
+    """Map neurons to image pixels with proper scaling"""
+    num_nodes, feat_dim = node_features.shape
+    target_pixels = target_size * target_size
+    
+    print(f"Mapping {num_nodes} neurons to {target_pixels} pixels")
+    
+    # If we have fewer neurons than pixels, replicate
+    if num_nodes < target_pixels:
+        repeat_factor = target_pixels // num_nodes + 1
+        node_features = node_features.repeat(repeat_factor, 1)[:target_pixels]
+    else:
+        # If we have more neurons, take the first target_pixels
+        node_features = node_features[:target_pixels]
+    
+    # Convert to image
+    img_data = node_features.mean(dim=1).reshape(target_size, target_size)
+    img_data = img_data.detach().cpu().numpy()
+    
+    # Normalize to [0, 1]
+    img_data = (img_data - img_data.min()) / (img_data.max() - img_data.min() + 1e-8)
+    
+    print(f"Final image shape: {img_data.shape}")
+    print(f"Image value range: [{img_data.min():.3f}, {img_data.max():.3f}]")
+    
+    return img_data
 
-    def _apply_feature_operations(self, X_data: np.ndarray) -> np.ndarray:
-        if not self.feature_operations:
-            return X_data
-        if X_data.ndim != 2 or X_data.shape[1] != self.num_base_features:
-            return X_data
-        X_transformed = X_data.astype(float).copy()
-        for i in range(self.num_base_features):
-            if i < len(self.feature_operations):
-                operation = self.feature_operations[i]
-                if operation:
-                    try:
-                        X_transformed[:, i] = operation(X_data[:, i].astype(float))
-                    except Exception:
-                        X_transformed[:, i] = X_data[:, i].astype(float)
-        return X_transformed
+def generate_data_aware_visualization(spk_rec, mem_rec, img_size=8):
+    """Generate visualization that properly shows neural data"""
+    print("="*50)
+    print("GENERATING DATA-AWARE VISUALIZATION")
+    print("="*50)
+    
+    # Create graph from neural data
+    data = create_neuron_aligned_graph(spk_rec, mem_rec)
+    
+    # Process through FGCN
+    model = DataAwareFGCN(data.x.shape[1])
+    with torch.no_grad():
+        node_feats = model(data)
+    
+    # Map to image
+    img = neuron_to_image_mapping(node_feats, target_size=img_size)
+    
+    # Create comprehensive visualization
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    
+    # Main neural activity image
+    im1 = axes[0, 0].imshow(img, cmap='viridis', interpolation='nearest')
+    axes[0, 0].set_title('Neural Activity Heatmap')
+    axes[0, 0].axis('off')
+    plt.colorbar(im1, ax=axes[0, 0])
+    
+    # Spike activity over time
+    spike_activity = spk_rec.sum(dim=1).detach().cpu().numpy()
+    axes[0, 1].plot(spike_activity)
+    axes[0, 1].set_title('Total Spike Activity Over Time')
+    axes[0, 1].set_xlabel('Time Step')
+    axes[0, 1].set_ylabel('Total Spikes')
+    
+    # Individual neuron activities
+    neuron_activities = spk_rec.sum(dim=0).detach().cpu().numpy()
+    axes[1, 0].bar(range(len(neuron_activities)), neuron_activities)
+    axes[1, 0].set_title('Individual Neuron Activity')
+    axes[1, 0].set_xlabel('Neuron Index')
+    axes[1, 0].set_ylabel('Total Spikes')
+    
+    # Neural connectivity visualization
+    if data.edge_index.shape[1] > 0:
+        # Simple connectivity matrix
+        num_neurons = spk_rec.shape[1]
+        conn_matrix = torch.zeros(num_neurons, num_neurons)
+        edges = data.edge_index.t()
+        for edge in edges:
+            conn_matrix[edge[0], edge[1]] = 1
+        
+        im4 = axes[1, 1].imshow(conn_matrix.numpy(), cmap='Blues')
+        axes[1, 1].set_title('Neural Connectivity')
+        axes[1, 1].set_xlabel('Target Neuron')
+        axes[1, 1].set_ylabel('Source Neuron')
+        plt.colorbar(im4, ax=axes[1, 1])
+    else:
+        axes[1, 1].text(0.5, 0.5, 'No Connections', ha='center', va='center')
+        axes[1, 1].set_title('Neural Connectivity')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return img
 
-    def _encode_features_to_spikes(self, features: np.ndarray) -> torch.Tensor:
-        features_normalized = (features - features.min()) / (features.max() - features.min() + 1e-8)
-        features_tensor = torch.FloatTensor(features_normalized)
-        spike_data = spikegen.rate(features_tensor, num_steps=self.num_steps)
-        return spike_data
-
-    def _create_spiking_network(self, input_size: int) -> nn.Module:
-        snn_model = nn.Sequential(
-            nn.Linear(input_size, 512),
-            snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad),
-            nn.Linear(512, 512),
-            snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad),
-            nn.Linear(512, 1),
-            snn.Leaky(beta=self.beta, init_hidden=True, spike_grad=self.spike_grad, output=True)
-        )
-        return snn_model
-
-    def _spiking_forward_pass(self, spike_data: torch.Tensor) -> torch.Tensor:
-        spk_rec = []
-        mem_rec = []
-        utils.reset(self.snn_model)
-        for step in range(self.num_steps):
-            spk_out, mem_out = self.snn_model(spike_data[step])
-            spk_rec.append(spk_out)
-            mem_rec.append(mem_out)
-        spk_rec = torch.stack(spk_rec)
-        mem_rec = torch.stack(mem_rec)
-        output = torch.sum(spk_rec, dim=0)
-        return output, spk_rec, mem_rec
-    def load_text_file(self, file_path: str) -> str:
-        print(f"VERBOSE: Attempting to load text from local file: {file_path}")
+# Updated text processing with proper neuron management
+class NeuronAwareTextProcessor:
+    def __init__(self, num_neurons=16):
+        self.num_neurons = num_neurons
+        self.vocab = {}
+        self.word_to_idx = {}
+        self.idx_to_word = {}
+        self.bigram_counts = Counter()
+        
+    def load_and_process_text(self, file_path="test.txt"):
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                words = content.lower().split()[:KB_LIMIT]
-                print(f"VERBOSE: Successfully loaded {len(words)} words from {file_path}.")
-                return ' '.join(words)
+                print(f"Loaded {len(content)} characters from {file_path}")
         except FileNotFoundError:
-            print(f"VERBOSE: File {file_path} not found. Using internal sample text.")
-            return self.get_sample_text()
-        except Exception as e:
-            print(f"VERBOSE: Error loading file {file_path}: {e}. Using internal sample text.")
-            return self.get_sample_text()
-            
-    def generate_spiking_predictions(self, num_variations: int = 1) -> List[Dict[Tuple[str, str], float]]:
-        """Generate predictions using the trained spiking network."""
-        print(f"VERBOSE: Generating {num_variations} predictions with SNN")
+            content = "The neural network processes information through spiking patterns. Each neuron contributes to the overall computation."
+            print("Using sample text")
         
-        if self.snn_model is None:
-            print("VERBOSE: No trained SNN model available")
-            return []
+        # Clean and tokenize
+        words = re.sub(r'[^\w\s]', '', content.lower()).split()
+        words = [w for w in words if w]
         
-        new_frequency_sets = []
-        base_X = np.array([f[1:] for f in self.frequency_features])
+        # Build vocabulary
+        unique_words = list(set(words))
+        self.word_to_idx = {word: idx for idx, word in enumerate(unique_words)}
+        self.idx_to_word = {idx: word for word, idx in self.word_to_idx.items()}
         
-        for variation in range(num_variations):
-            print(f"VERBOSE: Generating SNN variation {variation + 1}")
-            
-            # Add noise to features
-            noise_factor = 0.1 + (variation * 0.02)
-            X_noised = base_X.copy()
-            
-            for j in range(X_noised.shape[1]):
-                noise = np.random.normal(0, noise_factor * np.abs(X_noised[:, j] + 0.01))
-                X_noised[:, j] = np.maximum(0, X_noised[:, j] + noise)
-            
-            # Transform and scale
-            X_transformed = self._apply_feature_operations(X_noised)
-            X_scaled = self.scaler.transform(X_transformed)
-            
-            # Convert to spikes
-            spike_data = self._encode_features_to_spikes(X_scaled)
-            
-            # Generate predictions
-            with torch.no_grad():
-                predictions, _, _ = self._spiking_forward_pass(spike_data)
-            
-            # Convert to frequency dictionary
-            predictions_np = predictions.numpy().flatten()
-            predictions_np = np.argsort(predictions_np)
-            
-            new_freq_dict = {
-                bigram: float(predictions_np[i]) 
-                for i, bigram in enumerate(self.sorted_bigrams) 
-                if i < len(predictions_np)
-            }
-            
-            new_frequency_sets.append(new_freq_dict)
+        # Build bigrams
+        for i in range(len(words) - 1):
+            self.bigram_counts[(words[i], words[i+1])] += 1
         
-        print(f"VERBOSE: Generated {len(new_frequency_sets)} SNN prediction sets")
-        return new_frequency_sets
-    def expand_text_from_bigrams(self,
-                                 frequency_dict: Dict[Tuple[str, str], float],
-                                 text_length: int = 100,
-                                 seed_phrase: Optional[str] = None) -> str:
-        print(f"VERBOSE: Starting text expansion. Target length: {text_length}. Seed: '{seed_phrase if seed_phrase else 'None'}'")
-        if not frequency_dict:
-            print("VERBOSE: Error: No frequency data provided for text expansion.")
-            return "Error: No frequency data provided."
-
-        transitions = defaultdict(list)
-        for (w1, w2), count in frequency_dict.items():
-            if count > 0: 
-                transitions[w1].append((w2, count))
+        return words
+    
+    def words_to_neural_features(self, words, max_words=50):
+        """Convert words to features ensuring proper neuron count"""
+        features = []
         
-        if not transitions:
-            print("VERBOSE: Error: Frequency data has no usable transitions.")
-            return "Error: Frequency data has no usable transitions."
-
-        generated_text_list = []
-        current_word: Optional[str] = None
-        num_words_to_generate = text_length
-        start_word_selected_from_seed = False
-
-        if seed_phrase:
-            seed_words = self.preprocess_text(seed_phrase) 
-            if seed_words:
-                print(f"VERBOSE: Processed seed phrase: {seed_words}")
-                potential_start_node = seed_words[-1]
-                if potential_start_node in transitions and transitions[potential_start_node]:
-                    generated_text_list.extend(seed_words)
-                    current_word = potential_start_node
-                    start_word_selected_from_seed = True
-                    num_words_to_generate = text_length - len(generated_text_list)
-                    print(f"VERBOSE: Started with seed. Current word: '{current_word}'. Words to generate: {num_words_to_generate}.")
-                    if num_words_to_generate <= 0:
-                        final_text = ' '.join(generated_text_list[:text_length])
-                        print(f"VERBOSE: Seed phrase already meets/exceeds target length. Generated text: '{final_text[:50]}...'")
-                        return final_text
-
-        if not start_word_selected_from_seed:
-            print("VERBOSE: Selecting a starting word (seed not used or invalid).")
-            valid_starting_unigrams = {w:c for w,c in self.unigram_counts.items() if w in transitions and transitions[w]}
-            if valid_starting_unigrams:
-                sorted_starters = sorted(valid_starting_unigrams.items(), key=lambda item: item[1], reverse=True)
-                starters = [item[0] for item in sorted_starters]
-                weights = [item[1] for item in sorted_starters]
-                current_word = random.choices(starters, weights=weights, k=1)[0]
-                print(f"VERBOSE: Selected start word '{current_word}' based on weighted unigram counts.")
-            elif any(transitions.values()):
-                possible_starters = [w1 for w1, w2_list in transitions.items() if w2_list]
-                if possible_starters:
-                    current_word = random.choice(possible_starters)
-                    print(f"VERBOSE: Selected start word '{current_word}' randomly from possible transition starters.")
-                else:
-                    print("VERBOSE: Error: Cannot determine any valid starting word from transitions.")
-                    return "Error: Cannot determine any valid starting word."
-            else:
-                print("VERBOSE: Error: Cannot determine a starting word (no valid transitions).")
-                return "Error: Cannot determine a starting word (no valid transitions)."
+        for i, word in enumerate(words[:max_words]):
+            # Create exactly num_neurons features
+            word_idx = self.word_to_idx.get(word, 0)
             
-            if current_word:
-                generated_text_list.append(current_word)
-                num_words_to_generate = text_length - 1
-            else:
-                print("VERBOSE: Error: Failed to select a starting word.")
-                return "Error: Failed to select a starting word."
+            feature_vector = [
+                word_idx / len(self.word_to_idx),  # Normalized word index
+                len(word) / 20.0,                  # Word length
+                i / len(words),                    # Position
+                len(set(word)) / max(len(word), 1), # Character diversity
+            ]
+            
+            # Extend to exactly num_neurons features
+            while len(feature_vector) < self.num_neurons:
+                # Add derived features
+                feature_vector.append(np.sin(len(feature_vector) * word_idx / 10.0))
+            
+            # Ensure exactly num_neurons features
+            feature_vector = feature_vector[:self.num_neurons]
+            features.append(feature_vector)
+        
+        return np.array(features)
 
-        for i in range(max(0, num_words_to_generate)):
-            if not current_word or current_word not in transitions or not transitions[current_word]:
-                print(f"VERBOSE: Current word '{current_word}' has no further transitions. Attempting to restart.")
-                valid_restart_candidates = [w for w, trans_list in transitions.items() if trans_list]
-                if not valid_restart_candidates:
-                    print("VERBOSE: No valid restart candidates found. Ending generation.")
-                    break 
-                
-                restart_options = {w:c for w,c in self.unigram_counts.items() if w in valid_restart_candidates}
-                if restart_options:
-                    sorted_restart_options = sorted(restart_options.items(), key=lambda item: item[1], reverse=True)
-                    starters = [item[0] for item in sorted_restart_options]
-                    weights = [item[1] for item in sorted_restart_options]
-                    current_word = random.choices(starters, weights=weights, k=1)[0]
-                    print(f"VERBOSE: Restarted with word '{current_word}' (weighted choice).")
-                else:
-                    current_word = random.choice(valid_restart_candidates)
-                    print(f"VERBOSE: Restarted with word '{current_word}' (random choice).")
-                if not current_word:
-                    print("VERBOSE: Failed to select a restart word. Ending generation.")
-                    break 
-
-            possible_next_words, weights = zip(*transitions[current_word])
-            next_word = random.choices(possible_next_words, weights=weights, k=1)[0]
-            generated_text_list.append(next_word)
+class TextGenerator:
+    def __init__(self, text_processor: NeuronAwareTextProcessor):
+        self.text_processor = text_processor
+        self.transitions = defaultdict(list)
+        self.build_transitions()
+    
+    def build_transitions(self):
+        """Build transition probabilities from bigram counts"""
+        for (w1, w2), count in self.text_processor.bigram_counts.items():
+            self.transitions[w1].append((w2, count))
+    
+    def generate_text_from_neural_output(self, spk_rec, seed_word: str = None, length: int = 50) -> str:
+        """Generate text using neural network output to influence word selection"""
+        if not self.transitions:
+            return "No training data available for text generation."
+        
+        # Use neural output to influence generation
+        neural_influence = spk_rec.mean(dim=0).detach().cpu().numpy()
+        
+        # Start with seed word or random word
+        if seed_word and seed_word in self.transitions:
+            current_word = seed_word
+        else:
+            current_word = random.choice(list(self.transitions.keys()))
+        
+        generated_words = [current_word]
+        
+        for i in range(length - 1):
+            if current_word not in self.transitions:
+                # Restart with a random word
+                current_word = random.choice(list(self.transitions.keys()))
+            
+            candidates = self.transitions[current_word]
+            if not candidates:
+                break
+            
+            # Use neural influence to modify probabilities
+            words, weights = zip(*candidates)
+            weights = np.array(weights, dtype=float)
+            
+            # Apply neural influence (use position in neural output)
+            neural_idx = i % len(neural_influence)
+            neural_weight = max(0.1, neural_influence[neural_idx])
+            weights = weights * (1 + neural_weight)
+            
+            # Normalize weights
+            weights = weights / weights.sum()
+            
+            # Select next word
+            next_word = np.random.choice(words, p=weights)
+            generated_words.append(next_word)
             current_word = next_word
-
-        final_text = ' '.join(generated_text_list)
-        print(f"VERBOSE: Text expansion complete. Generated {len(generated_text_list)} words. Preview: '{final_text[:70]}...'")
-        return final_text
-    def train_spiking_predictor(self) -> None:
-        if not self.frequency_features:
-            print("No frequency features available for SNN training")
-            return
-        X_raw = np.array([f[1:] for f in self.frequency_features])
-        y = np.array([f[:] for f in self.frequency_features])
-        X_transformed = self._apply_feature_operations(X_raw)
-        X_scaled = self.scaler.fit_transform(X_transformed)
-        spike_data = self._encode_features_to_spikes(X_scaled)
-        y_tensor = torch.FloatTensor(y).unsqueeze(1)
-        self.snn_model = self._create_spiking_network(X_scaled.shape[1])
-        criterion = nn.MSELoss()
-        optimizer = torch.optim.Adam(self.snn_model.parameters(), lr=0.001)
-        num_epochs = 5
-        for epoch in range(num_epochs):
-            optimizer.zero_grad()
-            output, spk_rec, mem_rec = self._spiking_forward_pass(spike_data)
-            loss = criterion(output, y_tensor)
-            loss.backward()
-            optimizer.step()
-            if epoch % 1 == 0:
-                print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
-
-# Example usage
+        
+        return ' '.join(generated_words)
+# Main execution with proper neuron management
 if __name__ == "__main__":
-    """Enhanced text generation using spiking neural networks."""
-    print("VERBOSE: Starting spiking neural network text generation")
+    # Parameters
+    num_neurons = 2560
+    num_steps = 10
+    img_size = 8
     
-    # Initialize spiking components
-    predictor = SpikingFrequencyPredictor()
+    print(f"Initializing with {num_neurons} neurons")
     
-    # Load and process text
-    text_content = predictor.load_text_file("test.txt")
-    predictor.current_text = text_content  # Store for access in feature creation
-    predictor.extract_bigram_frequencies(text_content)
-    predictor.create_bigram_frequency_features()
+    # Initialize components
+    text_processor = NeuronAwareTextProcessor(num_neurons)
+    words = text_processor.load_and_process_text()
     
-    # Train spiking network
-    predictor.train_spiking_predictor()
+    # Convert to features
+    features = text_processor.words_to_neural_features(words)
+    print(f"Feature matrix shape: {features.shape}")
     
+    # Ensure we have the right number of features
+    assert features.shape[1] == num_neurons, f"Feature count {features.shape[1]} != neuron count {num_neurons}"
+    
+    # Normalize and create spikes
+    scaler = StandardScaler()
+    features_scaled = scaler.fit_transform(features)
+    features_tensor = torch.FloatTensor(features_scaled)
+    spike_data = spikegen.rate(features_tensor, num_steps=num_steps)
+    
+    print(f"Spike data shape: {spike_data.shape}")
+    
+    # Initialize SNN with proper neuron management
+    snn_model = NeuronManagedSNN(num_neurons)
+    
+    # Run SNN with tracking
+    spk_rec, mem_rec = run_snn_with_proper_tracking(spike_data, snn_model)
+    
+    # Generate visualization
+    img = generate_data_aware_visualization(spk_rec, mem_rec, img_size=img_size)
+    
+    print("="*50)
+    print("NEURAL DATA VISUALIZATION COMPLETE")
+    print("="*50)
+    print(f"Successfully visualized {num_neurons} neurons")
+    print(f"Spike activity range: {spk_rec.min().item():.3f} to {spk_rec.max().item():.3f}")
+    print(f"Membrane activity range: {mem_rec.min().item():.3f} to {mem_rec.max().item():.3f}")
+
+    # Initialize text generator and generate text
+    text_generator = TextGenerator(text_processor)
+    
+    # Interactive text generation
     print("\n" + "="*60)
-    print("SPIKING NEURAL NETWORK TEXT GENERATOR READY")
+    print("NEURAL TEXT GENERATOR READY")
     print("="*60)
-    print("Enter text prompts to generate responses. Type 'quit' to exit.")
+    print("Enter a seed word to generate text, or 'quit' to exit.")
+    print("Leave empty for random generation.")
     print("="*60)
     
     while True:
-        user_input = input("\nUSER: ")
+        user_input = input("\nEnter seed word (or 'quit'): ").strip()
+        
         if user_input.lower() == 'quit':
             print("Goodbye!")
             break
-            
-        # Perform multilinear linking with spiking networks
         
-        # Generate with spiking network
-        spiking_frequencies = predictor.generate_spiking_predictions(num_variations=1)
+        # Generate text
+        seed_word = user_input if user_input else None
+        generated_text = text_generator.generate_text_from_neural_output(
+            spk_rec, seed_word=seed_word, length=230
+        )
         
-        if spiking_frequencies:
-            # Enhance frequencies based on linking results
-            enhanced_frequencies = spiking_frequencies[0].copy()
-            words = predictor.preprocess_text(text_content)
-          
-            generated_text = predictor.expand_text_from_bigrams(
-                enhanced_frequencies,
-                text_length=200,
-                seed_phrase=user_input
-            )
-            
-            print("\n" + "="*50)
-            print("SPIKING NEURAL NETWORK GENERATION")
-            print("="*50)
-            print(generated_text)
-            print("="*50)
-        else:
-            print("VERBOSE: No spiking predictions generated")
+        print(f"\nGenerated text: {generated_text}")
+        
+        # Optionally regenerate visualization with new neural state
+        if user_input:
+            # Process the seed word through the network
+            seed_features = text_processor.words_to_neural_features([user_input])
+            if seed_features.shape[0] > 0:
+                seed_scaled = scaler.transform(seed_features)
+                seed_tensor = torch.FloatTensor(seed_scaled)
+                seed_spikes = spikegen.rate(seed_tensor, num_steps=num_steps)
+                new_spk_rec, new_mem_rec = run_snn_with_proper_tracking(seed_spikes, snn_model)
+                
