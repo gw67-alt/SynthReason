@@ -96,7 +96,7 @@ class SpikingFrequencyPredictor:
         for i in range(len(words) - 1):
             if words[i] in psychologyWords:
                 for j in range(len(fineTune) - 1):
-                        bigram = (fineTune[j],words[i+1])
+                        bigram = (' '.join(fineTune[j:j+3]),words[i+1])
                         bigram_counts[bigram] += 3
             bigram = (words[i], words[i+1])
             bigram_counts[bigram] += i
