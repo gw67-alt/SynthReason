@@ -1,1 +1,0 @@
-A time of flight sensor that detects linear quantification reduction with a maximisation function of the environment, could enable endless travel whilst a minimisation function could enable interaction of objects. The robot would inspect irregular signals.
