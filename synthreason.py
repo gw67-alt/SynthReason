@@ -360,12 +360,12 @@ class TextGenerator:
                 candidates = self.transitions.get(current_word, [])
             
             if not candidates:
-                current_word = random.choice(list(self.transitions.keys()))
+                current_word = random.choice(list(candidates))
                 generated_words.append(current_word)
                 continue
             
             moderated_candidates = self.moderate_candidate_selection(
-                candidates, graph_features, i
+                candidates, graph_features, neural_idx
             )
             
             words, weights = zip(*moderated_candidates)
