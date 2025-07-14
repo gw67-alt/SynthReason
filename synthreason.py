@@ -452,60 +452,6 @@ class FGCNModeratedTextGenerator(TextGenerator):
                 moderated_candidates.append((word, moderated_weight))
                 
         return moderated_candidates if moderated_candidates else candidates
-    
-    def generate_moderated_text(self, spk_rec, mem_rec, seed_word: str = None, length: int = 50) -> str:
-        """Generate text with FGCN-based moderation."""
-        if not self.transitions:
-            return "No training data available for text generation."
-        
-        graph_features = self.extract_graph_features(spk_rec, mem_rec)
-        neural_influence = spk_rec.mean(dim=1).detach().cpu().numpy()
-        
-        if seed_word:
-            seed_words = seed_word.split()
-            current_word = seed_words[-1] if seed_words else random.choice(list(self.transitions.keys()))
-        else:
-            seed_words = []
-            current_word = random.choice(list(self.transitions.keys()))
-        
-        generated_words = [current_word]
-        
-        for i in range(length - 1):
-            neural_gate = neural_influence[i] if i < len(neural_influence) else 0.5
-            
-            if neural_gate > 0.8 and seed_words:
-                candidates = self.get_seed_candidates(seed_words)
-                if not candidates:
-                    candidates = self.transitions.get(current_word, [])
-            else:
-                candidates = self.transitions.get(current_word, [])
-            
-            if not candidates:
-                current_word = random.choice(list(self.transitions.keys()))
-                generated_words.append(current_word)
-                continue
-            
-            moderated_candidates = self.moderate_candidate_selection(
-                candidates, graph_features, i
-            )
-            
-            words, weights = zip(*moderated_candidates)
-            weights = np.array(weights, dtype=float)
-            
-            if graph_features is not None:
-                coherence_boost = graph_features['coherence'][i % len(graph_features['coherence'])]
-                neural_weight = max(0.1, neural_influence[i] * (1 + coherence_boost))
-            else:
-                neural_weight = max(0.1, neural_influence[i])
-                
-            weights = weights * (1 + neural_weight)
-            weights = weights / weights.sum() if weights.sum() > 0 else np.ones_like(weights) / len(weights)
-            
-            next_word = np.random.choice(words, p=weights)
-            generated_words.append(next_word)
-            current_word = next_word
-        
-        return ' '.join(generated_words)
 
 def analyze_moderation_impact(regular_text, moderated_text):
     """Analyze the impact of FGCN moderation on text quality."""
