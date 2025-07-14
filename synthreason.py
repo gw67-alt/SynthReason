@@ -10,7 +10,9 @@ from torch_geometric.nn import GCNConv
 import matplotlib.pyplot as plt
 from collections import defaultdict, Counter
 import random
+
 KB_LEN = -1
+
 class PolymorphicNeuron(nn.Module):
     """A neuron that can switch between different behavioral modes."""
     def __init__(self, input_dim, num_modes=3):
@@ -164,7 +166,7 @@ def create_neuron_aligned_graph(spk_rec, mem_rec):
     if num_nodes > 1:
         for i in range(num_nodes):
             for j in range(i+1, min(i+4, num_nodes)):
-                edge_index.extend([ [j, i],[i, j]])
+                edge_index.extend([[j, i], [i, j]])
     if edge_index:
         edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
     else:
@@ -179,6 +181,7 @@ class DataAwareFGCN(nn.Module):
         self.gcn1 = GCNConv(in_dim, hidden_dim)
         self.gcn2 = GCNConv(hidden_dim, out_dim)
         self.attn = nn.Linear(out_dim, 1)
+    
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
         print(f"GCN input shape: {x.shape}")
@@ -270,13 +273,14 @@ class NeuronAwareTextProcessor:
         self.word_to_idx = {}
         self.idx_to_word = {}
         self.bigram_counts = Counter()
+    
     def load_and_process_text(self, file_path="test.txt"):
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = ' '.join(f.read().split()[:KB_LEN])
                 print(f"Loaded {len(content)} characters from {file_path}")
         except FileNotFoundError:
-            content = "The neural network processes information through spiking patterns. Each neuron contributes to the overall computation."
+            content = "The neural network processes information through spiking patterns. Each neuron contributes to the overall computation. Machine learning algorithms use artificial neural networks to simulate biological processes. Deep learning models can generate text by learning patterns from large datasets. Spiking neural networks offer a more biologically plausible approach to artificial intelligence."
             print("Using sample text")
         words = content.lower().split()
         words = [w for w in words if w]
@@ -286,6 +290,7 @@ class NeuronAwareTextProcessor:
         for i in range(len(words) - 1):
             self.bigram_counts[(words[i], words[i+1])] += 1
         return words
+    
     def words_to_neural_features(self, words, max_words=50):
         features = []
         for i, word in enumerate(words[:max_words]):
@@ -301,50 +306,40 @@ class NeuronAwareTextProcessor:
             feature_vector = feature_vector[:self.num_neurons]
             features.append(feature_vector)
         return np.array(features)
-import numpy as np
-from collections import defaultdict
-import random
-import torch
 
 class TextGenerator:
     def __init__(self, text_processor: NeuronAwareTextProcessor):
         self.text_processor = text_processor
         self.transitions = defaultdict(list)
-        self.seed_transitions = defaultdict(list)  # New: seed-specific transitions
+        self.seed_transitions = defaultdict(list)
         self.build_transitions()
     
     def build_transitions(self):
         """Build both regular and seed-based transition probabilities."""
         for (w1, w2), count in self.text_processor.bigram_counts.items():
             self.transitions[w1].append((w2, count))
-            # Build seed-based transitions for multi-word seeds
             self.seed_transitions[w1].append((w2, count))
     
     def get_seed_candidates(self, seed_words):
         """Use * operator to unpack seed words and find candidates."""
         if not seed_words:
             return []
-        
-        # Use * to unpack the seed words list
         candidates = []
         for word in seed_words:
             if word in self.transitions:
-                # Use * to extend candidates with unpacked transitions
                 candidates.extend(*[self.transitions[word]])
-        
         return candidates if candidates else []
     
-    def generate_text_from_neural_output(self, spk_rec, seed_word: str = None, length: int = 50) -> str:
-        """Generate text using pointer-based seed transitions."""
+    def generate_text_from_neural_output(self, spk_rec, mem_rec, seed_word: str = None, length: int = 50) -> str:
+        """Generate text with FGCN-based moderation."""
         if not self.transitions:
             return "No training data available for text generation."
         
+        graph_features = self.extract_graph_features(spk_rec, mem_rec)
         neural_influence = spk_rec.mean(dim=1).detach().cpu().numpy()
         
-        # Process seed using * operator for multi-word seeds
         if seed_word:
             seed_words = seed_word.split()
-            # Use * to unpack seed words
             current_word = seed_words[-1] if seed_words else random.choice(list(self.transitions.keys()))
         else:
             seed_words = []
@@ -353,62 +348,122 @@ class TextGenerator:
         generated_words = [current_word]
         
         for i in range(length - 1):
-            # Pointer mechanism: decide between seed-based and current-word-based generation
-            use_seed_pointer = (seed_words and 
-                              i < len(neural_influence) and 
-                              neural_influence[i] > 0.6)  # High neural activity triggers seed pointer
+            # Fix: Use modulo indexing to cycle through neural_influence
+            neural_idx = i % len(neural_influence)
+            neural_gate = neural_influence[neural_idx]
             
-            if use_seed_pointer:
-                # Use * operator to get candidates from seed words
+            if neural_gate > 0.8 and seed_words:
                 candidates = self.get_seed_candidates(seed_words)
-                
                 if not candidates:
-                    # Fallback to current word transitions
                     candidates = self.transitions.get(current_word, [])
             else:
-                # Regular transition based on current word
                 candidates = self.transitions.get(current_word, [])
             
-            # If no candidates found, reset to random word
             if not candidates:
                 current_word = random.choice(list(self.transitions.keys()))
                 generated_words.append(current_word)
                 continue
             
-            # Use * operator to unpack candidates for zip
-            words, weights = zip(*candidates)
+            moderated_candidates = self.moderate_candidate_selection(
+                candidates, graph_features, i
+            )
+            
+            words, weights = zip(*moderated_candidates)
             weights = np.array(weights, dtype=float)
             
-            # Apply neural influence
-            if i < len(neural_influence):
-                neural_weight = max(0.1, neural_influence[i])
-                weights = weights * (1 + neural_weight)
-            
-            # Normalize weights
-            if weights.sum() > 0:
-                weights = weights / weights.sum()
+            if graph_features is not None:
+                # Fix: Use modulo indexing for coherence_boost as well
+                coherence_idx = i % len(graph_features['coherence'])
+                coherence_boost = graph_features['coherence'][coherence_idx]
+                neural_weight = max(0.1, neural_influence[neural_idx] * (1 + coherence_boost))
             else:
-                weights = np.ones_like(weights) / len(weights)
+                neural_weight = max(0.1, neural_influence[neural_idx])
+                
+            weights = weights * (1 + neural_weight)
+            weights = weights / weights.sum() if weights.sum() > 0 else np.ones_like(weights) / len(weights)
             
-            # Choose next word
             next_word = np.random.choice(words, p=weights)
             generated_words.append(next_word)
             current_word = next_word
         
         return ' '.join(generated_words)
+
+
+class FGCNModeratedTextGenerator(TextGenerator):
+    def __init__(self, text_processor: NeuronAwareTextProcessor, fgcn_model=None):
+        super().__init__(text_processor)
+        self.fgcn_model = fgcn_model
+        self.moderation_threshold = 0.5
+        self.coherence_weight = 0.3
+        
+    def extract_graph_features(self, spk_rec, mem_rec):
+        """Extract graph-based features using FGCN for text moderation."""
+        if self.fgcn_model is None:
+            return None
+            
+        data = create_neuron_aligned_graph(spk_rec, mem_rec)
+        
+        with torch.no_grad():
+            graph_features = self.fgcn_model(data)
+            
+        coherence_signal = torch.mean(graph_features, dim=0)
+        stability_signal = torch.std(graph_features, dim=0)
+        
+        return {
+            'coherence': coherence_signal.detach().cpu().numpy(),
+            'stability': stability_signal.detach().cpu().numpy(),
+            'raw_features': graph_features.detach().cpu().numpy()
+        }
     
-    def generate_with_seed_pointers(self, spk_rec, seed_phrase: str = None, length: int = 50) -> str:
-        """Enhanced generation with explicit seed pointer usage."""
+    def compute_word_quality_score(self, word, graph_features, position):
+        """Compute quality score for a word based on graph features."""
+        if graph_features is None:
+            return 1.0
+            
+        coherence = graph_features['coherence']
+        stability = graph_features['stability']
+        
+        pos_idx = min(position, len(coherence) - 1)
+        
+        quality_score = (
+            coherence[pos_idx % len(coherence)] * self.coherence_weight +
+            (1 - stability[pos_idx % len(stability)]) * (1 - self.coherence_weight)
+        )
+        
+        word_length_factor = min(len(word) / 10.0, 1.0)
+        
+        return float(quality_score * word_length_factor)
+    
+    def moderate_candidate_selection(self, candidates, graph_features, position):
+        """Use FGCN features to moderate candidate word selection."""
+        if not candidates or graph_features is None:
+            return candidates
+            
+        moderated_candidates = []
+        
+        for word, weight in candidates:
+            quality_score = self.compute_word_quality_score(word, graph_features, position)
+            
+            if quality_score > self.moderation_threshold:
+                moderated_weight = weight * quality_score
+                moderated_candidates.append((word, moderated_weight))
+            else:
+                moderated_weight = weight * 0.1
+                moderated_candidates.append((word, moderated_weight))
+                
+        return moderated_candidates if moderated_candidates else candidates
+    
+    def generate_moderated_text(self, spk_rec, mem_rec, seed_word: str = None, length: int = 50) -> str:
+        """Generate text with FGCN-based moderation."""
         if not self.transitions:
             return "No training data available for text generation."
         
+        graph_features = self.extract_graph_features(spk_rec, mem_rec)
         neural_influence = spk_rec.mean(dim=1).detach().cpu().numpy()
         
-        # Parse seed phrase using * operator
-        if seed_phrase:
-            # Use * to unpack seed phrase into individual words
-            *seed_words, last_word = seed_phrase.split()
-            current_word = last_word if last_word in self.transitions else random.choice(list(self.transitions.keys()))
+        if seed_word:
+            seed_words = seed_word.split()
+            current_word = seed_words[-1] if seed_words else random.choice(list(self.transitions.keys()))
         else:
             seed_words = []
             current_word = random.choice(list(self.transitions.keys()))
@@ -416,21 +471,13 @@ class TextGenerator:
         generated_words = [current_word]
         
         for i in range(length - 1):
-            # Pointer decision based on neural activity
             neural_gate = neural_influence[i] if i < len(neural_influence) else 0.5
             
-            # Three pointer strategies based on neural activity
             if neural_gate > 0.8 and seed_words:
-                # High activity: Point to seed-based transitions
-                pointer_candidates = []
-                for word in seed_words:
-                    if word in self.transitions:
-                        # Use * to extend with unpacked transitions
-                        pointer_candidates.extend(self.transitions[word])
-                candidates = pointer_candidates if pointer_candidates else self.transitions.get(current_word, [])
-           
+                candidates = self.get_seed_candidates(seed_words)
+                if not candidates:
+                    candidates = self.transitions.get(current_word, [])
             else:
-                # Low activity: Standard current word transitions
                 candidates = self.transitions.get(current_word, [])
             
             if not candidates:
@@ -438,44 +485,111 @@ class TextGenerator:
                 generated_words.append(current_word)
                 continue
             
-            # Process candidates using * operator
-            words, weights = zip(*candidates)
+            moderated_candidates = self.moderate_candidate_selection(
+                candidates, graph_features, i
+            )
+            
+            words, weights = zip(*moderated_candidates)
             weights = np.array(weights, dtype=float)
             
-            # Apply neural influence
-            neural_weight = np.exp(neural_gate)
+            if graph_features is not None:
+                coherence_boost = graph_features['coherence'][i % len(graph_features['coherence'])]
+                neural_weight = max(0.1, neural_influence[i] * (1 + coherence_boost))
+            else:
+                neural_weight = max(0.1, neural_influence[i])
+                
             weights = weights * (1 + neural_weight)
-            
-            # Normalize
             weights = weights / weights.sum() if weights.sum() > 0 else np.ones_like(weights) / len(weights)
             
-            # Select next word
             next_word = np.random.choice(words, p=weights)
             generated_words.append(next_word)
             current_word = next_word
         
         return ' '.join(generated_words)
 
-if __name__ == "__main__":
+def analyze_moderation_impact(regular_text, moderated_text):
+    """Analyze the impact of FGCN moderation on text quality."""
+    regular_words = regular_text.split()
+    moderated_words = moderated_text.split()
+    
+    analysis = {
+        'length_difference': len(moderated_words) - len(regular_words),
+        'unique_words_regular': len(set(regular_words)),
+        'unique_words_moderated': len(set(moderated_words)),
+        'vocabulary_diversity_regular': len(set(regular_words)) / len(regular_words) if regular_words else 0,
+        'vocabulary_diversity_moderated': len(set(moderated_words)) / len(moderated_words) if moderated_words else 0,
+        'common_words': len(set(regular_words) & set(moderated_words)),
+        'word_overlap_ratio': len(set(regular_words) & set(moderated_words)) / len(set(regular_words) | set(moderated_words)) if (regular_words or moderated_words) else 0
+    }
+    
+    return analysis
+
+def visualize_moderation_effects(spk_rec, mem_rec, fgcn_model):
+    """Visualize how FGCN features affect text generation."""
+    data = create_neuron_aligned_graph(spk_rec, mem_rec)
+    
+    with torch.no_grad():
+        graph_features = fgcn_model(data)
+    
+    coherence_signal = torch.mean(graph_features, dim=0).detach().cpu().numpy()
+    stability_signal = torch.std(graph_features, dim=0).detach().cpu().numpy()
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    ax1.plot(coherence_signal)
+    ax1.set_title('FGCN Coherence Signal')
+    ax1.set_xlabel('Feature Dimension')
+    ax1.set_ylabel('Coherence Value')
+    
+    ax2.plot(stability_signal)
+    ax2.set_title('FGCN Stability Signal')
+    ax2.set_xlabel('Feature Dimension')
+    ax2.set_ylabel('Stability Value')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return coherence_signal, stability_signal
+
+def main_with_fgcn_moderation():
     num_neurons = 256
     num_polymorphic = 64
     num_steps = 10
     img_size = 8
+    
     print(f"Initializing with {num_neurons} neurons ({num_polymorphic} polymorphic)")
+    
+    # Initialize components
     text_processor = NeuronAwareTextProcessor(num_neurons)
     words = text_processor.load_and_process_text()
     features = text_processor.words_to_neural_features(words)
+    
     print(f"Feature matrix shape: {features.shape}")
     assert features.shape[1] == num_neurons, f"Feature count {features.shape[1]} != neuron count {num_neurons}"
+    
+    # Process neural data
     scaler = StandardScaler()
     features_scaled = scaler.fit_transform(features)
     features_tensor = torch.FloatTensor(features_scaled)
     spike_data = spikegen.rate(features_tensor, num_steps=num_steps)
+    
     print(f"Spike data shape: {spike_data.shape}")
+    
+    # Run SNN
     snn_model = PolymorphicSNN(num_neurons, num_polymorphic)
     spk_rec, mem_rec, poly_mem_rec, mode_rec = run_polymorphic_snn(spike_data, snn_model)
+    
+    # Initialize FGCN model
+    data = create_neuron_aligned_graph(spk_rec, mem_rec)
+    fgcn_model = DataAwareFGCN(data.x.shape[1])
+    
+    # Create moderated text generator
+    moderated_generator = FGCNModeratedTextGenerator(text_processor, fgcn_model)
+    
+    # Analysis and visualization
     poly_analysis = analyze_polymorphic_behavior(mode_rec, poly_mem_rec)
     img = generate_polymorphic_visualization(spk_rec, mem_rec, mode_rec, poly_analysis, img_size=img_size)
+    
     print("="*50)
     print("POLYMORPHIC SNN ANALYSIS COMPLETE")
     print("="*50)
@@ -484,21 +598,33 @@ if __name__ == "__main__":
     if poly_analysis:
         print(f"Average mode switches per neuron: {np.mean(poly_analysis.get('mode_switching_frequency', [0])):.2f}")
         print(f"Most stable mode: {np.argmin(np.mean(poly_analysis.get('mode_stability', [[1]]), axis=0))}")
-    text_generator = TextGenerator(text_processor)
+    
+    # Visualize moderation effects
+    coherence_signal, stability_signal = visualize_moderation_effects(spk_rec, mem_rec, fgcn_model)
+    
     print("\n" + "="*60)
-    print("NEURAL TEXT GENERATOR READY")
+    print("FGCN-MODERATED TEXT GENERATOR READY")
     print("="*60)
+    print("The system now uses graph neural networks to moderate text generation.")
     print("Enter a seed word(s) to generate text, or 'quit' to exit.")
-    print("Leave empty for random generation.")
     print("="*60)
+    
     while True:
-        user_input = input("\nEnter seed word (or 'quit'): ").strip()
+        user_input = input("\nEnter seed word(s) (or 'quit'): ").strip()
         if user_input.lower() == 'quit':
             print("Goodbye!")
             break
+            
         seed_word = user_input if user_input else None
-        generated_text = text_generator.generate_text_from_neural_output(
-            spk_rec, seed_word=seed_word, length=230
-        )
-        print(f"\nGenerated text: {generated_text}")
         
+        moderated_text = moderated_generator.generate_text_from_neural_output(
+    spk_rec, mem_rec, seed_word=seed_word, length=250)
+        
+        print(f"\n{'='*60}")
+        print("FGCN-MODERATED GENERATION:")
+        print(f"{'='*60}")
+        print(moderated_text)
+        print(f"{'='*60}")
+
+if __name__ == "__main__":
+    main_with_fgcn_moderation()
