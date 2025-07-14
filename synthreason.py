@@ -6,87 +6,170 @@ import snntorch as snn
 from snntorch import surrogate, utils, spikegen
 from sklearn.preprocessing import StandardScaler
 from torch_geometric.data import Data
-from torch_geometric.nn import GCNConv, global_mean_pool
+from torch_geometric.nn import GCNConv
 import matplotlib.pyplot as plt
 from collections import defaultdict, Counter
 import random
-import re
-
-
-class NeuronManagedSNN(nn.Module):
-    def __init__(self, num_neurons):
+KB_LEN = -1
+class PolymorphicNeuron(nn.Module):
+    """A neuron that can switch between different behavioral modes."""
+    def __init__(self, input_dim, num_modes=3):
         super().__init__()
-        # Preserve neuron count throughout network
-        self.input_layer = nn.Linear(num_neurons, num_neurons)
-        self.snn_layer = snn.Leaky(beta=0.5, init_hidden=False, spike_grad=surrogate.fast_sigmoid())
-        self.num_neurons = num_neurons
+        self.num_modes = num_modes
+        self.input_dim = input_dim
+        self.neuron_modes = nn.ModuleList([
+            snn.Leaky(beta=0.3, threshold=1.0, spike_grad=surrogate.fast_sigmoid()),
+            snn.Leaky(beta=0.7, threshold=0.8, spike_grad=surrogate.fast_sigmoid()),
+            snn.Leaky(beta=0.5, threshold=1.2, spike_grad=surrogate.fast_sigmoid()),
+        ])
+        self.mode_selector = nn.Sequential(
+            nn.Linear(input_dim, 16),
+            nn.ReLU(),
+            nn.Linear(16, num_modes),
+            nn.Softmax(dim=-1)
+        )
+        self.adaptation_rate = 0.1
+        self.mode_history = torch.zeros(num_modes)
         
-    def forward(self, x, mem=None):
-        x = self.input_layer(x)
-        if mem is None:
-            spk, mem = self.snn_layer(x)
-        else:
-            spk, mem = self.snn_layer(x, mem)
-        return spk, mem
+    def forward(self, x, mem_states=None):
+        mode_probs = self.mode_selector(x)
+        if mem_states is None:
+            mem_states = [None] * self.num_modes
+        mode_outputs = []
+        new_mem_states = []
+        for i, neuron_mode in enumerate(self.neuron_modes):
+            if mem_states[i] is None:
+                spk, mem = neuron_mode(x)
+            else:
+                spk, mem = neuron_mode(x, mem_states[i])
+            mode_outputs.append(spk)
+            new_mem_states.append(mem)
+        mode_outputs = torch.stack(mode_outputs, dim=0)
+        if len(mode_probs.shape) == 1:
+            mode_probs = mode_probs.unsqueeze(-1)
+        final_spikes = torch.sum(mode_outputs * mode_probs, dim=0)
+        self.mode_history = self.mode_history * (1 - self.adaptation_rate) + mode_probs.squeeze() * self.adaptation_rate
+        return final_spikes, new_mem_states, mode_probs
 
-def run_snn_with_proper_tracking(spike_data, snn_model):
-    """Run SNN while properly tracking all neuron states"""
-    spk_rec = []
-    mem_rec = []
+class PolymorphicSNN(nn.Module):
+    """Enhanced SNN with polymorphic capabilities."""
+    def __init__(self, num_neurons, num_polymorphic=None):
+        super().__init__()
+        self.num_neurons = num_neurons
+        self.num_polymorphic = num_polymorphic or num_neurons // 4
+        self.input_layer = nn.Linear(num_neurons, num_neurons)
+        self.regular_neurons = snn.Leaky(
+            beta=0.5, 
+            init_hidden=False, 
+            spike_grad=surrogate.fast_sigmoid()
+        )
+        self.polymorphic_neurons = nn.ModuleList([
+            PolymorphicNeuron(input_dim=1, num_modes=3) 
+            for _ in range(self.num_polymorphic)
+        ])
+        self.poly_connectivity = nn.Parameter(
+            torch.randn(self.num_polymorphic, num_neurons) * 0.9
+        )
+        self.global_adaptation = nn.Parameter(torch.ones(1) * 0.5)
+        
+    def forward(self, x, mem=None, poly_mem_states=None):
+        x_processed = self.input_layer(x)
+        if mem is None:
+            reg_spk, reg_mem = self.regular_neurons(x_processed)
+        else:
+            reg_spk, reg_mem = self.regular_neurons(x_processed, mem)
+        poly_spikes = []
+        new_poly_mem_states = []
+        mode_distributions = []
+        if poly_mem_states is None:
+            poly_mem_states = [None] * self.num_polymorphic
+        for i, poly_neuron in enumerate(self.polymorphic_neurons):
+            neuron_input = torch.sum(reg_spk * self.poly_connectivity[i], dim=-1, keepdim=True)
+            poly_spk, poly_mem, mode_prob = poly_neuron(neuron_input, poly_mem_states[i])
+            poly_spikes.append(poly_spk)
+            new_poly_mem_states.append(poly_mem)
+            mode_distributions.append(mode_prob)
+        if poly_spikes:
+            poly_spikes_tensor = torch.stack(poly_spikes, dim=0)
+            if len(poly_spikes_tensor.shape) > 1:
+                poly_spikes_flat = poly_spikes_tensor.squeeze()
+                if len(poly_spikes_flat.shape) == 0:
+                    poly_spikes_flat = poly_spikes_flat.unsqueeze(0)
+            else:
+                poly_spikes_flat = poly_spikes_tensor
+            combined_spikes = torch.cat([reg_spk, poly_spikes_flat], dim=-1)
+        else:
+            combined_spikes = reg_spk
+        combined_spikes = combined_spikes * self.global_adaptation
+        return combined_spikes, reg_mem, new_poly_mem_states, mode_distributions
+
+def run_polymorphic_snn(spike_data, snn_model):
+    spk_rec, mem_rec, poly_mem_rec, mode_rec = [], [], [], []
     utils.reset(snn_model)
     mem = None
-    
-    #print(f"Input spike_data shape: {spike_data.shape}")
-    
-    for step in range(spike_data.shape[0]):  # num_steps
-        if spike_data.shape[1] > 0:  # Check samples exist
-            # Use first sample for processing
-            input_data = spike_data[step][0]  # Shape: [num_features]
-            #print(f"Step {step}, input shape: {input_data.shape}")
-            
-            spk, mem = snn_model(input_data, mem)
+    poly_mem_states = None
+    for step in range(spike_data.shape[0]):
+        if spike_data.shape[1] > 0:
+            input_data = spike_data[step][0]
+            spk, mem, poly_mem_states, mode_dist = snn_model(input_data, mem, poly_mem_states)
             spk_rec.append(spk)
             mem_rec.append(mem)
-            
-            #print(f"Step {step}, spike shape: {spk.shape}, mem shape: {mem.shape}")
-    
-    spk_rec = torch.stack(spk_rec)  # [num_steps, num_neurons]
-    mem_rec = torch.stack(mem_rec)  # [num_steps, num_neurons]
-    
-    #print(f"Final spk_rec shape: {spk_rec.shape}")
-    #print(f"Final mem_rec shape: {mem_rec.shape}")
-    
-    return spk_rec, mem_rec
+            poly_mem_rec.append(poly_mem_states)
+            mode_rec.append(mode_dist)
+    spk_rec = torch.stack(spk_rec)
+    mem_rec = torch.stack(mem_rec)
+    return spk_rec, mem_rec, poly_mem_rec, mode_rec
+
+def analyze_polymorphic_behavior(mode_rec, poly_mem_rec):
+    if not mode_rec or not mode_rec[0]:
+        return {}
+    mode_arrays = []
+    for step_modes in mode_rec:
+        if step_modes:
+            step_tensors = []
+            for mode_tensor in step_modes:
+                if len(mode_tensor.shape) == 2:
+                    step_tensors.append(mode_tensor.squeeze())
+                else:
+                    step_tensors.append(mode_tensor)
+            if step_tensors:
+                step_array = torch.stack(step_tensors).detach().cpu().numpy()
+                mode_arrays.append(step_array)
+    if not mode_arrays:
+        return {}
+    mode_evolution = np.array(mode_arrays)
+    analysis = {
+        'mode_stability': np.std(mode_evolution, axis=0),
+        'dominant_modes': np.argmax(np.mean(mode_evolution, axis=0), axis=1),
+        'mode_switching_frequency': np.sum(np.diff(np.argmax(mode_evolution, axis=2), axis=0) != 0, axis=0),
+        'average_mode_distribution': np.mean(mode_evolution, axis=0)
+    }
+    return analysis
 
 def create_neuron_aligned_graph(spk_rec, mem_rec):
-    """Create graph ensuring each neuron becomes a node"""
     print(f"Creating graph from spk_rec: {spk_rec.shape}, mem_rec: {mem_rec.shape}")
-    
-    # Transpose to get [num_neurons, num_steps]
-    node_features = spk_rec.T  
-    node_features = torch.cat([node_features, mem_rec.T], dim=1)  # [num_neurons, 2*num_steps]
-    
+    min_steps = min(spk_rec.shape[0], mem_rec.shape[0])
+    spk_rec_aligned = spk_rec[:min_steps]
+    mem_rec_aligned = mem_rec[:min_steps]
+    min_neurons = min(spk_rec_aligned.shape[1], mem_rec_aligned.shape[1])
+    spk_rec_aligned = spk_rec_aligned[:, :min_neurons]
+    mem_rec_aligned = mem_rec_aligned[:, :min_neurons]
+    print(f"Aligned shapes - spk_rec: {spk_rec_aligned.shape}, mem_rec: {mem_rec_aligned.shape}")
+    node_features = spk_rec_aligned.T
+    node_features = torch.cat([node_features, mem_rec_aligned.T], dim=1)
     print(f"Node features shape: {node_features.shape}")
-    
-    # Ensure we have the right number of nodes
     num_nodes = node_features.shape[0]
     print(f"Number of graph nodes: {num_nodes}")
-    
-    # Create edges between neurons
     edge_index = []
     if num_nodes > 1:
-        # Create a more structured connectivity pattern
         for i in range(num_nodes):
-            for j in range(i+1, min(i+4, num_nodes)):  # Connect to next 3 neurons
-                edge_index.extend([[i, j], [j, i]])  # Bidirectional edges
-    
+            for j in range(i+1, min(i+4, num_nodes)):
+                edge_index.extend([ [j, i],[i, j]])
     if edge_index:
         edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
     else:
         edge_index = torch.empty((2, 0), dtype=torch.long)
-    
     print(f"Edge index shape: {edge_index.shape}")
-    
     data = Data(x=node_features, edge_index=edge_index)
     return data
 
@@ -96,116 +179,90 @@ class DataAwareFGCN(nn.Module):
         self.gcn1 = GCNConv(in_dim, hidden_dim)
         self.gcn2 = GCNConv(hidden_dim, out_dim)
         self.attn = nn.Linear(out_dim, 1)
-        
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
-        
         print(f"GCN input shape: {x.shape}")
         print(f"Edge index shape: {edge_index.shape}")
-        
-        # Apply graph convolutions
         x = F.relu(self.gcn1(x, edge_index))
         x = F.relu(self.gcn2(x, edge_index))
-        
-        # Spatial attention
         attn_weights = torch.sigmoid(self.attn(x))
         x = x * attn_weights
-        
         print(f"GCN output shape: {x.shape}")
-        
         return x
 
 def neuron_to_image_mapping(node_features, target_size=8):
-    """Map neurons to image pixels with proper scaling"""
     num_nodes, feat_dim = node_features.shape
     target_pixels = target_size * target_size
-    
     print(f"Mapping {num_nodes} neurons to {target_pixels} pixels")
-    
-    # If we have fewer neurons than pixels, replicate
     if num_nodes < target_pixels:
         repeat_factor = target_pixels // num_nodes + 1
         node_features = node_features.repeat(repeat_factor, 1)[:target_pixels]
     else:
-        # If we have more neurons, take the first target_pixels
         node_features = node_features[:target_pixels]
-    
-    # Convert to image
     img_data = node_features.mean(dim=1).reshape(target_size, target_size)
     img_data = img_data.detach().cpu().numpy()
-    
-    # Normalize to [0, 1]
     img_data = (img_data - img_data.min()) / (img_data.max() - img_data.min() + 1e-8)
-    
     print(f"Final image shape: {img_data.shape}")
     print(f"Image value range: [{img_data.min():.3f}, {img_data.max():.3f}]")
-    
     return img_data
 
-def generate_data_aware_visualization(spk_rec, mem_rec, img_size=8):
-    """Generate visualization that properly shows neural data"""
+def generate_polymorphic_visualization(spk_rec, mem_rec, mode_rec, poly_analysis, img_size=8):
     print("="*50)
-    print("GENERATING DATA-AWARE VISUALIZATION")
+    print("GENERATING POLYMORPHIC SNN VISUALIZATION")
     print("="*50)
-    
-    # Create graph from neural data
     data = create_neuron_aligned_graph(spk_rec, mem_rec)
-    
-    # Process through FGCN
     model = DataAwareFGCN(data.x.shape[1])
     with torch.no_grad():
         node_feats = model(data)
-    
-    # Map to image
     img = neuron_to_image_mapping(node_feats, target_size=img_size)
-    
-    # Create comprehensive visualization
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    
-    # Main neural activity image
+    fig, axes = plt.subplots(3, 2, figsize=(15, 18))
     im1 = axes[0, 0].imshow(img, cmap='viridis', interpolation='nearest')
     axes[0, 0].set_title('Neural Activity Heatmap')
     axes[0, 0].axis('off')
     plt.colorbar(im1, ax=axes[0, 0])
-    
-    # Spike activity over time
     spike_activity = spk_rec.sum(dim=1).detach().cpu().numpy()
     axes[0, 1].plot(spike_activity)
     axes[0, 1].set_title('Total Spike Activity Over Time')
     axes[0, 1].set_xlabel('Time Step')
     axes[0, 1].set_ylabel('Total Spikes')
-    
-    # Individual neuron activities
-    neuron_activities = spk_rec.sum(dim=0).detach().cpu().numpy()
-    axes[1, 0].bar(range(len(neuron_activities)), neuron_activities)
-    axes[1, 0].set_title('Individual Neuron Activity')
-    axes[1, 0].set_xlabel('Neuron Index')
-    axes[1, 0].set_ylabel('Total Spikes')
-    
-    # Neural connectivity visualization
-    if data.edge_index.shape[1] > 0:
-        # Simple connectivity matrix
-        num_neurons = spk_rec.shape[1]
-        conn_matrix = torch.zeros(num_neurons, num_neurons)
-        edges = data.edge_index.t()
-        for edge in edges:
-            conn_matrix[edge[0], edge[1]] = 1
-        
-        im4 = axes[1, 1].imshow(conn_matrix.numpy(), cmap='Blues')
-        axes[1, 1].set_title('Neural Connectivity')
-        axes[1, 1].set_xlabel('Target Neuron')
-        axes[1, 1].set_ylabel('Source Neuron')
-        plt.colorbar(im4, ax=axes[1, 1])
+    if poly_analysis and 'average_mode_distribution' in poly_analysis:
+        mode_dist = poly_analysis['average_mode_distribution']
+        im2 = axes[1, 0].imshow(mode_dist.T, cmap='plasma', aspect='auto')
+        axes[1, 0].set_title('Polymorphic Mode Distribution')
+        axes[1, 0].set_xlabel('Neuron Index')
+        axes[1, 0].set_ylabel('Mode Type')
+        plt.colorbar(im2, ax=axes[1, 0])
     else:
-        axes[1, 1].text(0.5, 0.5, 'No Connections', ha='center', va='center')
-        axes[1, 1].set_title('Neural Connectivity')
-    
+        axes[1, 0].text(0.5, 0.5, 'No Polymorphic Data', ha='center', va='center')
+        axes[1, 0].set_title('Polymorphic Mode Distribution')
+    if poly_analysis and 'mode_switching_frequency' in poly_analysis:
+        switching_freq = poly_analysis['mode_switching_frequency']
+        axes[1, 1].bar(range(len(switching_freq)), switching_freq)
+        axes[1, 1].set_title('Mode Switching Frequency')
+        axes[1, 1].set_xlabel('Polymorphic Neuron Index')
+        axes[1, 1].set_ylabel('Switches')
+    else:
+        axes[1, 1].text(0.5, 0.5, 'No Switching Data', ha='center', va='center')
+        axes[1, 1].set_title('Mode Switching Frequency')
+    neuron_activities = spk_rec.sum(dim=0).detach().cpu().numpy()
+    axes[2, 0].bar(range(len(neuron_activities)), neuron_activities)
+    axes[2, 0].set_title('Individual Neuron Activity')
+    axes[2, 0].set_xlabel('Neuron Index')
+    axes[2, 0].set_ylabel('Total Spikes')
+    if poly_analysis and 'mode_stability' in poly_analysis:
+        stability = poly_analysis['mode_stability']
+        im3 = axes[2, 1].imshow(stability.T, cmap='coolwarm', aspect='auto')
+        axes[2, 1].set_title('Mode Stability (Lower = More Stable)')
+        axes[2, 1].set_xlabel('Neuron Index')
+        axes[2, 1].set_ylabel('Mode Type')
+        plt.colorbar(im3, ax=axes[2, 1])
+    else:
+        axes[2, 1].text(0.5, 0.5, 'No Stability Data', ha='center', va='center')
+        axes[2, 1].set_title('Mode Stability')
     plt.tight_layout()
     plt.show()
-    
     return img
 
-# Updated text processing with proper neuron management
 class NeuronAwareTextProcessor:
     def __init__(self, num_neurons=16):
         self.num_neurons = num_neurons
@@ -213,104 +270,184 @@ class NeuronAwareTextProcessor:
         self.word_to_idx = {}
         self.idx_to_word = {}
         self.bigram_counts = Counter()
-        
     def load_and_process_text(self, file_path="test.txt"):
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+                content = ' '.join(f.read().split()[:KB_LEN])
                 print(f"Loaded {len(content)} characters from {file_path}")
         except FileNotFoundError:
             content = "The neural network processes information through spiking patterns. Each neuron contributes to the overall computation."
             print("Using sample text")
-        
-        # Clean and tokenize
         words = content.lower().split()
         words = [w for w in words if w]
-        
-        # Build vocabulary
         unique_words = list(set(words))
         self.word_to_idx = {word: idx for idx, word in enumerate(unique_words)}
         self.idx_to_word = {idx: word for word, idx in self.word_to_idx.items()}
-        
-        # Build bigrams
         for i in range(len(words) - 1):
             self.bigram_counts[(words[i], words[i+1])] += 1
-        
         return words
-    
     def words_to_neural_features(self, words, max_words=50):
-        """Convert words to features ensuring proper neuron count"""
         features = []
-        
         for i, word in enumerate(words[:max_words]):
-            # Create exactly num_neurons features
             word_idx = self.word_to_idx.get(word, 0)
-            
             feature_vector = [
-                word_idx / len(self.word_to_idx),  # Normalized word index
-                len(word) / 20.0,                  # Word length
-                i / len(words),                    # Position
-                len(set(word)) / max(len(word), 1), # Character diversity
+                word_idx / len(self.word_to_idx),
+                len(word) / 20.0,
+                i / len(words),
+                len(set(word)) / max(len(word), 1),
             ]
-            
-            # Extend to exactly num_neurons features
             while len(feature_vector) < self.num_neurons:
-                # Add derived features
                 feature_vector.append(np.sin(len(feature_vector) * word_idx / 10.0))
-            
-            # Ensure exactly num_neurons features
             feature_vector = feature_vector[:self.num_neurons]
             features.append(feature_vector)
-        
         return np.array(features)
+import numpy as np
+from collections import defaultdict
+import random
+import torch
 
 class TextGenerator:
     def __init__(self, text_processor: NeuronAwareTextProcessor):
         self.text_processor = text_processor
         self.transitions = defaultdict(list)
+        self.seed_transitions = defaultdict(list)  # New: seed-specific transitions
         self.build_transitions()
     
     def build_transitions(self):
-        """Build transition probabilities from bigram counts"""
+        """Build both regular and seed-based transition probabilities."""
         for (w1, w2), count in self.text_processor.bigram_counts.items():
             self.transitions[w1].append((w2, count))
+            # Build seed-based transitions for multi-word seeds
+            self.seed_transitions[w1].append((w2, count))
+    
+    def get_seed_candidates(self, seed_words):
+        """Use * operator to unpack seed words and find candidates."""
+        if not seed_words:
+            return []
+        
+        # Use * to unpack the seed words list
+        candidates = []
+        for word in seed_words:
+            if word in self.transitions:
+                # Use * to extend candidates with unpacked transitions
+                candidates.extend(*[self.transitions[word]])
+        
+        return candidates if candidates else []
     
     def generate_text_from_neural_output(self, spk_rec, seed_word: str = None, length: int = 50) -> str:
-        """Generate text using neural network output to influence word selection"""
+        """Generate text using pointer-based seed transitions."""
         if not self.transitions:
             return "No training data available for text generation."
         
-        # Use neural output to influence generation
-        neural_influence = spk_rec.mean(dim=0).detach().cpu().numpy()
+        neural_influence = spk_rec.mean(dim=1).detach().cpu().numpy()
         
-        # Start with seed word or random word
-        if seed_word and seed_word in self.transitions:
-            current_word = seed_word
+        # Process seed using * operator for multi-word seeds
+        if seed_word:
+            seed_words = seed_word.split()
+            # Use * to unpack seed words
+            current_word = seed_words[-1] if seed_words else random.choice(list(self.transitions.keys()))
         else:
+            seed_words = []
             current_word = random.choice(list(self.transitions.keys()))
         
         generated_words = [current_word]
         
         for i in range(length - 1):
-            if current_word not in self.transitions:
-                # Restart with a random word
-                current_word = random.choice(list(self.transitions.keys()))
+            # Pointer mechanism: decide between seed-based and current-word-based generation
+            use_seed_pointer = (seed_words and 
+                              i < len(neural_influence) and 
+                              neural_influence[i] > 0.6)  # High neural activity triggers seed pointer
             
-            candidates = self.transitions[current_word]
+            if use_seed_pointer:
+                # Use * operator to get candidates from seed words
+                candidates = self.get_seed_candidates(seed_words)
+                
+                if not candidates:
+                    # Fallback to current word transitions
+                    candidates = self.transitions.get(current_word, [])
+            else:
+                # Regular transition based on current word
+                candidates = self.transitions.get(current_word, [])
+            
+            # If no candidates found, reset to random word
             if not candidates:
-                break
+                current_word = random.choice(list(self.transitions.keys()))
+                generated_words.append(current_word)
+                continue
             
-            # Use neural influence to modify probabilities
+            # Use * operator to unpack candidates for zip
             words, weights = zip(*candidates)
             weights = np.array(weights, dtype=float)
             
-            # Apply neural influence (use position in neural output)
-            neural_idx = i % len(neural_influence)
-            neural_weight = max(0.1, neural_influence[neural_idx])
-            weights = weights * (1 + neural_weight)
+            # Apply neural influence
+            if i < len(neural_influence):
+                neural_weight = max(0.1, neural_influence[i])
+                weights = weights * (1 + neural_weight)
             
             # Normalize weights
-            weights = weights / weights.sum()
+            if weights.sum() > 0:
+                weights = weights / weights.sum()
+            else:
+                weights = np.ones_like(weights) / len(weights)
+            
+            # Choose next word
+            next_word = np.random.choice(words, p=weights)
+            generated_words.append(next_word)
+            current_word = next_word
+        
+        return ' '.join(generated_words)
+    
+    def generate_with_seed_pointers(self, spk_rec, seed_phrase: str = None, length: int = 50) -> str:
+        """Enhanced generation with explicit seed pointer usage."""
+        if not self.transitions:
+            return "No training data available for text generation."
+        
+        neural_influence = spk_rec.mean(dim=1).detach().cpu().numpy()
+        
+        # Parse seed phrase using * operator
+        if seed_phrase:
+            # Use * to unpack seed phrase into individual words
+            *seed_words, last_word = seed_phrase.split()
+            current_word = last_word if last_word in self.transitions else random.choice(list(self.transitions.keys()))
+        else:
+            seed_words = []
+            current_word = random.choice(list(self.transitions.keys()))
+        
+        generated_words = [current_word]
+        
+        for i in range(length - 1):
+            # Pointer decision based on neural activity
+            neural_gate = neural_influence[i] if i < len(neural_influence) else 0.5
+            
+            # Three pointer strategies based on neural activity
+            if neural_gate > 0.8 and seed_words:
+                # High activity: Point to seed-based transitions
+                pointer_candidates = []
+                for word in seed_words:
+                    if word in self.transitions:
+                        # Use * to extend with unpacked transitions
+                        pointer_candidates.extend(self.transitions[word])
+                candidates = pointer_candidates if pointer_candidates else self.transitions.get(current_word, [])
+           
+            else:
+                # Low activity: Standard current word transitions
+                candidates = self.transitions.get(current_word, [])
+            
+            if not candidates:
+                current_word = random.choice(list(self.transitions.keys()))
+                generated_words.append(current_word)
+                continue
+            
+            # Process candidates using * operator
+            words, weights = zip(*candidates)
+            weights = np.array(weights, dtype=float)
+            
+            # Apply neural influence
+            neural_weight = np.exp(neural_gate)
+            weights = weights * (1 + neural_weight)
+            
+            # Normalize
+            weights = weights / weights.sum() if weights.sum() > 0 else np.ones_like(weights) / len(weights)
             
             # Select next word
             next_word = np.random.choice(words, p=weights)
@@ -318,83 +455,50 @@ class TextGenerator:
             current_word = next_word
         
         return ' '.join(generated_words)
-# Main execution with proper neuron management
+
 if __name__ == "__main__":
-    # Parameters
-    num_neurons = 2560
+    num_neurons = 256
+    num_polymorphic = 64
     num_steps = 10
     img_size = 8
-    
-    print(f"Initializing with {num_neurons} neurons")
-    
-    # Initialize components
+    print(f"Initializing with {num_neurons} neurons ({num_polymorphic} polymorphic)")
     text_processor = NeuronAwareTextProcessor(num_neurons)
     words = text_processor.load_and_process_text()
-    
-    # Convert to features
     features = text_processor.words_to_neural_features(words)
     print(f"Feature matrix shape: {features.shape}")
-    
-    # Ensure we have the right number of features
     assert features.shape[1] == num_neurons, f"Feature count {features.shape[1]} != neuron count {num_neurons}"
-    
-    # Normalize and create spikes
     scaler = StandardScaler()
     features_scaled = scaler.fit_transform(features)
     features_tensor = torch.FloatTensor(features_scaled)
     spike_data = spikegen.rate(features_tensor, num_steps=num_steps)
-    
     print(f"Spike data shape: {spike_data.shape}")
-    
-    # Initialize SNN with proper neuron management
-    snn_model = NeuronManagedSNN(num_neurons)
-    
-    # Run SNN with tracking
-    spk_rec, mem_rec = run_snn_with_proper_tracking(spike_data, snn_model)
-    
-    # Generate visualization
-    img = generate_data_aware_visualization(spk_rec, mem_rec, img_size=img_size)
-    
+    snn_model = PolymorphicSNN(num_neurons, num_polymorphic)
+    spk_rec, mem_rec, poly_mem_rec, mode_rec = run_polymorphic_snn(spike_data, snn_model)
+    poly_analysis = analyze_polymorphic_behavior(mode_rec, poly_mem_rec)
+    img = generate_polymorphic_visualization(spk_rec, mem_rec, mode_rec, poly_analysis, img_size=img_size)
     print("="*50)
-    print("NEURAL DATA VISUALIZATION COMPLETE")
+    print("POLYMORPHIC SNN ANALYSIS COMPLETE")
     print("="*50)
-    print(f"Successfully visualized {num_neurons} neurons")
+    print(f"Successfully processed {num_neurons} neurons ({num_polymorphic} polymorphic)")
     print(f"Spike activity range: {spk_rec.min().item():.3f} to {spk_rec.max().item():.3f}")
-    print(f"Membrane activity range: {mem_rec.min().item():.3f} to {mem_rec.max().item():.3f}")
-
-    # Initialize text generator and generate text
+    if poly_analysis:
+        print(f"Average mode switches per neuron: {np.mean(poly_analysis.get('mode_switching_frequency', [0])):.2f}")
+        print(f"Most stable mode: {np.argmin(np.mean(poly_analysis.get('mode_stability', [[1]]), axis=0))}")
     text_generator = TextGenerator(text_processor)
-    
-    # Interactive text generation
     print("\n" + "="*60)
     print("NEURAL TEXT GENERATOR READY")
     print("="*60)
-    print("Enter a seed word to generate text, or 'quit' to exit.")
+    print("Enter a seed word(s) to generate text, or 'quit' to exit.")
     print("Leave empty for random generation.")
     print("="*60)
-    
     while True:
         user_input = input("\nEnter seed word (or 'quit'): ").strip()
-        
         if user_input.lower() == 'quit':
             print("Goodbye!")
             break
-        
-        # Generate text
         seed_word = user_input if user_input else None
         generated_text = text_generator.generate_text_from_neural_output(
             spk_rec, seed_word=seed_word, length=230
         )
-        
         print(f"\nGenerated text: {generated_text}")
         
-        # Optionally regenerate visualization with new neural state
-        if user_input:
-            # Process the seed word through the network
-            seed_features = text_processor.words_to_neural_features([user_input])
-            if seed_features.shape[0] > 0:
-                seed_scaled = scaler.transform(seed_features)
-                seed_tensor = torch.FloatTensor(seed_scaled)
-                seed_spikes = spikegen.rate(seed_tensor, num_steps=num_steps)
-                new_spk_rec, new_mem_rec = run_snn_with_proper_tracking(seed_spikes, snn_model)
-                
