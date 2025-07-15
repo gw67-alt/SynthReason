@@ -406,8 +406,8 @@ class FGCNModeratedTextGenerator(TextGenerator):
         with torch.no_grad():
             graph_features = self.fgcn_model(data)
             
-        coherence_signal = torch.mean(graph_features, dim=0)
-        stability_signal = torch.std(graph_features, dim=0)
+        coherence_signal = torch.mean(graph_features, dim=1)
+        stability_signal = torch.std(graph_features, dim=1)
         
         return {
             'coherence': coherence_signal.detach().cpu().numpy(),
