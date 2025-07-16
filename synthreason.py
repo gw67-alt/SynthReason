@@ -291,7 +291,7 @@ class NeuronAwareTextProcessor:
             self.bigram_counts[(words[i], words[i+1])] += 1
         return words
     
-    def words_to_neural_features(self, words, max_words=50):
+    def words_to_neural_features(self, words, max_words=-1):
         features = []
         for i, word in enumerate(words[:max_words]):
             word_idx = self.word_to_idx.get(word, 0)
