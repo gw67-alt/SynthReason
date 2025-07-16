@@ -10,7 +10,7 @@ from torch_geometric.nn import GCNConv
 import matplotlib.pyplot as plt
 from collections import defaultdict, Counter
 import random
-
+instruction_template = "this is a test sentence"
 KB_LEN = -1
 
 class PolymorphicNeuron(nn.Module):
@@ -295,11 +295,13 @@ class NeuronAwareTextProcessor:
         features = []
         for i, word in enumerate(words[:max_words]):
             word_idx = self.word_to_idx.get(word, 0)
+            instruction_ratios = [
+                1+word_idx / 1+self.word_to_idx[instruction]
+                for instruction in instruction_template.split()
+            ]
             feature_vector = [
                 word_idx / len(self.word_to_idx),
-                len(word) / 20.0,
-                i / len(words),
-                len(set(word)) / max(len(word), 1),
+                *instruction_ratios
             ]
             while len(feature_vector) < self.num_neurons:
                 feature_vector.append(np.sin(len(feature_vector) * word_idx / 10.0))
