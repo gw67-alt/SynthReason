@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 import snntorch as snn
@@ -183,7 +182,7 @@ def main():
    
     generator = TextGenerator(text_corpus.lower().split())
     while True:
-        print(max_psychological_overlap(generator, input("Enter new seed word: "), n=1000))
+        print(max_psychological_overlap(generator, input("USER: "), n=1000))
 
 if __name__ == "__main__":
     main()
