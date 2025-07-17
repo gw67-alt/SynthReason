@@ -1,3 +1,4 @@
+
 import torch
 import torch.nn as nn
 import snntorch as snn
@@ -5,7 +6,8 @@ import numpy as np
 from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv
 from sklearn.preprocessing import StandardScaler
-
+import random
+from collections import defaultdict
 # SNN neuron: Leaky-Integrate and Fire
 class PolymorphicNeuron(nn.Module):
     def __init__(self, input_dim, num_modes=256):
@@ -43,6 +45,7 @@ class PolymorphicSNN(nn.Module):
         for n in self.poly:
             out, mems, sel = n(reg_out)
             results.append(out)
+            results.extend(results)
             poly_memory.append(mems)
         if results:
             out = torch.cat([reg_out] + results, dim=-1)
@@ -73,8 +76,7 @@ class DataAwareGCN(nn.Module):
         x = torch.relu(self.conv1(data.x, data.edge_index))
         x = torch.relu(self.conv2(x, data.edge_index))
         return x
-import random
-from collections import defaultdict
+
 
 class TextGenerator:
     def __init__(self, corpus):
@@ -101,6 +103,63 @@ class TextGenerator:
                 current_word = random.choice(next_words)
             words.append(current_word)
         return ' '.join(words)
+        
+def max_psychological_overlap(generator, psychological_words, n=1000):
+    max_intersection = 0
+    max_text = ""
+    max_seed = None
+
+    # Convert psychological words to lowercase set for consistency
+    psychological_set = set(w.lower() for w in psychological_words)
+    # Choose seed words (could use a predefined list, or random sampling)
+    instructions = [
+    # cognition and mental processes
+    "perception", "attention", "memory", "learning", "problem-solving",
+    "reasoning", "judgment", "intelligence", "decision-making", "imagination",
+    
+    # emotions and affect
+    "joy", "sadness", "anxiety", "anger", "fear", "disgust", "surprise",
+    "love", "shame", "guilt", "resentment",
+    
+    # personality traits
+    "extraversion", "introversion", "openness", "conscientiousness",
+    "agreeableness", "neuroticism", "honesty", "humility", "ambition", "impulsivity",
+    
+    # motivation and drives
+    "achievement", "affiliation", "power", "curiosity", "autonomy", "competence",
+    "security", "altruism", "aggression",
+    
+    # social and interpersonal
+    "empathy", "cooperation", "competition", "persuasion", "conformity",
+    "prejudice", "stereotype", "attachment", "communication",
+    
+    # clinical and abnormal
+    "depression", "mania", "phobia", "obsession", "compulsion",
+    "addiction", "trauma", "delusion", "hallucination", "dissociation",
+    
+    # developmental
+    "attachment", "separation", "maturation", "socialization",
+    "identity", "adolescence", "morality",
+    
+    # behavior
+    "conditioning", "habituation", "reinforcement", "extinction",
+    "imitation", "avoidance", "repression"
+]
+
+    for i in range(n):
+        seed = instructions[i % len(instructions)]
+        generated = generator.generate_text(start_word=seed, length=230)
+        generated_set = set(generated.lower().split())
+        intersection = psychological_set & generated_set
+        intersect_size = len(intersection)
+        if intersect_size > max_intersection:
+            max_intersection = intersect_size
+            max_text = generated
+            max_seed = seed
+
+    print(f"Best instruction word: {max_seed}")
+    print("Generated text sample:")
+    print(max_text)
 # Example runner
 def main():
     num_neurons = 256
@@ -120,13 +179,11 @@ def main():
     print("Node features from GCN: ", node_feats.shape)
     
     with open(input("Filename: "), 'r', encoding='utf-8') as f:
-        text_corpus = f.read().split()
+        text_corpus = f.read()
    
-    generator = TextGenerator(text_corpus)
-    
+    generator = TextGenerator(text_corpus.lower().split())
     while True:
-        output = generator.generate_text(start_word=input("Enter seed word: "), length=230)
-        print("Generated text sample:")
-        print(output)
+        print(max_psychological_overlap(generator, input("Enter new seed word: "), n=1000))
+
 if __name__ == "__main__":
     main()
