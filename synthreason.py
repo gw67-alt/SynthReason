@@ -144,29 +144,13 @@ class TextGenerator:
             words.append(current_word)
         return ' '.join(words)
 
-def _max_psychological_overlap_impl(generator, psychological_words, n=1000):
+def _max_psychological_overlap_impl(generator, instructions, psychological_words, n=1000):
     max_intersection = 0
     max_text = ""
     max_seed = None
     psychological_set = set(w.lower() for w in psychological_words)
     
-    # Static list of seed words
-    instructions = list(set([
-        "perception", "attention", "memory", "learning", "problem-solving",
-        "reasoning", "judgment", "intelligence", "decision-making", "imagination",
-        "joy", "sadness", "anxiety", "anger", "fear", "disgust", "surprise",
-        "love", "shame", "guilt", "resentment", "extraversion", "openness",
-        "conscientiousness", "agreeableness", "neuroticism", "honesty", "humility",
-        "ambition", "impulsivity", "achievement", "affiliation", "power", "curiosity",
-        "autonomy", "competence", "security", "altruism", "aggression", "empathy",
-        "cooperation", "competition", "persuasion", "conformity", "prejudice",
-        "stereotype", "attachment", "communication", "depression", "mania", "phobia",
-        "obsession", "compulsion", "addiction", "trauma", "delusion",
-        "hallucination", "dissociation", "separation", "maturation",
-        "socialization", "identity", "adolescence", "morality", "conditioning",
-        "habituation", "reinforcement", "extinction", "imitation", "avoidance", "repression"
-    ]))
-
+   
     for i in range(n):
         seed = instructions[i % len(instructions)]
         generated = generator.generate_text(start_word=seed, length=230)
@@ -183,8 +167,8 @@ def _max_psychological_overlap_impl(generator, psychological_words, n=1000):
     print(max_text)
     # This function prints but does not return a value
     
-def max_psychological_overlap(generator, psychological_words, n=1000):
-    _max_psychological_overlap_impl(generator, psychological_words, n)
+def max_psychological_overlap(generator, instructions, psychological_words, n=1000):
+    _max_psychological_overlap_impl(generator, instructions, psychological_words, n)
 
 # Example runner
 def _main_impl():
@@ -223,12 +207,14 @@ def _main_impl():
         text_corpus = "the quick brown fox jumps over the lazy dog attention memory learning"
    
     generator = TextGenerator(text_corpus.lower().split())
-    
+    instructions = []
+    for sentence in text_corpus.split("."):
+        instructions.append(sentence.split(" ")[0])
     # Interactive loop
     while True:
         user_input = input("USER: ")
         # Split user input into a list of words for the function
-        max_psychological_overlap(generator, user_input.split(), n=1000)
+        max_psychological_overlap(generator, instructions, user_input.split(), n=1000)
 
 def main():
     _main_impl()
