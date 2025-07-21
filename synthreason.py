@@ -189,7 +189,7 @@ def max_psychological_overlap(generator, psychological_words, n=1000):
 # Example runner
 def _main_impl():
     # Use parameters that ensure a multi-node graph for GCN
-    num_neurons = 32
+    num_neurons = 256
     num_poly = 8
     steps = 10
     
