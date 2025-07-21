@@ -144,13 +144,13 @@ class TextGenerator:
             words.append(current_word)
         return ' '.join(words)
 
-def _max_psychological_overlap_impl(generator, instructions, psychological_words, n=1000):
+def _max_psychological_overlap_impl(generator, generator_instruction, psychological_words, n=1000):
     max_intersection = 0
     max_text = ""
     max_seed = None
     psychological_set = set(w.lower() for w in psychological_words)
     
-   
+    instructions = generator_instruction.generate_text(start_word=psychological_words[-1], length=230).split()
     for i in range(n):
         seed = instructions[i % len(instructions)]
         generated = generator.generate_text(start_word=seed, length=230)
@@ -167,8 +167,8 @@ def _max_psychological_overlap_impl(generator, instructions, psychological_words
     print(max_text)
     # This function prints but does not return a value
     
-def max_psychological_overlap(generator, instructions, psychological_words, n=1000):
-    _max_psychological_overlap_impl(generator, instructions, psychological_words, n)
+def max_psychological_overlap(generator, generator_instruction, psychological_words, n=1000):
+    _max_psychological_overlap_impl(generator, generator_instruction, psychological_words, n)
 
 # Example runner
 def _main_impl():
@@ -208,13 +208,17 @@ def _main_impl():
    
     generator = TextGenerator(text_corpus.lower().split())
     instructions = []
-    for sentence in text_corpus.split("."):
-        instructions.append(sentence.split(" ")[0])
+
     # Interactive loop
     while True:
         user_input = input("USER: ")
+
+        for sentence in text_corpus.split(user_input):
+            instructions.append(sentence)
+        generator_instruction = TextGenerator(instructions)
+
         # Split user input into a list of words for the function
-        max_psychological_overlap(generator, instructions, user_input.split(), n=1000)
+        max_psychological_overlap(generator, generator_instruction, user_input.split(), n=1000)
 
 def main():
     _main_impl()
