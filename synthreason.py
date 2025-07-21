@@ -152,7 +152,7 @@ def _max_psychological_overlap_impl(generator, generator_instruction, psychologi
     
     instructions = generator_instruction.generate_text(start_word=psychological_words[-1], length=230).split()
     for i in range(n):
-        seed = instructions[i % len(instructions)]
+        seed = list(psychological_set)[i % len(psychological_set)]
         generated = generator.generate_text(start_word=seed, length=230)
         generated_set = set(generated.lower().split())
         intersection = psychological_set & generated_set
