@@ -56,16 +56,8 @@ class PolymorphicSNN(nn.Module):
             x = x.unsqueeze(0)
         x = self.lin(x)
         reg_out, reg_mem = self.regular(x) if mem is None else self.regular(x, mem)
-        results = []
-        poly_memory = []
-        for n in self.poly:
-            out, mems, sel = n(reg_out)
-            results.append(out)
-        if results:
-            out = torch.cat([reg_out] + results, dim=-1)
-        else:
-            out = reg_out
-        return out, reg_mem, poly_memory
+        
+        return reg_out**x,  reg_mem**x,reg_mem
 
 # Create a simple graph from the spike raster
 def _create_neuron_graph_impl(spk_rec):
