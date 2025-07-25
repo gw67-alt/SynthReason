@@ -213,86 +213,81 @@ class PolymorphicSNN(nn.Module):
         final_output = reg_out + combined_poly
         
         return final_output, reg_mem, poly_mems
+
 def create_neuron_graph(spk_rec):
-    """Create a graph from spike raster data with enhanced debugging"""
-    print(f"DEBUG: spk_rec shape: {spk_rec.shape}")
-    print(f"DEBUG: spk_rec.numel(): {spk_rec.numel()}")
-    
-    if spk_rec.numel() == 0:
-        return Data(x=torch.empty((0, 1)), edge_index=torch.empty((2, 0), dtype=torch.long))
-    
-    node_features = spk_rec.T
-    print(f"DEBUG: node_features shape after transpose: {node_features.shape}")
+    """Create a graph from spike recordings with proper edge handling"""
+    # spk_rec shape is [timesteps, neurons]
+    # We want node_features to be [nodes, features]
+    # Each neuron becomes a node, each timestep becomes a feature
+    node_features = spk_rec.T  # Shape: [neurons, timesteps]
     num_nodes = node_features.shape[0]
-    print(f"DEBUG: num_nodes calculated: {num_nodes}")
+    
+    print(f"Creating graph with {num_nodes} nodes, features shape: {node_features.shape}")
+    print(f"Original spk_rec shape: {spk_rec.shape}")
     
     if num_nodes == 0:
-        return Data(x=torch.empty((0, 1)), edge_index=torch.empty((2, 0), dtype=torch.long))
+        edge_index = torch.empty((2, 0), dtype=torch.long)
     elif num_nodes == 1:
-        edge_index = torch.tensor([[0], [0]], dtype=torch.long)
-        print(f"DEBUG: Single node - edge_index: {edge_index}")
+        # Single node - no edges, empty edge_index
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+        print(f"Single node - using empty edge_index shape: {edge_index.shape}")
+    elif num_nodes == 2:
+        # Two nodes - connect them bidirectionally
+        edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long).T
+        print(f"Two nodes edge_index shape: {edge_index.shape}")
     else:
+        # Multiple nodes - create ring topology with bidirectional edges
         src_nodes, dst_nodes = [], []
         for i in range(num_nodes):
-            neighbor = (i + 1) % num_nodes
-            src_nodes.extend([i, neighbor])
-            dst_nodes.extend([neighbor, i])
+            # Connect to next node (with wraparound)
+            next_node = (i + 1) % num_nodes
+            src_nodes.extend([i, next_node])
+            dst_nodes.extend([next_node, i])
         edge_index = torch.tensor([src_nodes, dst_nodes], dtype=torch.long)
-        print(f"DEBUG: Multi-node - edge_index shape: {edge_index.shape}")
-        print(f"DEBUG: edge_index max: {edge_index.max().item()}, min: {edge_index.min().item()}")
+        print(f"Multi-node edge_index shape: {edge_index.shape}")
     
-    # Validate edge indices
-    max_edge_idx = edge_index.max().item() if edge_index.numel() > 0 else -1
-    if max_edge_idx >= num_nodes:
-        print(f"ERROR: Max edge index {max_edge_idx} >= num_nodes {num_nodes}")
-        # Fix by clamping indices
-        edge_index = torch.clamp(edge_index, 0, num_nodes - 1)
+    print(f"Final edge_index shape: {edge_index.shape}")
+    if edge_index.numel() > 0:
+        print(f"Edge index content: {edge_index}")
     
-    data = Data(x=node_features, edge_index=edge_index)
-    print(f"DEBUG: Final data - x.shape: {data.x.shape}, edge_index.shape: {data.edge_index.shape}")
-    return data
-
+    return Data(x=node_features, edge_index=edge_index)
 
 class DataAwareGCN(nn.Module):
     def __init__(self, input_dim, hidden=64, out=32):
         super().__init__()
-        self.conv1 = GCNConv(input_dim, hidden)
-        self.conv2 = GCNConv(hidden, out)
+        # Remove GCN layers entirely and use only linear layers
         self.input_dim = input_dim
         self.out_dim = out
+        
+        # Use a more sophisticated linear network instead of GCN
+        self.network = nn.Sequential(
+            nn.Linear(input_dim, hidden),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden, out),
+            nn.ReLU()
+        )
 
     def forward(self, data):
-        print(f"DEBUG GCN: data.x.shape = {data.x.shape}")
-        print(f"DEBUG GCN: data.edge_index.shape = {data.edge_index.shape}")
-        print(f"DEBUG GCN: data.num_nodes = {data.num_nodes}")
+        print(f"DEBUG Linear Network: data.x.shape = {data.x.shape}")
+        print(f"DEBUG Linear Network: data.num_nodes = {data.num_nodes}")
         
-        # Validate edge indices
-        if data.edge_index.numel() > 0:
-            max_idx = data.edge_index.max().item()
-            min_idx = data.edge_index.min().item()
-            print(f"DEBUG GCN: edge_index range = [{min_idx}, {max_idx}]")
-            
-            if max_idx >= data.num_nodes:
-                print(f"ERROR: Edge index {max_idx} >= num_nodes {data.num_nodes}")
-                return torch.zeros((data.num_nodes, self.out_dim))
-        
-        # Handle edge cases
+        # Handle empty graph
         if data.num_nodes == 0:
             return torch.empty((0, self.out_dim))
-        elif data.num_nodes == 1:
-            # For single node, return processed features
-            linear_out = torch.zeros((1, self.out_dim))
-            return linear_out
         
+        # Process all nodes with linear network
         try:
-            x = torch.relu(self.conv1(data.x, data.edge_index))
-            x = torch.relu(self.conv2(x, data.edge_index))
-            return x
+            result = self.network(data.x)
+            print(f"Linear network result shape: {result.shape}")
+            return result
         except Exception as e:
-            print(f"GCN Error: {e}")
-            print(f"Falling back to zero tensor with shape ({data.num_nodes}, {self.out_dim})")
+            print(f"Linear Network Error: {e}")
+            # Final fallback - return zeros
             return torch.zeros((data.num_nodes, self.out_dim))
-
 
 class TextGenerator:
     def __init__(self, corpus):
@@ -300,6 +295,8 @@ class TextGenerator:
         self.build_transitions(corpus)
 
     def build_transitions(self, words):
+        if len(words) < 2:
+            return
         for i in range(len(words) - 1):
             self.transitions[words[i]].append(words[i + 1])
 
@@ -316,6 +313,8 @@ class TextGenerator:
         for _ in range(length - 1):
             next_words = self.transitions.get(current_word)
             if not next_words:
+                if not self.transitions:
+                    break
                 current_word = random.choice(list(self.transitions.keys()))
             else:
                 current_word = random.choice(next_words)
@@ -333,7 +332,7 @@ def max_psychological_overlap(generator, generator_instruction, psychological_wo
         print("No psychological words provided.")
         return
     
-    for i in range(n):
+    for i in range(min(n, len(psychological_set) * 10)):  # Prevent infinite loops
         seed = list(psychological_set)[i % len(psychological_set)]
         generated = generator.generate_text(start_word=seed, length=230)
         generated_set = set(generated.lower().split())
@@ -385,33 +384,24 @@ def main():
         spk_rec = torch.cat([s.unsqueeze(0) for s in spk_list], dim=0)
         
         # Process graph data
-        # Process graph data
         gdata = create_neuron_graph(spk_rec)
         print(f"Graph created with {gdata.num_nodes} nodes and {gdata.num_node_features} features")
+        print(f"Graph edge_index: {gdata.edge_index}")
+        print(f"Graph x shape: {gdata.x.shape}")
 
-        if gdata.num_nodes > 1 and gdata.num_node_features > 0:
-            gcn = DataAwareGCN(gdata.num_node_features)
-            node_feats = gcn(gdata)
-            print(f"Node features from GCN: {node_feats.shape}")
-        elif gdata.num_nodes == 1:
-            print("Single node graph - skipping GCN processing")
-            node_feats = gdata.x
+        # Skip GCN entirely if problematic
+        if gdata.num_nodes <= 1 or gdata.num_node_features == 0:
+            print(f"Skipping GCN processing - insufficient nodes or features")
+            node_feats = gdata.x if gdata.num_nodes > 0 else None
         else:
-            print(f"Graph has {gdata.num_nodes} nodes - insufficient for GCN")
-            node_feats = None
-        gdata = create_neuron_graph(spk_rec)
-        print(f"Graph created with {gdata.num_nodes} nodes and {gdata.num_node_features} features")
-
-        if gdata.num_nodes > 1 and gdata.num_node_features > 0:
-            gcn = DataAwareGCN(gdata.num_node_features)
-            node_feats = gcn(gdata)
-            print(f"Node features from GCN: {node_feats.shape}")
-        elif gdata.num_nodes == 1:
-            print("Single node graph - skipping GCN processing")
-            node_feats = gdata.x
-        else:
-            print(f"Graph has {gdata.num_nodes} nodes - insufficient for GCN")
-            node_feats = None
+            try:
+                gcn = DataAwareGCN(gdata.num_node_features)
+                node_feats = gcn(gdata)
+                print(f"Node features from GCN: {node_feats.shape}")
+            except Exception as e:
+                print(f"GCN processing failed: {e}")
+                print("Using raw node features instead")
+                node_feats = gdata.x
     
     # Text generation component
     try:
@@ -427,10 +417,17 @@ def main():
         attention memory learning neural network brain cognitive science
         psychology neuroscience artificial intelligence machine learning
         consciousness perception emotion behavior thought reasoning logic
-        the quick brown fox jumps over the lazy dog
+        the quick brown fox jumps over the lazy dog hello world
+        neural networks process information through interconnected nodes
+        cognitive systems exhibit emergent properties and complex behaviors
         """
    
-    generator = TextGenerator(text_corpus.lower().split())
+    # Clean and prepare corpus
+    corpus_words = text_corpus.lower().split()
+    if len(corpus_words) < 2:
+        corpus_words = ["hello", "world", "neural", "network", "brain", "mind"]
+    
+    generator = TextGenerator(corpus_words)
     
     # Interactive loop
     print("\nEntering interactive mode. Type 'quit' to exit.")
@@ -447,21 +444,17 @@ def main():
             continue
         
         # Process user input
-        for sentence in text_corpus.split(user_input):
-            if sentence.strip():
-                instructions.append(sentence.strip())
-        
-        if instructions:
-            generator_instruction = TextGenerator(instructions)
-        else:
-            generator_instruction = generator
+        user_words = user_input.lower().split()
+        if not user_words:
+            print("Please provide some words for analysis.")
+            continue
+            
+        # Build instruction generator from user input and corpus
+        combined_words = corpus_words + user_words
+        generator_instruction = TextGenerator(combined_words)
         
         # Generate text with psychological overlap
-        user_words = user_input.split()
-        if user_words:
-            max_psychological_overlap(generator, generator_instruction, user_words, n=500)
-        else:
-            print("Please provide some words for analysis.")
+        max_psychological_overlap(generator, generator_instruction, user_words, n=500)
 
 if __name__ == "__main__":
     main()
