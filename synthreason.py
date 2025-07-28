@@ -23,189 +23,8 @@ except ImportError:
     print("Please install pyserial: pip install pyserial")
     exit()
 
-class USBSerialMRIReader:
-    """Reads MRI data from USB serial port in real-time"""
-    
-    def __init__(self, port: str = None, baudrate: int = 115200, timeout: float = 0.1):
-        self.port = port
-        self.baudrate = baudrate
-        self.timeout = timeout
-        self.serial_connection = None
-        self.is_connected = False
-        self.data_queue = queue.Queue()
-        self.read_thread = None
-        self.stop_reading = False
-        
-    def list_available_ports(self) -> List[str]:
-        """List all available USB serial ports"""
-        ports = serial.tools.list_ports.comports()
-        available_ports = []
-        
-        print("Available USB Serial Ports:")
-        for port in ports:
-            print(f"  {port.device}: {port.description}")
-            available_ports.append(port.device)
-            
-        return available_ports
-    
-    def connect(self, port: str = None) -> bool:
-        """Connect to USB serial port"""
-        if port:
-            self.port = port
-        
-        if not self.port:
-            available_ports = self.list_available_ports()
-            if not available_ports:
-                print("No USB serial ports found!")
-                return False
-            self.port = available_ports[0]  # Use first available port
-            print(f"Auto-selecting port: {self.port}")
-        
-        try:
-            self.serial_connection = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                timeout=self.timeout,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                bytesize=serial.EIGHTBITS
-            )
-            
-            # Clear any existing data in buffers
-            self.serial_connection.flushInput()
-            self.serial_connection.flushOutput()
-            
-            self.is_connected = True
-            print(f"Connected to {self.port} at {self.baudrate} baud")
-            return True
-            
-        except serial.SerialException as e:
-            print(f"Failed to connect to {self.port}: {e}")
-            return False
-    
-    def start_reading(self):
-        """Start background thread to read serial data"""
-        if not self.is_connected:
-            print("Not connected to serial port!")
-            return
-        
-        self.stop_reading = False
-        self.read_thread = threading.Thread(target=self._read_serial_data, daemon=True)
-        self.read_thread.start()
-        print("Started reading serial data in background")
-    
-    def _read_serial_data(self):
-        """Background thread function to continuously read serial data"""
-        buffer = ""
-        
-        while not self.stop_reading and self.is_connected:
-            try:
-                if self.serial_connection.in_waiting > 0:
-                    # Read available data
-                    data = self.serial_connection.read(self.serial_connection.in_waiting)
-                    buffer += data.decode('utf-8', errors='ignore')
-                    
-                    # Process complete lines
-                    while '\n' in buffer:
-                        line, buffer = buffer.split('\n', 1)
-                        line = line.strip()
-                        
-                        if line:
-                            try:
-                                # Convert to float (assuming numeric MRI data)
-                                value = float(line)
-                                self.data_queue.put(value)
-                            except ValueError:
-                                # Skip non-numeric lines
-                                continue
-                
-                time.sleep(0.001)  # Small delay to prevent CPU overload
-                
-            except Exception as e:
-                print(f"Error reading serial data: {e}")
-                break
-    
-    def get_sample(self, timeout: float = 0.1) -> Optional[float]:
-        """Get next MRI sample from queue"""
-        try:
-            return self.data_queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
-    
-    def get_queue_size(self) -> int:
-        """Get number of samples waiting in queue"""
-        return self.data_queue.qsize()
-    
-    def disconnect(self):
-        """Disconnect from serial port"""
-        self.stop_reading = True
-        
-        if self.read_thread and self.read_thread.is_alive():
-            self.read_thread.join(timeout=1.0)
-        
-        if self.serial_connection and self.serial_connection.is_open:
-            self.serial_connection.close()
-            
-        self.is_connected = False
-        print("Disconnected from serial port")
-
-class USBSerialMRIProcessor:
-    """Processes MRI data from USB serial in real-time"""
-    
-    def __init__(self, port: str = None, baudrate: int = 115200, window_size: int = 100):
-        self.usb_reader = USBSerialMRIReader(port, baudrate)
-        self.window_size = window_size
-        self.data_buffer = deque(maxlen=window_size)
-        self.processed_segments = []
-        self.total_samples_processed = 0
-        
-    def connect_and_start(self, port: str = None) -> bool:
-        """Connect to USB port and start reading"""
-        if not self.usb_reader.connect(port):
-            return False
-        
-        self.usb_reader.start_reading()
-        return True
-    
-    def process_realtime_stream(self) -> Generator[Tuple[np.ndarray, float], None, None]:
-        """Generator that yields processed MRI segments as they become available"""
-        
-        print("Starting real-time MRI processing from USB serial...")
-        print("Waiting for data... (Press Ctrl+C to stop)")
-        
-        try:
-            while True:
-                # Get next sample from USB
-                sample = self.usb_reader.get_sample(timeout=1.0)
-                
-                if sample is not None:
-                    self.data_buffer.append(sample)
-                    self.total_samples_processed += 1
-                    
-                    # Process when buffer is full
-                    if len(self.data_buffer) == self.window_size:
-                        segment = np.array(list(self.data_buffer))
-                        processed_segment, confidence = self._process_segment(segment)
-                        
-                        yield processed_segment, confidence
-                        
-                        # Optional: Show progress
-                        if self.total_samples_processed % 100 == 0:
-                            queue_size = self.usb_reader.get_queue_size()
-                            print(f"Processed {self.total_samples_processed} samples, "
-                                  f"Queue: {queue_size}, Confidence: {confidence:.3f}")
-                
-                elif not self.usb_reader.is_connected:
-                    print("USB connection lost")
-                    break
-                    
-        except KeyboardInterrupt:
-            print("\nStopping real-time processing...")
-        finally:
-            self.usb_reader.disconnect()
-    
     def _process_segment(self, signal: np.ndarray) -> Tuple[np.ndarray, float]:
-        """Process a segment of MRI data"""
+        """Process a segment of data"""
         # Basic preprocessing
         signal = signal - np.mean(signal)  # Remove DC component
         signal = signal / (np.std(signal) + 1e-10)  # Normalize
@@ -221,50 +40,7 @@ class USBSerialMRIProcessor:
         
         return signal, confidence
     
-    def extract_features_from_segment(self, signal: np.ndarray, confidence: float) -> Tuple[np.ndarray, np.ndarray]:
-        """Extract features from processed signal segment"""
-        # Temporal features
-        mean_activity = np.mean(signal)
-        variance = np.var(signal)
-        peak_amplitude = np.max(np.abs(signal))
-        
-        # Frequency domain analysis
-        fft = np.fft.fft(signal)
-        power_spectrum = np.abs(fft) ** 2
-        power_spectrum = power_spectrum / (np.sum(power_spectrum) + 1e-10)
-        
-        freqs = np.fft.fftfreq(len(signal))
-        
-        # Neural frequency bands (normalized frequencies)
-        delta_indices = np.where((freqs >= 0.001) & (freqs <= 0.02))[0]
-        theta_indices = np.where((freqs >= 0.02) & (freqs <= 0.04))[0]
-        alpha_indices = np.where((freqs >= 0.04) & (freqs <= 0.06))[0]
-        beta_indices = np.where((freqs >= 0.06) & (freqs <= 0.15))[0]
-        gamma_indices = np.where((freqs >= 0.15) & (freqs <= 0.4))[0]
-        
-        delta_band = np.mean(power_spectrum[delta_indices]) if len(delta_indices) > 0 else 0
-        theta_band = np.mean(power_spectrum[theta_indices]) if len(theta_indices) > 0 else 0
-        alpha_band = np.mean(power_spectrum[alpha_indices]) if len(alpha_indices) > 0 else 0
-        beta_band = np.mean(power_spectrum[beta_indices]) if len(beta_indices) > 0 else 0
-        gamma_band = np.mean(power_spectrum[gamma_indices]) if len(gamma_indices) > 0 else 0
-        
-        signal_entropy = -np.sum(power_spectrum * np.log(power_spectrum + 1e-10))
-        
-        features = np.array([
-            mean_activity, variance, peak_amplitude,
-            delta_band, theta_band, alpha_band, beta_band, gamma_band,
-            signal_entropy, confidence
-        ])
-        
-        base_uncertainty = 1 - confidence
-        feature_uncertainties = np.array([
-            base_uncertainty * 0.1, base_uncertainty * 0.2, base_uncertainty * 0.15,
-            base_uncertainty * 0.25, base_uncertainty * 0.3, base_uncertainty * 0.3,
-            base_uncertainty * 0.3, base_uncertainty * 0.3, base_uncertainty * 0.25,
-            base_uncertainty * 0.1
-        ])
-        
-        return features, feature_uncertainties
+    
 
 class BigramProcessor:
     """Handles bigram extraction and semantic weighting using TF-IDF with set-based operations"""
@@ -444,10 +220,9 @@ class ProbabilisticTextGenerator:
         return generated_text, word_confidences, overall_confidence
 
 class USBSymbolicNeuralAI:
-    """Complete symbolic AI system with USB serial MRI input"""
+    """Complete symbolic AI system with USB serial input"""
     
     def __init__(self, port: str = None, baudrate: int = 115200, window_size: int = 100):
-        self.mri_processor = USBSerialMRIProcessor(port, baudrate, window_size)
         self.bigram_processor = BigramProcessor()
         self.text_generator = None
         
@@ -461,25 +236,85 @@ class USBSymbolicNeuralAI:
         self.text_generator = ProbabilisticTextGenerator(self.bigram_processor)
         self.is_trained = True
         print("Vocabulary training completed")
-    
-    def run_realtime_processing(self, port: str = None):
+        
+    def create_multiple_arrays(self):
+        segments = []
+        
+        for i in range(52):
+            # Generate a more robust signal
+            t = np.linspace(0, 2, 1024)
+            signal_array = (np.sqrt(i * np.pi * 10 * t) + 
+                           0.5 * np.sqrt(2 * np.pi * 25 * t) + 
+                           0.2 * np.random.randn(len(t)))
+            
+            confidence = 0.7 + i * 0.05
+            
+            # Debug: Print signal statistics
+            print(f"Signal {i}: mean={np.mean(signal_array):.3f}, "
+                  f"std={np.std(signal_array):.3f}, "
+                  f"min={np.min(signal_array):.3f}, "
+                  f"max={np.max(signal_array):.3f}")
+            
+            segments.append((signal_array, confidence))
+        
+        return segments
+    def extract_features_from_segment(self, signal: np.ndarray, confidence: float) -> Tuple[np.ndarray, np.ndarray]:
+        """Extract features from processed signal segment"""
+        # Temporal features
+        mean_activity = np.mean(signal)
+        variance = np.var(signal)
+        peak_amplitude = np.max(np.abs(signal))
+        
+        # Frequency domain analysis
+
+        power_spectrum = signal / (np.sum(signal) + 1e-10)
+        power_spectrum = signal / (np.sum(signal) + 1e-10)
+        
+        freqs = np.fft.fftfreq(len(signal))
+        
+        # Neural frequency bands (normalized frequencies)
+        delta_indices = np.where((freqs >= 0.101) & (freqs <= 0.12))[0]
+        theta_indices = np.where((freqs >= 0.22) & (freqs <= 0.24))[0]
+        alpha_indices = np.where((freqs >= 0.34) & (freqs <= 0.36))[0]
+        beta_indices = np.where((freqs >= 0.46) & (freqs <= 0.45))[0]
+        gamma_indices = np.where((freqs >= 0.55) & (freqs <= 0.5))[0]
+        
+        delta_band = np.mean(power_spectrum[delta_indices]) if len(delta_indices) > 0 else 0
+        theta_band = np.mean(power_spectrum[theta_indices]) if len(theta_indices) > 0 else 0
+        alpha_band = np.mean(power_spectrum[alpha_indices]) if len(alpha_indices) > 0 else 0
+        beta_band = np.mean(power_spectrum[beta_indices]) if len(beta_indices) > 0 else 0
+        gamma_band = np.mean(power_spectrum[gamma_indices]) if len(gamma_indices) > 0 else 0
+        
+        signal_entropy = -np.sum(power_spectrum * np.exp(power_spectrum + 1e-10))
+        
+        features = np.array([
+            mean_activity, variance, peak_amplitude,
+            delta_band, theta_band, alpha_band, beta_band, gamma_band,
+            signal_entropy, confidence
+        ])
+        
+        base_uncertainty = 1 - confidence
+        feature_uncertainties = np.array([
+            base_uncertainty * 0.1, base_uncertainty * 0.2, base_uncertainty * 0.15,
+            base_uncertainty * 0.25, base_uncertainty * 0.3, base_uncertainty * 0.3,
+            base_uncertainty * 0.3, base_uncertainty * 0.3, base_uncertainty * 0.25,
+            base_uncertainty * 0.1
+        ])
+        
+        return features, feature_uncertainties  
+    def run_realtime_processing(self):
         """Run complete real-time processing from USB to text"""
-        
-        # Connect to USB port
-        if not self.mri_processor.connect_and_start(port):
-            return
-        
-        print("\n=== Real-time USB MRI to Text Processing ===")
+
         
         segment_count = 0
         
         try:
             # Process real-time stream
-            for processed_signal, confidence in self.mri_processor.process_realtime_stream():
+            for processed_signal, confidence in self.create_multiple_arrays():
                 segment_count += 1
                 
                 # Extract features
-                features, uncertainties = self.mri_processor.extract_features_from_segment(
+                features, uncertainties = self.extract_features_from_segment(
                     processed_signal, confidence
                 )
                 
@@ -496,15 +331,9 @@ class USBSymbolicNeuralAI:
                 print("-" * 60)
                 
         except KeyboardInterrupt:
-            print("\nStopping USB processing...")
-        finally:
-            self.mri_processor.usb_reader.disconnect()
-    
+            print("\nStopping processing...")
     def _generate_complete_text(self, features: np.ndarray, uncertainties: np.ndarray, confidence: float) -> str:
-        """Complete text generation based on MRI features using the trained vocabulary"""
-        
-        if not self.is_trained or not self.text_generator:
-            return self._generate_simple_text(features, confidence)
+        """Complete text generation based on features using the trained vocabulary"""
         
         try:
             # Convert features to a pseudo-bigram vector for text generation
@@ -517,7 +346,7 @@ class USBSymbolicNeuralAI:
                 bigram_vector=bigram_vector,
                 bigram_uncertainty=bigram_uncertainty,
                 max_length=250,
-                temperature=1.2,
+                temperature=0.3,
                 seed_text=input("USER: "),
                 seed_weight=0.3
             )
@@ -526,10 +355,9 @@ class USBSymbolicNeuralAI:
             
         except Exception as e:
             print(f"Advanced generation failed: {e}")
-            return self._generate_simple_text(features, confidence)
     
     def _features_to_bigram_vector(self, features: np.ndarray) -> np.ndarray:
-        """Convert MRI features to a bigram-space vector"""
+        """Convert features to a bigram-space vector"""
         # This is a simplified mapping - expand the feature vector to match bigram vocabulary size
         vocab_size = self.bigram_processor.vocab_size
         
@@ -545,56 +373,19 @@ class USBSymbolicNeuralAI:
         
         return expanded_features + noise
     
-    def _generate_simple_text(self, features: np.ndarray, confidence: float) -> str:
-        """Fallback simple text generation based on MRI features"""
-        
-        # Basic feature-to-text mapping for demonstration
-        mean_activity = features[0]
-        variance = features[1]
-        peak_amplitude = features[2]
-        
-        if confidence > 0.7:
-            if mean_activity > 0.2:
-                base_text = "high neural activity detected"
-            elif mean_activity < -0.2:
-                base_text = "low neural activity observed"
-            else:
-                base_text = "moderate brain activity"
-        else:
-            base_text = "uncertain signal quality"
-        
-        if variance > 0.5:
-            base_text += " with high variability"
-        elif variance < 0.2:
-            base_text += " with stable patterns"
-        
-        # Add frequency band information if available
-        if len(features) > 6:
-            alpha_band = features[5]
-            beta_band = features[6]
-            
-            if alpha_band > 0.1:
-                base_text += " alpha dominant"
-            elif beta_band > 0.1:
-                base_text += " beta prominent"
-        
-        return base_text
-
 def main():
-    """Main function to demonstrate USB serial MRI processing"""
-    
-    print("=== USB Serial MRI Data Processing ===\n")
+    """Main function to demonstrate neural processing"""
     
     # Initialize system
     usb_ai = USBSymbolicNeuralAI(baudrate=115200, window_size=50)
     
     # Train vocabulary
     try:
-        with open("test.txt", 'r', encoding='utf-8') as f:
+        with open(input("Filename: "), 'r', encoding='utf-8') as f:
             content = f.read()
         training_texts = [text.strip() for text in content.split(".") if text.strip()]
     except FileNotFoundError:
-        print("test.txt file not found. Using default training data.")
+        print("File not found. Using default training data.")
         training_texts = [
             "the quick brown fox jumps over the lazy dog today",
             "artificial intelligence learns from neural signals in the brain",
@@ -609,38 +400,7 @@ def main():
         ]
     
     usb_ai.train_vocabulary(training_texts)
-    
-    # List available ports
-    print("Scanning for USB serial ports...")
-    available_ports = usb_ai.mri_processor.usb_reader.list_available_ports()
-    
-    if not available_ports:
-        print("No USB serial ports found!")
-        print("Make sure your device is connected and drivers are installed.")
-        return
-    
-    # Get port selection from user
-    if len(available_ports) == 1:
-        selected_port = available_ports[0]
-        print(f"Using port: {selected_port}")
-    else:
-        print("\nSelect a port:")
-        for i, port in enumerate(available_ports):
-            print(f"{i+1}: {port}")
-        
-        try:
-            choice = int(input("Enter port number: ")) - 1
-            selected_port = available_ports[choice]
-        except (ValueError, IndexError):
-            selected_port = available_ports[0]
-            print(f"Invalid selection, using: {selected_port}")
-    
-    print(f"\nExpecting numeric MRI data on {selected_port}")
-    print("Data format: one number per line")
-    print("Press Ctrl+C to stop\n")
-    
-    # Start real-time processing
-    usb_ai.run_realtime_processing(selected_port)
+    usb_ai.run_realtime_processing()
 
 if __name__ == "__main__":
     main()
