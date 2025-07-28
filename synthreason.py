@@ -242,7 +242,7 @@ class USBSymbolicNeuralAI:
         
         for i in range(52):
             # Generate a more robust signal
-            t = np.linspace(0, 2, 1024)
+            t = np.linspace(0, 3, 1024)
             signal_array = (np.sqrt(i * np.pi * 10 * t) + 
                            0.5 * np.sqrt(2 * np.pi * 25 * t) + 
                            0.2 * np.random.randn(len(t)))
@@ -258,34 +258,54 @@ class USBSymbolicNeuralAI:
             segments.append((signal_array, confidence))
         
         return segments
-    def extract_features_from_segment(self, signal: np.ndarray, confidence: float) -> Tuple[np.ndarray, np.ndarray]:
-        """Extract features from processed signal segment"""
+    def extract_features_from_segment(self, signal: np.ndarray, confidence: float, user_input: str = "") -> Tuple[np.ndarray, np.ndarray]:
+        """Extract features from processed signal segment with user input iteration"""
         # Temporal features
         mean_activity = np.mean(signal)
         variance = np.var(signal)
         peak_amplitude = np.max(np.abs(signal))
         
         # Frequency domain analysis
-
         power_spectrum = signal / (np.sum(signal) + 1e-10)
-        power_spectrum = signal / (np.sum(signal) + 1e-10)
-        
         freqs = np.fft.fftfreq(len(signal))
         
-        # Neural frequency bands (normalized frequencies)
-        delta_indices = np.where((freqs >= 0.101) & (freqs <= 0.12))[0]
-        theta_indices = np.where((freqs >= 0.22) & (freqs <= 0.24))[0]
-        alpha_indices = np.where((freqs >= 0.34) & (freqs <= 0.36))[0]
-        beta_indices = np.where((freqs >= 0.46) & (freqs <= 0.45))[0]
-        gamma_indices = np.where((freqs >= 0.55) & (freqs <= 0.5))[0]
+        # Convert user input to numerical values for frequency band adjustment
+        user_chars = [ord(char) for char in user_input.lower()] if user_input else [100]
+        char_sum = sum(user_chars) % 1000  # Normalize to reasonable range
         
+        # Neural frequency bands with user input iteration
+        base_offset = char_sum / 10000.0  # Small offset based on user input
+        
+        delta_start = 0.101 + (char_sum % 10) / 1000.0
+        delta_end = 0.12 + (char_sum % 15) / 1000.0
+        
+        theta_start = 0.22 + (char_sum % 20) / 1000.0
+        theta_end = 0.24 + (char_sum % 25) / 1000.0
+        
+        alpha_start = 0.34 + (char_sum % 30) / 1000.0
+        alpha_end = 0.36 + (char_sum % 35) / 1000.0
+        
+        beta_start = 0.46 + (char_sum % 40) / 1000.0
+        beta_end = 0.48 + (char_sum % 45) / 1000.0  # Fixed: was 0.45
+        
+        gamma_start = 0.55 + (char_sum % 50) / 1000.0
+        gamma_end = 0.60 + (char_sum % 55) / 1000.0  # Fixed: was 0.5
+        
+        # Create indices based on user input
+        delta_indices = np.where((freqs >= delta_start) & (freqs <= delta_end))[0]
+        theta_indices = np.where((freqs >= theta_start) & (freqs <= theta_end))[0]
+        alpha_indices = np.where((freqs >= alpha_start) & (freqs <= alpha_end))[0]
+        beta_indices = np.where((freqs >= beta_start) & (freqs <= beta_end))[0]
+        gamma_indices = np.where((freqs >= gamma_start) & (freqs <= gamma_end))[0]
+        
+        # Calculate band powers
         delta_band = np.mean(power_spectrum[delta_indices]) if len(delta_indices) > 0 else 0
         theta_band = np.mean(power_spectrum[theta_indices]) if len(theta_indices) > 0 else 0
         alpha_band = np.mean(power_spectrum[alpha_indices]) if len(alpha_indices) > 0 else 0
         beta_band = np.mean(power_spectrum[beta_indices]) if len(beta_indices) > 0 else 0
         gamma_band = np.mean(power_spectrum[gamma_indices]) if len(gamma_indices) > 0 else 0
         
-        signal_entropy = -np.sum(power_spectrum * np.exp(power_spectrum + 1e-10))
+        signal_entropy = -np.sum(power_spectrum * np.log(power_spectrum + 1e-10))
         
         features = np.array([
             mean_activity, variance, peak_amplitude,
@@ -301,21 +321,23 @@ class USBSymbolicNeuralAI:
             base_uncertainty * 0.1
         ])
         
-        return features, feature_uncertainties  
+        return features, feature_uncertainties
+
     def run_realtime_processing(self):
         """Run complete real-time processing from USB to text"""
-
-        
         segment_count = 0
+        
+        # Get user input once at the start
+        user_input = input("Enter text to influence frequency bands: ")
         
         try:
             # Process real-time stream
             for processed_signal, confidence in self.create_multiple_arrays():
                 segment_count += 1
                 
-                # Extract features
+                # Extract features with user input
                 features, uncertainties = self.extract_features_from_segment(
-                    processed_signal, confidence
+                    processed_signal, confidence, user_input
                 )
                 
                 self.feature_history.append(features)
@@ -323,6 +345,7 @@ class USBSymbolicNeuralAI:
                 print(f"\nSegment {segment_count}:")
                 print(f"Signal length: {len(processed_signal)}")
                 print(f"Confidence: {confidence:.3f}")
+                print(f"User input influence: {user_input}")
                 print(f"Features: {features[:5]}...")  # Show first 5 features
                 
                 # Generate text based on features
@@ -332,46 +355,108 @@ class USBSymbolicNeuralAI:
                 
         except KeyboardInterrupt:
             print("\nStopping processing...")
-    def _generate_complete_text(self, features: np.ndarray, uncertainties: np.ndarray, confidence: float) -> str:
+    def _generate_complete_text(self, features: np.ndarray, uncertainties: np.ndarray, confidence: float, user_input: str = "") -> str:
         """Complete text generation based on features using the trained vocabulary"""
+        
+        if not self.is_trained or self.text_generator is None:
+            return "System not trained - no text generator available"
         
         try:
             # Convert features to a pseudo-bigram vector for text generation
-            # This is a simplified approach - in a full implementation, you'd use the internal entity
             bigram_vector = self._features_to_bigram_vector(features)
             bigram_uncertainty = uncertainties[:len(bigram_vector)] if len(uncertainties) >= len(bigram_vector) else np.ones(len(bigram_vector)) * 0.1
             
-            # Generate text using the probabilistic text generator
+            # Use the user_input that was already provided instead of asking for new input
+            seed_text = user_input if user_input.strip() else "the quick brown"
+            
+            # Generate text using the probabilistic text generator (ONLY ONCE)
             generated_text, word_confidences, overall_confidence = self.text_generator.generate_probabilistic_text(
                 bigram_vector=bigram_vector,
                 bigram_uncertainty=bigram_uncertainty,
-                max_length=250,
-                temperature=0.3,
-                seed_text=input("USER: "),
-                seed_weight=0.3
+                max_length=250,  # Reduced for better output
+                temperature=0.8,  # Increased for more variety
+                seed_text=seed_text,
+                seed_weight=0.4
             )
             
             return f"{generated_text} (conf: {overall_confidence:.2f})"
             
         except Exception as e:
-            print(f"Advanced generation failed: {e}")
+            print(f"Text generation failed: {e}")
+            return f"Generation error: {str(e)}"
+
+
+
+    def run_realtime_processing(self):
+        """Run complete real-time processing from USB to text"""
+        segment_count = 0
+        
+        # Get user input once at the start
+        user_input = input("Enter text to influence frequency bands: ")
+        print(f"Using input: '{user_input}' to influence processing\n")
+        
+        try:
+            # Process real-time stream
+            for processed_signal, confidence in self.create_multiple_arrays():
+                segment_count += 1
+                
+                # Extract features with user input
+                features, uncertainties = self.extract_features_from_segment(
+                    processed_signal, confidence, user_input
+                )
+                
+                self.feature_history.append(features)
+                
+                print(f"\nSegment {segment_count}:")
+                print(f"Signal length: {len(processed_signal)}")
+                print(f"Confidence: {confidence:.3f}")
+                print(f"User input influence: {user_input}")
+                print(f"Features: {features[:5]}...")  # Show first 5 features
+                
+                # Generate text based on features - PASS user_input parameter
+                generated_text = self._generate_complete_text(features, uncertainties, confidence, user_input)
+                print(f"Generated: {generated_text}")
+                print("-" * 60)
+                
+                # Add small delay to make output readable
+                time.sleep(0.5)
+                
+        except KeyboardInterrupt:
+            print("\nStopping processing...")
     
     def _features_to_bigram_vector(self, features: np.ndarray) -> np.ndarray:
-        """Convert features to a bigram-space vector"""
-        # This is a simplified mapping - expand the feature vector to match bigram vocabulary size
+        """Convert features to a bigram-space vector with better numerical stability"""
         vocab_size = self.bigram_processor.vocab_size
         
         if vocab_size == 0:
-            return np.random.random(10)
+            print("Warning: No vocabulary built, using small random vector")
+            return np.random.normal(0, 0.1, 10)
         
-        # Create a pseudo-bigram vector by repeating and transforming features
+        # Clean input features
+        features = np.nan_to_num(features, nan=0.0, posinf=1.0, neginf=-1.0)
+        
+        if len(features) == 0:
+            return np.random.normal(0, 0.1, vocab_size)
+        
+        # Normalize features to prevent extreme values
+        feature_std = np.std(features)
+        if feature_std > 0:
+            features = features / feature_std
+        
+        # Create expanded vector
         expanded_features = np.tile(features, (vocab_size // len(features)) + 1)[:vocab_size]
         
-        # Add some controlled randomness based on features
-        noise_scale = np.mean(np.abs(features)) * 0.1
+        # Add controlled noise
+        noise_scale = min(0.5, max(0.01, np.mean(np.abs(features)) * 0.1))
         noise = np.random.normal(0, noise_scale, vocab_size)
         
-        return expanded_features + noise
+        result = expanded_features + noise
+        
+        # Clip to reasonable range for softmax stability
+        result = np.clip(result, -5, 5)
+        
+        return result
+
     
 def main():
     """Main function to demonstrate neural processing"""
