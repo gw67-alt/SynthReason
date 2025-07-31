@@ -293,14 +293,17 @@ class NeuronAwareTextProcessor:
     
     def words_to_neural_features(self, words, max_words=50):
         features = []
-        for i, word in enumerate(words[:max_words]):
+        with open("test.txt", 'r', encoding='utf-8') as f:
+            content = ' '.join(f.read().split("the"))
+        for i, word in enumerate(content[:max_words]):
             word_idx = self.word_to_idx.get(word, 0)
             instruction_ratios = [
-                1+word_idx / 1+self.word_to_idx[instruction]
-                for instruction in ["the"]*word_idx
+                self.word_to_idx.get(content.split()[0], 0),
+                self.word_to_idx.get(content.split()[-1], 0)
+                
             ]
             feature_vector = [
-                word_idx / len(self.word_to_idx),
+                word_idx,
                 *instruction_ratios
             ]
             while len(feature_vector) < self.num_neurons:
