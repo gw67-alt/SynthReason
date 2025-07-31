@@ -293,7 +293,7 @@ class NeuronAwareTextProcessor:
     
     def words_to_neural_features(self, words, max_words=50):
         features = []
-        with open("test.txt", 'r', encoding='utf-8') as f:
+        with open("xab", 'r', encoding='utf-8') as f:
             content = ' '.join(f.read().split("the"))
         for i, word in enumerate(content[:max_words]):
             word_idx = self.word_to_idx.get(word, 0)
