@@ -613,6 +613,10 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
         
         return ' '.join(generated_words)
 
+import torch
+import torch.nn as nn
+from sklearn.preprocessing import StandardScaler
+
 def process_user_input_through_snn(filename, user_input, text_processor, snn_model, num_steps=10):
     """Process user input through the SNN to generate contextual neural states"""
     
@@ -628,15 +632,37 @@ def process_user_input_through_snn(filename, user_input, text_processor, snn_mod
     # Scale features
     scaler = StandardScaler()
     features_scaled = scaler.fit_transform(user_features)
+    
+    # Convert to tensor and reshape for 1D operations
     features_tensor = torch.FloatTensor(features_scaled)
     
-    # Generate spikes with user input bias
-    spike_data = spikegen.rate(features_tensor, num_steps=num_steps)
+    # Reshape for MaxPool1d compatibility (batch_size, channels, width)
+    # Assuming features_scaled is (num_samples, num_features)
+    if features_tensor.dim() == 2:
+        features_tensor = features_tensor.unsqueeze(1)  # Add channel dimension
+    
+    # Create MaxPool1d and MaxUnpool1d layers
+    pool = nn.MaxPool1d(kernel_size=2, stride=2, return_indices=True)
+    unpool = nn.MaxUnpool1d(kernel_size=2, stride=2)
+    
+    # Apply pooling to get pooled output and indices
+    pooled_output, indices = pool(features_tensor)
+    
+    # Apply unpooling using the indices from pooling
+    unpooled_features = unpool(pooled_output, indices)
+    
+    # If needed, reshape back for spike generation
+    if unpooled_features.dim() == 3 and unpooled_features.size(1) == 1:
+        unpooled_features = unpooled_features.squeeze(1)  # Remove channel dimension
+    
+    # Generate spikes with processed features
+    spike_data = spikegen.rate(unpooled_features, num_steps=num_steps)
     
     # Process through SNN
     spk_rec, mem_rec, poly_mem_rec, mode_rec = run_polymorphic_snn(spike_data, snn_model)
     
-    return spk_rec, mem_rec, poly_mem_rec, mode_rec
+    return spk_rec, mem_rec, indices, mode_rec
+
 
 def analyze_moderation_impact(regular_text, moderated_text):
     """Analyze the impact of FGCN moderation on text quality."""
