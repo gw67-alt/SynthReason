@@ -727,8 +727,9 @@ def main_with_user_context_awareness():
         contextual_text = context_generator.generate_contextual_text(
             user_input, spk_rec, mem_rec, length=500
         )
+        print()
         print("AI:", contextual_text)
-      
+        
 
 if __name__ == "__main__":
     main_with_user_context_awareness()
