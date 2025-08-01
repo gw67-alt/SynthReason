@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from collections import defaultdict, Counter
 import random
 
-KB_LEN = 9999
+KB_LEN = -1
 
 class PolymorphicNeuron(nn.Module):
     """A neuron that can switch between different behavioral modes."""
@@ -221,7 +221,7 @@ class NeuronAwareTextProcessor:
     
     def load_and_process_text(self, file_path="test.txt"):
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(input("Filename: "), 'r', encoding='utf-8') as f:
                 content = ' '.join(f.read().split()[:KB_LEN])
                 print(f"Loaded {len(content)} characters from {file_path}")
         except FileNotFoundError:
