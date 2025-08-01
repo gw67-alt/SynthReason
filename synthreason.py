@@ -755,7 +755,7 @@ def main_with_user_context_awareness():
         
         # Generate contextual response
         contextual_text = context_generator.generate_contextual_text(
-            user_input, spk_rec, mem_rec, length=100
+            user_input, spk_rec, mem_rec, length=500
         )
         
         # Analysis
