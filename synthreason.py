@@ -699,7 +699,7 @@ def main_with_user_context_awareness():
     print("="*60)
     print("This system processes your input through a spiking neural network")
     print("and generates contextually relevant text based on neural patterns.")
-    print("Enter text to generate responses, or 'quit' to exit.")
+    print("Enter text to generate responses.")
     print("="*60)
     filename = input("Enter dataset filename: ")
     while True:
