@@ -221,7 +221,7 @@ class NeuronAwareTextProcessor:
     
     def load_and_process_text(self, file_path="test.txt"):
         try:
-            with open(input("Filename: "), 'r', encoding='utf-8') as f:
+            with open(file_path, 'r', encoding='utf-8') as f:
                 content = ' '.join(f.read().split()[:KB_LEN])
                 print(f"Loaded {len(content)} characters from {file_path}")
         except FileNotFoundError:
@@ -639,11 +639,11 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
         
         return ' '.join(generated_words)
 
-def process_user_input_through_snn(user_input, text_processor, snn_model, num_steps=10):
+def process_user_input_through_snn(filename, user_input, text_processor, snn_model, num_steps=10):
     """Process user input through the SNN to generate contextual neural states"""
     
     # Load base text data
-    words = text_processor.load_and_process_text()
+    words = text_processor.load_and_process_text(filename)
     
     # Generate features specifically for user input
     user_features = text_processor.words_to_neural_features(
@@ -727,7 +727,7 @@ def main_with_user_context_awareness():
     print("and generates contextually relevant text based on neural patterns.")
     print("Enter text to generate responses, or 'quit' to exit.")
     print("="*60)
-    
+    filename = input("Enter dataset filename: ")
     while True:
         user_input = input("\nEnter your text (or 'quit'): ").strip()
         if user_input.lower() == 'quit':
@@ -742,7 +742,7 @@ def main_with_user_context_awareness():
         print("="*40)
         
         # Process user input through SNN
-        spk_rec, mem_rec, poly_mem_rec, mode_rec = process_user_input_through_snn(
+        spk_rec, mem_rec, poly_mem_rec, mode_rec = process_user_input_through_snn(filename,
             user_input, text_processor, snn_model, num_steps
         )
         
