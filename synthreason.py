@@ -703,7 +703,7 @@ def main_with_user_context_awareness():
     print("="*60)
     filename = input("Enter dataset filename: ")
     while True:
-        user_input = input("\nEnter your text (or 'quit'): ").strip()
+        user_input = input("\nUSER: ").strip()
         if not user_input:
             print("Please enter some text.")
             continue
