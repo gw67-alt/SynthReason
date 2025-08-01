@@ -122,32 +122,6 @@ def run_polymorphic_snn(spike_data, snn_model):
     mem_rec = torch.stack(mem_rec)
     return spk_rec, mem_rec, poly_mem_rec, mode_rec
 
-def analyze_polymorphic_behavior(mode_rec, poly_mem_rec):
-    if not mode_rec or not mode_rec[0]:
-        return {}
-    mode_arrays = []
-    for step_modes in mode_rec:
-        if step_modes:
-            step_tensors = []
-            for mode_tensor in step_modes:
-                if len(mode_tensor.shape) == 2:
-                    step_tensors.append(mode_tensor.squeeze())
-                else:
-                    step_tensors.append(mode_tensor)
-            if step_tensors:
-                step_array = torch.stack(step_tensors).detach().cpu().numpy()
-                mode_arrays.append(step_array)
-    if not mode_arrays:
-        return {}
-    mode_evolution = np.array(mode_arrays)
-    analysis = {
-        'mode_stability': np.std(mode_evolution, axis=0),
-        'dominant_modes': np.argmax(np.mean(mode_evolution, axis=0), axis=1),
-        'mode_switching_frequency': np.sum(np.diff(np.argmax(mode_evolution, axis=2), axis=0) != 0, axis=0),
-        'average_mode_distribution': np.mean(mode_evolution, axis=0)
-    }
-    return analysis
-
 def create_neuron_aligned_graph(spk_rec, mem_rec):
     print(f"Creating graph from spk_rec: {spk_rec.shape}, mem_rec: {mem_rec.shape}")
     min_steps = min(spk_rec.shape[0], mem_rec.shape[0])
@@ -730,10 +704,6 @@ def main_with_user_context_awareness():
     filename = input("Enter dataset filename: ")
     while True:
         user_input = input("\nEnter your text (or 'quit'): ").strip()
-        if user_input.lower() == 'quit':
-            print("Goodbye!")
-            break
-            
         if not user_input:
             print("Please enter some text.")
             continue
@@ -757,34 +727,8 @@ def main_with_user_context_awareness():
         contextual_text = context_generator.generate_contextual_text(
             user_input, spk_rec, mem_rec, length=500
         )
-        
-        # Analysis
-        poly_analysis = analyze_polymorphic_behavior(mode_rec, poly_mem_rec)
-        
-        print("NEURAL RESPONSE:")
-        print("-" * 40)
-        print(contextual_text)
-        print("-" * 40)
-        
-        # Show neural activity summary
-        total_spikes = spk_rec.sum().item()
-        avg_activity = spk_rec.mean().item()
-        
-        print(f"\nNeural Activity Summary:")
-        print(f"Total Spikes: {total_spikes:.2f}")
-        print(f"Average Activity: {avg_activity:.4f}")
-        
-        if poly_analysis:
-            avg_switches = np.mean(poly_analysis.get('mode_switching_frequency', [0]))
-            print(f"Avg Mode Switches: {avg_switches:.2f}")
-        
-        # Show transition features statistics
-        print(f"\nTransition Features Analysis:")
-        print(f"Vocab Size: {len(text_processor.word_to_idx)}")
-        print(f"Bigram Count: {len(text_processor.bigram_counts)}")
-        if text_processor.transition_matrix is not None:
-            print(f"Transition Matrix Shape: {text_processor.transition_matrix.shape}")
-            print(f"Non-zero Transitions: {np.count_nonzero(text_processor.transition_matrix)}")
+        print("AI:", contextual_text)
+      
 
 if __name__ == "__main__":
     main_with_user_context_awareness()
