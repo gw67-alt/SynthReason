@@ -10,8 +10,8 @@ from torch_geometric.nn import GCNConv
 import matplotlib.pyplot as plt
 from collections import defaultdict, Counter
 import random
-instruction_template = "this is a test sentence"
-KB_LEN = -1
+
+KB_LEN = 9999
 
 class PolymorphicNeuron(nn.Module):
     """A neuron that can switch between different behavioral modes."""
@@ -209,63 +209,6 @@ def neuron_to_image_mapping(node_features, target_size=8):
     print(f"Image value range: [{img_data.min():.3f}, {img_data.max():.3f}]")
     return img_data
 
-def generate_polymorphic_visualization(spk_rec, mem_rec, mode_rec, poly_analysis, img_size=8):
-    print("="*50)
-    print("GENERATING POLYMORPHIC SNN VISUALIZATION")
-    print("="*50)
-    data = create_neuron_aligned_graph(spk_rec, mem_rec)
-    model = DataAwareFGCN(data.x.shape[1])
-    with torch.no_grad():
-        node_feats = model(data)
-    img = neuron_to_image_mapping(node_feats, target_size=img_size)
-    fig, axes = plt.subplots(3, 2, figsize=(15, 18))
-    im1 = axes[0, 0].imshow(img, cmap='viridis', interpolation='nearest')
-    axes[0, 0].set_title('Neural Activity Heatmap')
-    axes[0, 0].axis('off')
-    plt.colorbar(im1, ax=axes[0, 0])
-    spike_activity = spk_rec.sum(dim=1).detach().cpu().numpy()
-    axes[0, 1].plot(spike_activity)
-    axes[0, 1].set_title('Total Spike Activity Over Time')
-    axes[0, 1].set_xlabel('Time Step')
-    axes[0, 1].set_ylabel('Total Spikes')
-    if poly_analysis and 'average_mode_distribution' in poly_analysis:
-        mode_dist = poly_analysis['average_mode_distribution']
-        im2 = axes[1, 0].imshow(mode_dist.T, cmap='plasma', aspect='auto')
-        axes[1, 0].set_title('Polymorphic Mode Distribution')
-        axes[1, 0].set_xlabel('Neuron Index')
-        axes[1, 0].set_ylabel('Mode Type')
-        plt.colorbar(im2, ax=axes[1, 0])
-    else:
-        axes[1, 0].text(0.5, 0.5, 'No Polymorphic Data', ha='center', va='center')
-        axes[1, 0].set_title('Polymorphic Mode Distribution')
-    if poly_analysis and 'mode_switching_frequency' in poly_analysis:
-        switching_freq = poly_analysis['mode_switching_frequency']
-        axes[1, 1].bar(range(len(switching_freq)), switching_freq)
-        axes[1, 1].set_title('Mode Switching Frequency')
-        axes[1, 1].set_xlabel('Polymorphic Neuron Index')
-        axes[1, 1].set_ylabel('Switches')
-    else:
-        axes[1, 1].text(0.5, 0.5, 'No Switching Data', ha='center', va='center')
-        axes[1, 1].set_title('Mode Switching Frequency')
-    neuron_activities = spk_rec.sum(dim=0).detach().cpu().numpy()
-    axes[2, 0].bar(range(len(neuron_activities)), neuron_activities)
-    axes[2, 0].set_title('Individual Neuron Activity')
-    axes[2, 0].set_xlabel('Neuron Index')
-    axes[2, 0].set_ylabel('Total Spikes')
-    if poly_analysis and 'mode_stability' in poly_analysis:
-        stability = poly_analysis['mode_stability']
-        im3 = axes[2, 1].imshow(stability.T, cmap='coolwarm', aspect='auto')
-        axes[2, 1].set_title('Mode Stability (Lower = More Stable)')
-        axes[2, 1].set_xlabel('Neuron Index')
-        axes[2, 1].set_ylabel('Mode Type')
-        plt.colorbar(im3, ax=axes[2, 1])
-    else:
-        axes[2, 1].text(0.5, 0.5, 'No Stability Data', ha='center', va='center')
-        axes[2, 1].set_title('Mode Stability')
-    plt.tight_layout()
-    plt.show()
-    return img
-
 class NeuronAwareTextProcessor:
     def __init__(self, num_neurons=16):
         self.num_neurons = num_neurons
@@ -273,6 +216,8 @@ class NeuronAwareTextProcessor:
         self.word_to_idx = {}
         self.idx_to_word = {}
         self.bigram_counts = Counter()
+        self.transition_matrix = None
+        self.transition_probs = None
     
     def load_and_process_text(self, file_path="test.txt"):
         try:
@@ -289,27 +234,153 @@ class NeuronAwareTextProcessor:
         self.idx_to_word = {idx: word for word, idx in self.word_to_idx.items()}
         for i in range(len(words) - 1):
             self.bigram_counts[(words[i], words[i+1])] += 1
+        # Initialize transition matrix features
+        self.create_transition_matrix_features()
         return words
     
-    def words_to_neural_features(self, words, max_words=50):
+    def create_transition_matrix_features(self):
+        """Create a transition matrix and extract statistical features"""
+        vocab_size = len(self.word_to_idx)
+        self.transition_matrix = np.zeros((vocab_size, vocab_size))
+        
+        # Fill transition matrix
+        for (w1, w2), count in self.bigram_counts.items():
+            if w1 in self.word_to_idx and w2 in self.word_to_idx:
+                i, j = self.word_to_idx[w1], self.word_to_idx[w2]
+                self.transition_matrix[i, j] = count
+        
+        # Normalize rows to get probabilities
+        row_sums = self.transition_matrix.sum(axis=1, keepdims=True)
+        self.transition_probs = np.divide(self.transition_matrix, row_sums, 
+                                        out=np.zeros_like(self.transition_matrix), 
+                                        where=row_sums!=0)
+    
+    def get_transition_features(self, word):
+        """Extract transition-based features for a word"""
         features = []
-        with open("xab", 'r', encoding='utf-8') as f:
-            content = ' '.join(f.read().split("the"))
-        for i, word in enumerate(content[:max_words]):
+        word_idx = self.word_to_idx.get(word, 0)
+        
+        if self.transition_probs is not None:
+            # Outgoing transition features
+            out_transitions = self.transition_probs[word_idx]
+            
+            # Number of possible next words
+            transition_diversity = np.sum(out_transitions > 0)
+            features.append(transition_diversity)
+            
+            # Maximum transition probability
+            max_prob = np.max(out_transitions)
+            features.append(max_prob)
+            
+            # Entropy of transitions
+            probs = out_transitions[out_transitions > 0]
+            if len(probs) > 0:
+                entropy = -np.sum(probs * np.log2(probs + 1e-8))
+            else:
+                entropy = 0
+            features.append(entropy)
+            
+            # Incoming transitions (how often other words lead to this word)
+            in_transitions = self.transition_probs[:, word_idx]
+            in_degree = np.sum(in_transitions > 0)
+            features.append(in_degree)
+            
+            # Centrality measure (sum of incoming probabilities)
+            centrality = np.sum(in_transitions)
+            features.append(centrality)
+        else:
+            # Default features if transition matrix not available
+            features.extend([0, 0, 0, 0, 0])
+        
+        return features
+    
+    def get_semantic_similarity(self, word, user_input):
+        """Simple semantic similarity based on shared characters and context"""
+        if not user_input:
+            return 0.5
+        
+        user_words = user_input.lower().split()
+        max_similarity = 0.0
+        
+        for user_word in user_words:
+            # Character overlap similarity
+            common_chars = set(word.lower()) & set(user_word.lower())
+            similarity = len(common_chars) / max(len(word), len(user_word)) if max(len(word), len(user_word)) > 0 else 0
+            max_similarity = max(max_similarity, similarity)
+        
+        return max_similarity
+    
+    def get_context_features(self, word, prev_word=None, next_word=None):
+        """Get contextual features based on bigrams"""
+        features = []
+        
+        # Previous word context
+        if prev_word:
+            prev_bigram_count = self.bigram_counts.get((prev_word, word), 0)
+            features.append(prev_bigram_count)
+        else:
+            features.append(0)
+        
+        # Next word context
+        if next_word:
+            next_bigram_count = self.bigram_counts.get((word, next_word), 0)
+            features.append(next_bigram_count)
+        else:
+            features.append(0)
+        
+        return features
+    
+    def words_to_neural_features(self, words, user_input=None, max_words=50):
+        features = []
+        
+        # If user input is provided, prioritize it
+        if user_input:
+            user_words = user_input.lower().split()
+            combined_words = user_words + words[:max(0, max_words-len(user_words))]
+        else:
+            combined_words = words[:max_words]
+        
+        for i, word in enumerate(combined_words):
             word_idx = self.word_to_idx.get(word, 0)
-            instruction_ratios = [
-                self.word_to_idx.get(content.split()[0], 0),
-                self.word_to_idx.get(content.split()[-1], 0)
-                
-            ]
-            feature_vector = [
-                word_idx,
-                *instruction_ratios
-            ]
+            
+            # Start with transition-based features
+            feature_vector = self.get_transition_features(word)
+            
+            # Add context features
+            prev_word = combined_words[i-1] if i > 0 else None
+            next_word = combined_words[i+1] if i < len(combined_words)-1 else None
+            context_features = self.get_context_features(word, prev_word, next_word)
+            feature_vector.extend(context_features)
+            
+            # Create context-aware features based on user input
+            if user_input and i < len(user_input.split()):
+                # Higher weight for user input words
+                context_weight = 2.0
+                position_weight = 1.0 - (i / len(user_input.split())) if len(user_input.split()) > 0 else 1.0
+            else:
+                context_weight = 1.0
+                position_weight = 0.5
+            
+            # Apply weights to existing features
+            feature_vector = [f * context_weight * position_weight for f in feature_vector]
+            
+            # Add word embedding-like features
+            feature_vector.append(word_idx / len(self.word_to_idx))  # Normalized word index
+            feature_vector.append(len(word) / 20.0)  # Normalized word length
+            
+            # Add semantic similarity to user input
+            if user_input:
+                similarity = self.get_semantic_similarity(word, user_input)
+                feature_vector.append(similarity)
+            else:
+                feature_vector.append(0.0)
+            
+            # Pad or truncate to match neuron count
             while len(feature_vector) < self.num_neurons:
                 feature_vector.append(np.sin(len(feature_vector) * word_idx / 10.0))
             feature_vector = feature_vector[:self.num_neurons]
             features.append(feature_vector)
+        
         return np.array(features)
 
 class TextGenerator:
@@ -332,8 +403,12 @@ class TextGenerator:
         candidates = []
         for word in seed_words:
             if word in self.transitions:
-                candidates.extend(*[self.transitions[word]])
+                candidates.extend(self.transitions[word])
         return candidates if candidates else []
+    
+    def extract_graph_features(self, spk_rec, mem_rec):
+        """Placeholder for graph features extraction."""
+        return None
     
     def generate_text_from_neural_output(self, spk_rec, mem_rec, seed_word: str = None, length: int = 50) -> str:
         """Generate text with FGCN-based moderation."""
@@ -365,7 +440,7 @@ class TextGenerator:
                 candidates = self.transitions.get(current_word, [])
             
             if not candidates:
-                current_word = random.choice(list(candidates))
+                current_word = random.choice(list(self.transitions.keys()))
                 generated_words.append(current_word)
                 continue
             
@@ -392,7 +467,10 @@ class TextGenerator:
             current_word = next_word
         
         return ' '.join(generated_words)
-
+    
+    def moderate_candidate_selection(self, candidates, graph_features, position):
+        """Default moderation - can be overridden by subclasses."""
+        return candidates
 
 class FGCNModeratedTextGenerator(TextGenerator):
     def __init__(self, text_processor: NeuronAwareTextProcessor, fgcn_model=None):
@@ -458,6 +536,134 @@ class FGCNModeratedTextGenerator(TextGenerator):
                 
         return moderated_candidates if moderated_candidates else candidates
 
+class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
+    def __init__(self, text_processor: NeuronAwareTextProcessor, fgcn_model=None):
+        super().__init__(text_processor, fgcn_model)
+        self.user_context_weight = 0.7
+        
+    def find_best_starting_word(self, user_words):
+        """Find the best starting word based on user input."""
+        if not user_words:
+            return random.choice(list(self.transitions.keys()))
+        
+        # Try to find user words in transitions
+        for word in reversed(user_words):  # Start with last word
+            if word in self.transitions:
+                return word
+        
+        # If no exact match, find similar words
+        best_word = None
+        best_similarity = 0
+        
+        for word in user_words:
+            for transition_word in self.transitions.keys():
+                similarity = self.text_processor.get_semantic_similarity(word, transition_word)
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_word = transition_word
+        
+        return best_word if best_word else random.choice(list(self.transitions.keys()))
+    
+    def get_contextual_candidates(self, current_word, user_words, context_strength):
+        """Get candidates with user context bias."""
+        candidates = self.transitions.get(current_word, [])
+        
+        if not user_words or context_strength < 0.1:
+            return candidates
+        
+        # Boost candidates that are similar to user words
+        contextual_candidates = []
+        for word, weight in candidates:
+            context_boost = 1.0
+            
+            # Check similarity to user words
+            for user_word in user_words:
+                similarity = self.text_processor.get_semantic_similarity(word, user_word)
+                if similarity > 0.3:  # Threshold for similarity
+                    context_boost += similarity * context_strength
+            
+            contextual_candidates.append((word, weight * context_boost))
+        
+        return contextual_candidates if contextual_candidates else candidates
+    
+    def generate_contextual_text(self, user_input, spk_rec, mem_rec, length=50):
+        """Generate text that's contextually aware of user input"""
+        
+        if not user_input.strip():
+            return self.generate_text_from_neural_output(spk_rec, mem_rec, length=length)
+        
+        user_words = user_input.lower().split()
+        graph_features = self.extract_graph_features(spk_rec, mem_rec)
+        
+        # Start with user's last word or a contextually relevant word
+        current_word = self.find_best_starting_word(user_words)
+        generated_words = [current_word]
+        
+        # Track user context throughout generation
+        user_context_strength = 1.0
+        context_decay = 0.95
+        
+        for i in range(length - 1):
+            neural_idx = i % len(spk_rec.mean(dim=1))
+            neural_influence = spk_rec.mean(dim=1)[neural_idx].item()
+            
+            # Get candidates with user context bias
+            candidates = self.get_contextual_candidates(
+                current_word, user_words, user_context_strength
+            )
+            
+            if graph_features:
+                candidates = self.moderate_candidate_selection(
+                    candidates, graph_features, i
+                )
+            
+            if not candidates:
+                current_word = random.choice(list(self.transitions.keys()))
+                generated_words.append(current_word)
+                continue
+            
+            words, weights = zip(*candidates)
+            weights = np.array(weights, dtype=float)
+            
+            # Apply neural influence and user context
+            neural_weight = max(0.1, neural_influence * (1 + user_context_strength))
+            weights = weights * neural_weight
+            weights = weights / weights.sum() if weights.sum() > 0 else np.ones_like(weights) / len(weights)
+            
+            next_word = np.random.choice(words, p=weights)
+            generated_words.append(next_word)
+            current_word = next_word
+            
+            # Decay user context over time
+            user_context_strength *= context_decay
+        
+        return ' '.join(generated_words)
+
+def process_user_input_through_snn(user_input, text_processor, snn_model, num_steps=10):
+    """Process user input through the SNN to generate contextual neural states"""
+    
+    # Load base text data
+    words = text_processor.load_and_process_text()
+    
+    # Generate features specifically for user input
+    user_features = text_processor.words_to_neural_features(
+        words, 
+        user_input=user_input
+    )
+    
+    # Scale features
+    scaler = StandardScaler()
+    features_scaled = scaler.fit_transform(user_features)
+    features_tensor = torch.FloatTensor(features_scaled)
+    
+    # Generate spikes with user input bias
+    spike_data = spikegen.rate(features_tensor, num_steps=num_steps)
+    
+    # Process through SNN
+    spk_rec, mem_rec, poly_mem_rec, mode_rec = run_polymorphic_snn(spike_data, snn_model)
+    
+    return spk_rec, mem_rec, poly_mem_rec, mode_rec
+
 def analyze_moderation_impact(regular_text, moderated_text):
     """Analyze the impact of FGCN moderation on text quality."""
     regular_words = regular_text.split()
@@ -502,80 +708,83 @@ def visualize_moderation_effects(spk_rec, mem_rec, fgcn_model):
     
     return coherence_signal, stability_signal
 
-def main_with_fgcn_moderation():
+def main_with_user_context_awareness():
     num_neurons = 256
     num_polymorphic = 64
     num_steps = 10
     img_size = 8
     
-    print(f"Initializing with {num_neurons} neurons ({num_polymorphic} polymorphic)")
+    print(f"Initializing User-Context-Aware Polymorphic SNN with {num_neurons} neurons ({num_polymorphic} polymorphic)")
     
     # Initialize components
     text_processor = NeuronAwareTextProcessor(num_neurons)
-    words = text_processor.load_and_process_text()
-    features = text_processor.words_to_neural_features(words)
-    
-    print(f"Feature matrix shape: {features.shape}")
-    assert features.shape[1] == num_neurons, f"Feature count {features.shape[1]} != neuron count {num_neurons}"
-    
-    # Process neural data
-    scaler = StandardScaler()
-    features_scaled = scaler.fit_transform(features)
-    features_tensor = torch.FloatTensor(features_scaled)
-    spike_data = spikegen.rate(features_tensor, num_steps=num_steps)
-    
-    print(f"Spike data shape: {spike_data.shape}")
-    
-    # Run SNN
     snn_model = PolymorphicSNN(num_neurons, num_polymorphic)
-    spk_rec, mem_rec, poly_mem_rec, mode_rec = run_polymorphic_snn(spike_data, snn_model)
     
-    # Initialize FGCN model
-    data = create_neuron_aligned_graph(spk_rec, mem_rec)
-    fgcn_model = DataAwareFGCN(data.x.shape[1])
-    
-    # Create moderated text generator
-    moderated_generator = FGCNModeratedTextGenerator(text_processor, fgcn_model)
-    
-    # Analysis and visualization
-    poly_analysis = analyze_polymorphic_behavior(mode_rec, poly_mem_rec)
-    img = generate_polymorphic_visualization(spk_rec, mem_rec, mode_rec, poly_analysis, img_size=img_size)
-    
-    print("="*50)
-    print("POLYMORPHIC SNN ANALYSIS COMPLETE")
-    print("="*50)
-    print(f"Successfully processed {num_neurons} neurons ({num_polymorphic} polymorphic)")
-    print(f"Spike activity range: {spk_rec.min().item():.3f} to {spk_rec.max().item():.3f}")
-    if poly_analysis:
-        print(f"Average mode switches per neuron: {np.mean(poly_analysis.get('mode_switching_frequency', [0])):.2f}")
-        print(f"Most stable mode: {np.argmin(np.mean(poly_analysis.get('mode_stability', [[1]]), axis=0))}")
-    
-    # Visualize moderation effects
-    coherence_signal, stability_signal = visualize_moderation_effects(spk_rec, mem_rec, fgcn_model)
-    
-    print("\n" + "="*60)
-    print("FGCN-MODERATED TEXT GENERATOR READY")
     print("="*60)
-    print("The system now uses graph neural networks to moderate text generation.")
-    print("Enter a seed word(s) to generate text, or 'quit' to exit.")
+    print("USER-CONTEXT-AWARE POLYMORPHIC SNN TEXT GENERATOR")
+    print("="*60)
+    print("This system processes your input through a spiking neural network")
+    print("and generates contextually relevant text based on neural patterns.")
+    print("Enter text to generate responses, or 'quit' to exit.")
     print("="*60)
     
     while True:
-        user_input = input("\nEnter seed word(s) (or 'quit'): ").strip()
+        user_input = input("\nEnter your text (or 'quit'): ").strip()
         if user_input.lower() == 'quit':
             print("Goodbye!")
             break
             
-        seed_word = user_input if user_input else None
+        if not user_input:
+            print("Please enter some text.")
+            continue
         
-        moderated_text = moderated_generator.generate_text_from_neural_output(
-    spk_rec, mem_rec, seed_word=seed_word, length=250)
+        print(f"\nProcessing input: '{user_input}'")
+        print("="*40)
         
-        print(f"\n{'='*60}")
-        print("FGCN-MODERATED GENERATION:")
-        print(f"{'='*60}")
-        print(moderated_text)
-        print(f"{'='*60}")
+        # Process user input through SNN
+        spk_rec, mem_rec, poly_mem_rec, mode_rec = process_user_input_through_snn(
+            user_input, text_processor, snn_model, num_steps
+        )
+        
+        # Initialize FGCN model
+        data = create_neuron_aligned_graph(spk_rec, mem_rec)
+        fgcn_model = DataAwareFGCN(data.x.shape[1])
+        
+        # Create user-context-aware text generator
+        context_generator = UserContextAwareTextGenerator(text_processor, fgcn_model)
+        
+        # Generate contextual response
+        contextual_text = context_generator.generate_contextual_text(
+            user_input, spk_rec, mem_rec, length=100
+        )
+        
+        # Analysis
+        poly_analysis = analyze_polymorphic_behavior(mode_rec, poly_mem_rec)
+        
+        print("NEURAL RESPONSE:")
+        print("-" * 40)
+        print(contextual_text)
+        print("-" * 40)
+        
+        # Show neural activity summary
+        total_spikes = spk_rec.sum().item()
+        avg_activity = spk_rec.mean().item()
+        
+        print(f"\nNeural Activity Summary:")
+        print(f"Total Spikes: {total_spikes:.2f}")
+        print(f"Average Activity: {avg_activity:.4f}")
+        
+        if poly_analysis:
+            avg_switches = np.mean(poly_analysis.get('mode_switching_frequency', [0]))
+            print(f"Avg Mode Switches: {avg_switches:.2f}")
+        
+        # Show transition features statistics
+        print(f"\nTransition Features Analysis:")
+        print(f"Vocab Size: {len(text_processor.word_to_idx)}")
+        print(f"Bigram Count: {len(text_processor.bigram_counts)}")
+        if text_processor.transition_matrix is not None:
+            print(f"Transition Matrix Shape: {text_processor.transition_matrix.shape}")
+            print(f"Non-zero Transitions: {np.count_nonzero(text_processor.transition_matrix)}")
 
 if __name__ == "__main__":
-    main_with_fgcn_moderation()
+    main_with_user_context_awareness()
