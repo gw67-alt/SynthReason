@@ -582,7 +582,7 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
             # Check similarity to user words
             for user_word in user_words:
                 similarity = self.text_processor.get_semantic_similarity(word, user_word)
-                if similarity > 0.3:  # Threshold for similarity
+                if similarity > 0.1:  # Threshold for similarity
                     context_boost += similarity * context_strength
             
             contextual_candidates.append((word, weight * context_boost))
