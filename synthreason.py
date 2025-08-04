@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from collections import defaultdict, Counter
 import random
 
-KB_LEN = -1
+KB_LEN = 99999
 
 class PolymorphicNeuron(nn.Module):
     """A neuron that can switch between different behavioral modes."""
@@ -275,14 +275,11 @@ class NeuronAwareTextProcessor:
         
         user_words = user_input.lower().split()
         max_similarity = 0.0
-        
+        common = 0
         for user_word in user_words:
             # Character overlap similarity
-            common_chars = set(word.lower()) & set(user_word.lower())
-            similarity = len(common_chars) / max(len(word), len(user_word)) if max(len(word), len(user_word)) > 0 else 0
-            max_similarity = max(max_similarity, similarity)
-        
-        return max_similarity
+            common += self.word_to_idx.get(user_word, 0)
+        return common
     
     def get_context_features(self, word, prev_word=None, next_word=None):
         """Get contextual features based on bigrams"""
@@ -510,10 +507,42 @@ class FGCNModeratedTextGenerator(TextGenerator):
                 
         return moderated_candidates if moderated_candidates else candidates
 
+# New class added for Subjective Ontology Equation integration
+class SubjectiveOntologyProcessor:
+    """
+    Implements the subjective ontology equation: S_O = f(P, C, E)
+    - P: Personal Perception (e.g., user input features)
+    - C: Cultural Context (e.g., bigram-based features)
+    - E: Environmental Factors (e.g., neural spike means)
+    - f: A simple linear combination (can be customized)
+    """
+    def __init__(self, text_processor):
+        self.text_processor = text_processor
+    
+    def compute_so_score(self, word, user_input, spk_rec, weights=(0.4, 0.3, 0.3)):
+        """
+        Computes a subjective ontology score for a word.
+        - weights: Tuple for (P, C, E) importance.
+        """
+        # P: Personal Perception (semantic similarity to user input)
+        p = self.text_processor.get_semantic_similarity(word, user_input)
+        
+        # C: Cultural Context (transition diversity from text processor)
+        transition_features = self.text_processor.get_transition_features(word)
+        c = np.mean(transition_features) if transition_features else 0.0
+        
+        # E: Environmental Factors (mean spike influence)
+        e = spk_rec.mean().item() if spk_rec.numel() > 0 else 0.0
+        
+        # f: Linear combination
+        s_o = weights[0] * p + weights[1] * c + weights[2] * e
+        return max(0.1, s_o)  # Ensure minimum positive score
+
 class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
     def __init__(self, text_processor: NeuronAwareTextProcessor, fgcn_model=None):
         super().__init__(text_processor, fgcn_model)
         self.user_context_weight = 0.7
+        self.so_processor = SubjectiveOntologyProcessor(text_processor)  # Added SubjectiveOntologyProcessor
         
     def find_best_starting_word(self, user_words):
         """Find the best starting word based on user input."""
@@ -596,7 +625,14 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
                 generated_words.append(current_word)
                 continue
             
-            words, weights = zip(*candidates)
+            # Apply subjective ontology weighting
+            so_weighted_candidates = []
+            for word, weight in candidates:
+                so_score = self.so_processor.compute_so_score(word, user_input, spk_rec)
+                adjusted_weight = weight * so_score
+                so_weighted_candidates.append((word, adjusted_weight))
+            
+            words, weights = zip(*so_weighted_candidates)
             weights = np.array(weights, dtype=float)
             
             # Apply neural influence and user context
@@ -661,7 +697,7 @@ def process_user_input_through_snn(filename, user_input, text_processor, snn_mod
     # Process through SNN
     spk_rec, mem_rec, poly_mem_rec, mode_rec = run_polymorphic_snn(spike_data, snn_model)
     
-    return spk_rec, mem_rec, indices, mode_rec
+    return spk_rec, mem_rec, poly_mem_rec, mode_rec
 
 
 def analyze_moderation_impact(regular_text, moderated_text):
