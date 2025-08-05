@@ -384,7 +384,7 @@ class TextGenerator:
             )
             
             words, weights = zip(*moderated_candidates)
-            weights = np.array(weights, dtype=float)
+            weights = np.array(neural_influence, dtype=float)
             
             if graph_features is not None:
                 coherence_idx = i % len(graph_features['coherence'])
