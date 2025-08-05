@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from collections import defaultdict, Counter
 import random
 
-KB_LEN = 1999
+KB_LEN = 99999
 
 class SimpleSNN(nn.Module):
     """Simplified SNN with only regular leaky neurons."""
@@ -202,7 +202,7 @@ class NeuronAwareTextProcessor:
         
         if self.transition_probs is not None:
             # Outgoing transition features
-            out_transitions = np.sqrt(self.transition_probs)
+            out_transitions = self.transition_probs[word_idx]
             
             # Number of possible next words
             transition_diversity = np.sum(out_transitions > 0)
@@ -227,7 +227,7 @@ class NeuronAwareTextProcessor:
             
             # Centrality measure
             centrality = np.sum(in_transitions)
-            features.append(centrality*word_idx)
+            features.append(centrality)
         else:
             features.extend([0, 0, 0, 0, 0])
         
@@ -297,7 +297,7 @@ class NeuronAwareTextProcessor:
                 position_weight = 0.5
             
             # Apply weights to existing features
-            feature_vector = [f * context_weight * position_weight for f in feature_vector]
+            feature_vector = [f * context_weight * word_idx for f in feature_vector]
             
             # Add word embedding-like features
             feature_vector.append(word_idx / len(self.word_to_idx))
