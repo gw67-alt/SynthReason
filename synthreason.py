@@ -76,8 +76,8 @@ def create_neuron_aligned_graph(spk_rec, mem_rec):
     spk_rec_aligned = spk_rec[:min_steps]
     mem_rec_aligned = mem_rec[:min_steps]
     min_neurons = min(spk_rec_aligned.shape[1], mem_rec_aligned.shape[1])
-    spk_rec_aligned = spk_rec_aligned[:, :min_neurons]
-    mem_rec_aligned = mem_rec_aligned[:, :min_neurons]
+    spk_rec_aligned = spk_rec_aligned[min_neurons:, :min_neurons]
+    mem_rec_aligned = mem_rec_aligned[min_neurons:, :min_neurons]
     
     print(f"Aligned shapes - spk_rec: {spk_rec_aligned.shape}, mem_rec: {mem_rec_aligned.shape}")
     
@@ -123,7 +123,7 @@ class DataAwareFGCN(nn.Module):
         x = F.relu(self.gcn1(x, edge_index))
         x = F.relu(self.gcn2(x, edge_index))
         attn_weights = torch.sigmoid(self.attn(x))
-        x = x * attn_weights
+        x = x - attn_weights
         print(f"GCN output shape: {x.shape}")
         return x
 
@@ -380,7 +380,7 @@ class TextGenerator:
                 continue
             
             moderated_candidates = self.moderate_candidate_selection(
-                candidates, graph_features, neural_idx
+                candidates, graph_features, neural_gate
             )
             
             words, weights = zip(*moderated_candidates)
@@ -394,7 +394,7 @@ class TextGenerator:
                 neural_weight = max(0.1, neural_influence[neural_idx])
                 
             weights = weights * (1 + neural_weight)
-            weights = weights / weights.sum() if weights.sum() > 0 else np.ones_like(weights) / len(weights)
+            weights = weights*np.sum([ord(char) for char in generated_words]) / weights.sum() if weights.sum() > 0 else np.ones_like(weights) / len(weights)
             
             next_word = np.random.choice(words, p=weights)
             generated_words.append(next_word)
