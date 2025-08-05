@@ -11,118 +11,66 @@ import matplotlib.pyplot as plt
 from collections import defaultdict, Counter
 import random
 
-KB_LEN = 99999
+KB_LEN = 1999
 
-class PolymorphicNeuron(nn.Module):
-    """A neuron that can switch between different behavioral modes."""
-    def __init__(self, input_dim, num_modes=3):
-        super().__init__()
-        self.num_modes = num_modes
-        self.input_dim = input_dim
-        self.neuron_modes = nn.ModuleList([
-            snn.Leaky(beta=0.3, threshold=1.0, spike_grad=surrogate.fast_sigmoid()),
-            snn.Leaky(beta=0.7, threshold=0.8, spike_grad=surrogate.fast_sigmoid()),
-            snn.Leaky(beta=0.5, threshold=1.2, spike_grad=surrogate.fast_sigmoid()),
-        ])
-        self.mode_selector = nn.Sequential(
-            nn.Linear(input_dim, 16),
-            nn.ReLU(),
-            nn.Linear(16, num_modes),
-            nn.Softmax(dim=-1)
-        )
-        self.adaptation_rate = 0.1
-        self.mode_history = torch.zeros(num_modes)
-        
-    def forward(self, x, mem_states=None):
-        mode_probs = self.mode_selector(x)
-        if mem_states is None:
-            mem_states = [None] * self.num_modes
-        mode_outputs = []
-        new_mem_states = []
-        for i, neuron_mode in enumerate(self.neuron_modes):
-            if mem_states[i] is None:
-                spk, mem = neuron_mode(x)
-            else:
-                spk, mem = neuron_mode(x, mem_states[i])
-            mode_outputs.append(spk)
-            new_mem_states.append(mem)
-        mode_outputs = torch.stack(mode_outputs, dim=0)
-        if len(mode_probs.shape) == 1:
-            mode_probs = mode_probs.unsqueeze(-1)
-        final_spikes = torch.sum(mode_outputs * mode_probs, dim=0)
-        self.mode_history = self.mode_history * (1 - self.adaptation_rate) + mode_probs.squeeze() * self.adaptation_rate
-        return final_spikes, new_mem_states, mode_probs
-
-class PolymorphicSNN(nn.Module):
-    """Enhanced SNN with polymorphic capabilities."""
-    def __init__(self, num_neurons, num_polymorphic=None):
+class SimpleSNN(nn.Module):
+    """Simplified SNN with only regular leaky neurons."""
+    def __init__(self, num_neurons):
         super().__init__()
         self.num_neurons = num_neurons
-        self.num_polymorphic = num_polymorphic or num_neurons // 4
         self.input_layer = nn.Linear(num_neurons, num_neurons)
-        self.regular_neurons = snn.Leaky(
+        self.neurons = snn.Leaky(
             beta=0.5, 
             init_hidden=False, 
             spike_grad=surrogate.fast_sigmoid()
         )
-        self.polymorphic_neurons = nn.ModuleList([
-            PolymorphicNeuron(input_dim=1, num_modes=3) 
-            for _ in range(self.num_polymorphic)
-        ])
-        self.poly_connectivity = nn.Parameter(
-            torch.randn(self.num_polymorphic, num_neurons) * 0.9
-        )
         self.global_adaptation = nn.Parameter(torch.ones(1) * 0.5)
         
-    def forward(self, x, mem=None, poly_mem_states=None):
+    def forward(self, x, mem=None):
+        # Ensure input has correct shape and type
+        if x.dim() == 1:
+            x = x.unsqueeze(0)  # Add batch dimension if missing
+        
         x_processed = self.input_layer(x)
         if mem is None:
-            reg_spk, reg_mem = self.regular_neurons(x_processed)
+            spk, mem = self.neurons(x_processed)
         else:
-            reg_spk, reg_mem = self.regular_neurons(x_processed, mem)
-        poly_spikes = []
-        new_poly_mem_states = []
-        mode_distributions = []
-        if poly_mem_states is None:
-            poly_mem_states = [None] * self.num_polymorphic
-        for i, poly_neuron in enumerate(self.polymorphic_neurons):
-            neuron_input = torch.sum(reg_spk * self.poly_connectivity[i], dim=-1, keepdim=True)
-            poly_spk, poly_mem, mode_prob = poly_neuron(neuron_input, poly_mem_states[i])
-            poly_spikes.append(poly_spk)
-            new_poly_mem_states.append(poly_mem)
-            mode_distributions.append(mode_prob)
-        if poly_spikes:
-            poly_spikes_tensor = torch.stack(poly_spikes, dim=0)
-            if len(poly_spikes_tensor.shape) > 1:
-                poly_spikes_flat = poly_spikes_tensor.squeeze()
-                if len(poly_spikes_flat.shape) == 0:
-                    poly_spikes_flat = poly_spikes_flat.unsqueeze(0)
-            else:
-                poly_spikes_flat = poly_spikes_tensor
-            combined_spikes = torch.cat([reg_spk, poly_spikes_flat], dim=-1)
-        else:
-            combined_spikes = reg_spk
-        combined_spikes = combined_spikes * self.global_adaptation
-        return combined_spikes, reg_mem, new_poly_mem_states, mode_distributions
+            spk, mem = self.neurons(x_processed, mem)
+        
+        # Apply global adaptation
+        spk = spk * self.global_adaptation
+        return spk.squeeze(0), mem.squeeze(0)  # Remove batch dim for consistency
 
-def run_polymorphic_snn(spike_data, snn_model):
-    spk_rec, mem_rec, poly_mem_rec, mode_rec = [], [], [], []
+def run_simple_snn(spike_data, snn_model):
+    """Run the simplified SNN without polymorphic components."""
+    spk_rec, mem_rec = [], []
     utils.reset(snn_model)
     mem = None
-    poly_mem_states = None
+    
     for step in range(spike_data.shape[0]):
         if spike_data.shape[1] > 0:
-            input_data = spike_data[step][0]
-            spk, mem, poly_mem_states, mode_dist = snn_model(input_data, mem, poly_mem_states)
+            # Fix: Access the correct dimension based on spike_data shape
+            if spike_data.dim() == 3:  # (time_steps, batch, features)
+                input_data = spike_data[step, 0, :]  # Get first batch
+            else:  # (time_steps, features)
+                input_data = spike_data[step, :]
+                
+            spk, mem = snn_model(input_data, mem)
             spk_rec.append(spk)
             mem_rec.append(mem)
-            poly_mem_rec.append(poly_mem_states)
-            mode_rec.append(mode_dist)
-    spk_rec = torch.stack(spk_rec)
-    mem_rec = torch.stack(mem_rec)
-    return spk_rec, mem_rec, poly_mem_rec, mode_rec
+    
+    if spk_rec:
+        spk_rec = torch.stack(spk_rec)
+        mem_rec = torch.stack(mem_rec)
+    else:
+        # Handle empty case
+        spk_rec = torch.zeros(1, snn_model.num_neurons)
+        mem_rec = torch.zeros(1, snn_model.num_neurons)
+    
+    return spk_rec, mem_rec
 
 def create_neuron_aligned_graph(spk_rec, mem_rec):
+    """Create graph from spike and membrane recordings."""
     print(f"Creating graph from spk_rec: {spk_rec.shape}, mem_rec: {mem_rec.shape}")
     min_steps = min(spk_rec.shape[0], mem_rec.shape[0])
     spk_rec_aligned = spk_rec[:min_steps]
@@ -130,26 +78,38 @@ def create_neuron_aligned_graph(spk_rec, mem_rec):
     min_neurons = min(spk_rec_aligned.shape[1], mem_rec_aligned.shape[1])
     spk_rec_aligned = spk_rec_aligned[:, :min_neurons]
     mem_rec_aligned = mem_rec_aligned[:, :min_neurons]
+    
     print(f"Aligned shapes - spk_rec: {spk_rec_aligned.shape}, mem_rec: {mem_rec_aligned.shape}")
+    
+    # Create node features by concatenating spike and membrane data
     node_features = spk_rec_aligned.T
     node_features = torch.cat([node_features, mem_rec_aligned.T], dim=1)
     print(f"Node features shape: {node_features.shape}")
+    
     num_nodes = node_features.shape[0]
     print(f"Number of graph nodes: {num_nodes}")
+    
+    # Create edges (connect each node to its neighbors)
     edge_index = []
     if num_nodes > 1:
         for i in range(num_nodes):
             for j in range(i+1, min(i+4, num_nodes)):
                 edge_index.extend([[j, i], [i, j]])
+                for k in range(i+1, min(i+4, num_nodes)):
+                    edge_index.extend([[i, k], [i, j]])
+
+    
     if edge_index:
         edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
     else:
         edge_index = torch.empty((2, 0), dtype=torch.long)
+    
     print(f"Edge index shape: {edge_index.shape}")
     data = Data(x=node_features, edge_index=edge_index)
     return data
 
 class DataAwareFGCN(nn.Module):
+    """Graph Convolutional Network for neural data processing."""
     def __init__(self, in_dim, hidden_dim=64, out_dim=32):
         super().__init__()
         self.gcn1 = GCNConv(in_dim, hidden_dim)
@@ -168,14 +128,17 @@ class DataAwareFGCN(nn.Module):
         return x
 
 def neuron_to_image_mapping(node_features, target_size=8):
+    """Map neural features to image representation."""
     num_nodes, feat_dim = node_features.shape
     target_pixels = target_size * target_size
     print(f"Mapping {num_nodes} neurons to {target_pixels} pixels")
+    
     if num_nodes < target_pixels:
         repeat_factor = target_pixels // num_nodes + 1
         node_features = node_features.repeat(repeat_factor, 1)[:target_pixels]
     else:
         node_features = node_features[:target_pixels]
+    
     img_data = node_features.mean(dim=1).reshape(target_size, target_size)
     img_data = img_data.detach().cpu().numpy()
     img_data = (img_data - img_data.min()) / (img_data.max() - img_data.min() + 1e-8)
@@ -184,6 +147,7 @@ def neuron_to_image_mapping(node_features, target_size=8):
     return img_data
 
 class NeuronAwareTextProcessor:
+    """Text processor that converts text to neural-compatible features."""
     def __init__(self, num_neurons=16):
         self.num_neurons = num_neurons
         self.vocab = {}
@@ -201,19 +165,21 @@ class NeuronAwareTextProcessor:
         except FileNotFoundError:
             content = "The neural network processes information through spiking patterns. Each neuron contributes to the overall computation. Machine learning algorithms use artificial neural networks to simulate biological processes. Deep learning models can generate text by learning patterns from large datasets. Spiking neural networks offer a more biologically plausible approach to artificial intelligence."
             print("Using sample text")
+        
         words = content.lower().split()
         words = [w for w in words if w]
         unique_words = list(set(words))
         self.word_to_idx = {word: idx for idx, word in enumerate(unique_words)}
         self.idx_to_word = {idx: word for word, idx in self.word_to_idx.items()}
+        
         for i in range(len(words) - 1):
             self.bigram_counts[(words[i], words[i+1])] += 1
-        # Initialize transition matrix features
+        
         self.create_transition_matrix_features()
         return words
     
     def create_transition_matrix_features(self):
-        """Create a transition matrix and extract statistical features"""
+        """Create a transition matrix and extract statistical features."""
         vocab_size = len(self.word_to_idx)
         self.transition_matrix = np.zeros((vocab_size, vocab_size))
         
@@ -230,13 +196,13 @@ class NeuronAwareTextProcessor:
                                         where=row_sums!=0)
     
     def get_transition_features(self, word):
-        """Extract transition-based features for a word"""
+        """Extract transition-based features for a word."""
         features = []
         word_idx = self.word_to_idx.get(word, 0)
         
         if self.transition_probs is not None:
             # Outgoing transition features
-            out_transitions = self.transition_probs[word_idx]
+            out_transitions = np.sqrt(self.transition_probs)
             
             # Number of possible next words
             transition_diversity = np.sum(out_transitions > 0)
@@ -254,22 +220,21 @@ class NeuronAwareTextProcessor:
                 entropy = 0
             features.append(entropy)
             
-            # Incoming transitions (how often other words lead to this word)
+            # Incoming transitions
             in_transitions = self.transition_probs[:, word_idx]
             in_degree = np.sum(in_transitions > 0)
             features.append(in_degree)
             
-            # Centrality measure (sum of incoming probabilities)
+            # Centrality measure
             centrality = np.sum(in_transitions)
-            features.append(centrality)
+            features.append(centrality*word_idx)
         else:
-            # Default features if transition matrix not available
             features.extend([0, 0, 0, 0, 0])
         
         return features
     
     def get_semantic_similarity(self, word, user_input):
-        """Simple semantic similarity based on shared characters and context"""
+        """Simple semantic similarity based on shared characters and context."""
         if not user_input:
             return 0.5
         
@@ -277,12 +242,11 @@ class NeuronAwareTextProcessor:
         max_similarity = 0.0
         common = 0
         for user_word in user_words:
-            # Character overlap similarity
             common += self.word_to_idx.get(user_word, 0)
         return common
     
     def get_context_features(self, word, prev_word=None, next_word=None):
-        """Get contextual features based on bigrams"""
+        """Get contextual features based on bigrams."""
         features = []
         
         # Previous word context
@@ -302,6 +266,7 @@ class NeuronAwareTextProcessor:
         return features
     
     def words_to_neural_features(self, words, user_input=None, max_words=50):
+        """Convert words to neural-compatible features."""
         features = []
         
         # If user input is provided, prioritize it
@@ -325,7 +290,6 @@ class NeuronAwareTextProcessor:
             
             # Create context-aware features based on user input
             if user_input and i < len(user_input.split()):
-                # Higher weight for user input words
                 context_weight = 2.0
                 position_weight = 1.0 - (i / len(user_input.split())) if len(user_input.split()) > 0 else 1.0
             else:
@@ -336,8 +300,8 @@ class NeuronAwareTextProcessor:
             feature_vector = [f * context_weight * position_weight for f in feature_vector]
             
             # Add word embedding-like features
-            feature_vector.append(word_idx / len(self.word_to_idx))  # Normalized word index
-            feature_vector.append(len(word) / 20.0)  # Normalized word length
+            feature_vector.append(word_idx / len(self.word_to_idx))
+            feature_vector.append(len(word) / 20.0)
             
             # Add semantic similarity to user input
             if user_input:
@@ -355,6 +319,7 @@ class NeuronAwareTextProcessor:
         return np.array(features)
 
 class TextGenerator:
+    """Base text generator using neural outputs."""
     def __init__(self, text_processor: NeuronAwareTextProcessor):
         self.text_processor = text_processor
         self.transitions = defaultdict(list)
@@ -362,13 +327,13 @@ class TextGenerator:
         self.build_transitions()
     
     def build_transitions(self):
-        """Build both regular and seed-based transition probabilities."""
+        """Build transition probabilities."""
         for (w1, w2), count in self.text_processor.bigram_counts.items():
             self.transitions[w1].append((w2, count))
             self.seed_transitions[w1].append((w2, count))
     
     def get_seed_candidates(self, seed_words):
-        """Use * operator to unpack seed words and find candidates."""
+        """Find candidates based on seed words."""
         if not seed_words:
             return []
         candidates = []
@@ -382,7 +347,7 @@ class TextGenerator:
         return None
     
     def generate_text_from_neural_output(self, spk_rec, mem_rec, seed_word: str = None, length: int = 50) -> str:
-        """Generate text with FGCN-based moderation."""
+        """Generate text based on neural output."""
         if not self.transitions:
             return "No training data available for text generation."
         
@@ -399,7 +364,6 @@ class TextGenerator:
         generated_words = [current_word]
         
         for i in range(length - 1):
-            # Fix: Use modulo indexing to cycle through neural_influence
             neural_idx = i % len(neural_influence)
             neural_gate = neural_influence[neural_idx]
             
@@ -423,7 +387,6 @@ class TextGenerator:
             weights = np.array(weights, dtype=float)
             
             if graph_features is not None:
-                # Fix: Use modulo indexing for coherence_boost as well
                 coherence_idx = i % len(graph_features['coherence'])
                 coherence_boost = graph_features['coherence'][coherence_idx]
                 neural_weight = max(0.1, neural_influence[neural_idx] * (1 + coherence_boost))
@@ -444,6 +407,7 @@ class TextGenerator:
         return candidates
 
 class FGCNModeratedTextGenerator(TextGenerator):
+    """Text generator with FGCN moderation."""
     def __init__(self, text_processor: NeuronAwareTextProcessor, fgcn_model=None):
         super().__init__(text_processor)
         self.fgcn_model = fgcn_model
@@ -507,42 +471,33 @@ class FGCNModeratedTextGenerator(TextGenerator):
                 
         return moderated_candidates if moderated_candidates else candidates
 
-# New class added for Subjective Ontology Equation integration
 class SubjectiveOntologyProcessor:
-    """
-    Implements the subjective ontology equation: S_O = f(P, C, E)
-    - P: Personal Perception (e.g., user input features)
-    - C: Cultural Context (e.g., bigram-based features)
-    - E: Environmental Factors (e.g., neural spike means)
-    - f: A simple linear combination (can be customized)
-    """
+    """Implements the subjective ontology equation: S_O = f(P, C, E)"""
     def __init__(self, text_processor):
         self.text_processor = text_processor
     
     def compute_so_score(self, word, user_input, spk_rec, weights=(0.4, 0.3, 0.3)):
-        """
-        Computes a subjective ontology score for a word.
-        - weights: Tuple for (P, C, E) importance.
-        """
-        # P: Personal Perception (semantic similarity to user input)
+        """Computes a subjective ontology score for a word."""
+        # P: Personal Perception
         p = self.text_processor.get_semantic_similarity(word, user_input)
         
-        # C: Cultural Context (transition diversity from text processor)
+        # C: Cultural Context
         transition_features = self.text_processor.get_transition_features(word)
         c = np.mean(transition_features) if transition_features else 0.0
         
-        # E: Environmental Factors (mean spike influence)
+        # E: Environmental Factors
         e = spk_rec.mean().item() if spk_rec.numel() > 0 else 0.0
         
         # f: Linear combination
         s_o = weights[0] * p + weights[1] * c + weights[2] * e
-        return max(0.1, s_o)  # Ensure minimum positive score
+        return max(0.1, s_o)
 
 class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
+    """User-context-aware text generator."""
     def __init__(self, text_processor: NeuronAwareTextProcessor, fgcn_model=None):
         super().__init__(text_processor, fgcn_model)
         self.user_context_weight = 0.7
-        self.so_processor = SubjectiveOntologyProcessor(text_processor)  # Added SubjectiveOntologyProcessor
+        self.so_processor = SubjectiveOntologyProcessor(text_processor)
         
     def find_best_starting_word(self, user_words):
         """Find the best starting word based on user input."""
@@ -550,7 +505,7 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
             return random.choice(list(self.transitions.keys()))
         
         # Try to find user words in transitions
-        for word in reversed(user_words):  # Start with last word
+        for word in reversed(user_words):
             if word in self.transitions:
                 return word
         
@@ -579,10 +534,9 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
         for word, weight in candidates:
             context_boost = 1.0
             
-            # Check similarity to user words
             for user_word in user_words:
                 similarity = self.text_processor.get_semantic_similarity(word, user_word)
-                if similarity > 0.1:  # Threshold for similarity
+                if similarity > 0.1:
                     context_boost += similarity * context_strength
             
             contextual_candidates.append((word, weight * context_boost))
@@ -590,8 +544,7 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
         return contextual_candidates if contextual_candidates else candidates
     
     def generate_contextual_text(self, user_input, spk_rec, mem_rec, length=50):
-        """Generate text that's contextually aware of user input"""
-        
+        """Generate text that's contextually aware of user input."""
         if not user_input.strip():
             return self.generate_text_from_neural_output(spk_rec, mem_rec, length=length)
         
@@ -649,17 +602,20 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
         
         return ' '.join(generated_words)
 
-import torch
-import torch.nn as nn
-from sklearn.preprocessing import StandardScaler
-
 def process_user_input_through_snn(filename, user_input, text_processor, snn_model, num_steps=10):
-    """Process user input through the SNN to generate contextual neural states"""
-    
+    """Process user input through the simplified SNN."""
     # Load base text data
     words = text_processor.load_and_process_text(filename)
     
-    # Generate features specifically for user input
+    # Calculate subjective ontology components
+    user_words = user_input.lower().split()
+    last_word = user_words[-1] if user_words else ''
+    p = text_processor.get_semantic_similarity(last_word, user_input)
+    transition_features = text_processor.get_transition_features(last_word)
+    c = np.mean(transition_features) if transition_features else 0.0
+    e = 0.0  # Environmental factor
+    
+    # Generate features for user input
     user_features = text_processor.words_to_neural_features(
         words, 
         user_input=user_input
@@ -669,36 +625,49 @@ def process_user_input_through_snn(filename, user_input, text_processor, snn_mod
     scaler = StandardScaler()
     features_scaled = scaler.fit_transform(user_features)
     
-    # Convert to tensor and reshape for 1D operations
+    # Convert to tensor and ensure correct shape
     features_tensor = torch.FloatTensor(features_scaled)
     
-    # Reshape for MaxPool1d compatibility (batch_size, channels, width)
-    # Assuming features_scaled is (num_samples, num_features)
+    # Ensure we have proper dimensions for pooling
     if features_tensor.dim() == 2:
         features_tensor = features_tensor.unsqueeze(1)  # Add channel dimension
     
-    # Create MaxPool1d and MaxUnpool1d layers
+    # Handle case where feature dimension might be odd
+    if features_tensor.shape[2] % 2 != 0:
+        # Pad to make it even for pooling
+        padding = torch.zeros(features_tensor.shape[0], features_tensor.shape[1], 1)
+        features_tensor = torch.cat([features_tensor, padding], dim=2)
+    
+    # Create pooling layers
     pool = nn.MaxPool1d(kernel_size=2, stride=2, return_indices=True)
     unpool = nn.MaxUnpool1d(kernel_size=2, stride=2)
     
-    # Apply pooling to get pooled output and indices
+    # Apply pooling and unpooling
     pooled_output, indices = pool(features_tensor)
+    unpooled_features = unpool(pooled_output, indices, output_size=features_tensor.size())
     
-    # Apply unpooling using the indices from pooling
-    unpooled_features = unpool(pooled_output, indices)
-    
-    # If needed, reshape back for spike generation
+    # Remove channel dimension if added
     if unpooled_features.dim() == 3 and unpooled_features.size(1) == 1:
-        unpooled_features = unpooled_features.squeeze(1)  # Remove channel dimension
+        unpooled_features = unpooled_features.squeeze(1)
     
-    # Generate spikes with processed features
+    # Ensure correct feature dimension matches num_neurons
+    if unpooled_features.shape[1] != snn_model.num_neurons:
+        # Resize to match expected dimensions
+        if unpooled_features.shape[1] > snn_model.num_neurons:
+            unpooled_features = unpooled_features[:, :snn_model.num_neurons]
+        else:
+            # Pad with zeros
+            padding_size = snn_model.num_neurons - unpooled_features.shape[1]
+            padding = torch.zeros(unpooled_features.shape[0], padding_size)
+            unpooled_features = torch.cat([unpooled_features, padding], dim=1)
+    
+    # Generate spikes
     spike_data = spikegen.rate(unpooled_features, num_steps=num_steps)
     
-    # Process through SNN
-    spk_rec, mem_rec, poly_mem_rec, mode_rec = run_polymorphic_snn(spike_data, snn_model)
+    # Process through simplified SNN - FIXED: Pass spike_data instead of indices
+    spk_rec, mem_rec = run_simple_snn(spike_data, snn_model)
     
-    return spk_rec, mem_rec, poly_mem_rec, mode_rec
-
+    return spk_rec, mem_rec
 
 def analyze_moderation_impact(regular_text, moderated_text):
     """Analyze the impact of FGCN moderation on text quality."""
@@ -745,25 +714,27 @@ def visualize_moderation_effects(spk_rec, mem_rec, fgcn_model):
     return coherence_signal, stability_signal
 
 def main_with_user_context_awareness():
+    """Main function with simplified SNN (no polymorphic neurons)."""
     num_neurons = 256
-    num_polymorphic = 64
     num_steps = 10
     img_size = 8
     
-    print(f"Initializing User-Context-Aware Polymorphic SNN with {num_neurons} neurons ({num_polymorphic} polymorphic)")
+    print(f"Initializing Simplified SNN with {num_neurons} neurons")
     
-    # Initialize components
+    # Initialize components with simplified SNN
     text_processor = NeuronAwareTextProcessor(num_neurons)
-    snn_model = PolymorphicSNN(num_neurons, num_polymorphic)
+    snn_model = SimpleSNN(num_neurons)
     
     print("="*60)
-    print("USER-CONTEXT-AWARE POLYMORPHIC SNN TEXT GENERATOR")
+    print("SIMPLIFIED SNN TEXT GENERATOR")
     print("="*60)
     print("This system processes your input through a spiking neural network")
     print("and generates contextually relevant text based on neural patterns.")
     print("Enter text to generate responses.")
     print("="*60)
+    
     filename = input("Enter dataset filename: ")
+    
     while True:
         user_input = input("\nUSER: ").strip()
         if not user_input:
@@ -773,9 +744,9 @@ def main_with_user_context_awareness():
         print(f"\nProcessing input: '{user_input}'")
         print("="*40)
         
-        # Process user input through SNN
-        spk_rec, mem_rec, poly_mem_rec, mode_rec = process_user_input_through_snn(filename,
-            user_input, text_processor, snn_model, num_steps
+        # Process user input through simplified SNN
+        spk_rec, mem_rec = process_user_input_through_snn(
+            filename, user_input, text_processor, snn_model, num_steps
         )
         
         # Initialize FGCN model
@@ -791,7 +762,6 @@ def main_with_user_context_awareness():
         )
         print()
         print("AI:", contextual_text)
-        
 
 if __name__ == "__main__":
     main_with_user_context_awareness()
