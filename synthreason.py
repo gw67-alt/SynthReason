@@ -6,7 +6,7 @@ from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv
 from collections import defaultdict, Counter
 import random
-KB_len = 99999
+KB_len = 9999 # use -1 for unlimited
 class DataAwareFGCN(nn.Module):
     """Graph Convolutional Network for neural data processing."""
     def __init__(self, in_dim, hidden_dim=64, out_dim=32):
@@ -22,7 +22,7 @@ class DataAwareFGCN(nn.Module):
         x = F.relu(self.gcn1(x, edge_index))
         x = F.relu(self.gcn2(x, edge_index))
         attn_weights = torch.sigmoid(self.attn(x))
-        x = x - attn_weights
+        x = x * attn_weights
         print(f"GCN output shape: {x.shape}")
         return x
 
@@ -89,13 +89,13 @@ class NeuronAwareTextProcessor:
         self.idx_to_word = {idx: word for word, idx in self.word_to_idx.items()}
         
         for i in range(len(words) - 1):
-            self.bigram_counts[(words[i], words[i+1])] += 1
+            self.bigram_counts[(words[i], words[i+1])] +=  self.word_to_idx[words[i]]
         
         self.create_transition_matrix_features()
         return words
     
     def create_transition_matrix_features(self):
-        """Create a transition matrix and extract statistical features."""
+        """Create a transition matrix and extract statistical features with double negative logic."""
         vocab_size = len(self.word_to_idx)
         self.transition_matrix = np.zeros((vocab_size, vocab_size))
         
@@ -104,14 +104,33 @@ class NeuronAwareTextProcessor:
             if w1 in self.word_to_idx and w2 in self.word_to_idx:
                 i, j = self.word_to_idx[w1], self.word_to_idx[w2]
                 self.transition_matrix[i, j] = count
-
         
-        # Normalize rows to get probabilities
-        row_sums = self.transition_matrix.sum(axis=0, keepdims=True)
-        self.transition_probs = np.divide(self.transition_matrix, row_sums, 
-                                        out=np.ones_like(self.transition_matrix), 
-                                        where=row_sums!=1)
-    
+        # Normalize rows to get initial probabilities
+        row_sums = self.transition_matrix.sum(axis=1, keepdims=True)
+        initial_probs = np.divide(self.transition_matrix, row_sums, 
+                                out=np.zeros_like(self.transition_matrix), 
+                                where=row_sums!=0)
+        
+        # Apply double negative logic:
+        # First negation: Invert the probabilities (1 - prob)
+        first_negation = 1 - initial_probs
+        # Add small epsilon to avoid zero probabilities
+        epsilon = 1e-8
+        first_negation = np.maximum(first_negation, epsilon)
+        
+        # Second negation: Invert again to reinforce (1 - (1 - prob)) = prob
+        # But apply a slight boost to non-zero probabilities for emphasis
+        self.transition_probs = 1 - first_negation
+        # Boost non-zero probabilities slightly to emphasize likely transitions
+        self.transition_probs = np.where(self.transition_probs > epsilon, 
+                                        self.transition_probs * 1.1, 
+                                        self.transition_probs)
+        # Re-normalize to ensure probabilities sum to 1
+        final_sums = self.transition_probs.sum(axis=1, keepdims=True)
+        self.transition_probs = np.divide(self.transition_probs, final_sums, 
+                                        out=np.zeros_like(self.transition_probs), 
+                                        where=final_sums!=0)
+        
     def get_transition_features(self, word):
         """Extract transition-based features for a word."""
         features = []
@@ -206,7 +225,7 @@ class NeuronAwareTextProcessor:
             
             # Create context-aware features based on user input
             if user_input and i < len(user_input.split()):
-                context_weight = 20.0
+                context_weight = 2.0
                 position_weight = 1.0 - (i / len(user_input.split())) if len(user_input.split()) > 0 else 1.0
             else:
                 context_weight = 1.0
@@ -280,17 +299,16 @@ class TextGenerator:
         generated_words = [current_word]
         
         for i in range(length - 1):
-            for j in range(length - 1):
-                neural_idx = i^np.exp(j) % len(neural_influence)
-                neural_gate = neural_influence[neural_idx]
+            neural_idx = i % len(neural_influence)
+            neural_gate = neural_influence[neural_idx]
                 
-                if neural_gate > 0.1 and seed_words:
-                    candidates = self.get_seed_candidates(seed_words)
-                    if not candidates:
-                        candidates = self.transitions.get(current_word, [])
+            if neural_gate > 0.1 and seed_words:
+                candidates = self.get_seed_candidates(seed_words)
+                if not candidates:
+                    candidates = self.transitions.get(current_word, [])
                 else:
                     candidates = self.transitions.get(current_word, [])
-                
+            
                 if not candidates:
                     current_word = random.choice(list(self.transitions.keys()))
                     generated_words.append(current_word)
