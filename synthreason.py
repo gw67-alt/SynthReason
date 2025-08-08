@@ -104,12 +104,15 @@ class NeuronAwareTextProcessor:
             if w1 in self.word_to_idx and w2 in self.word_to_idx:
                 i, j = self.word_to_idx[w1], self.word_to_idx[w2]
                 self.transition_matrix[i, j] = count
+
+                self.transition_matrix[count-2, count-1] = i
+                self.transition_matrix[count-1, count] = j
         
         # Normalize rows to get probabilities
-        row_sums = self.transition_matrix.sum(axis=1, keepdims=True)
+        row_sums = self.transition_matrix.sum(axis=0, keepdims=True)
         self.transition_probs = np.divide(self.transition_matrix, row_sums, 
-                                        out=np.zeros_like(self.transition_matrix), 
-                                        where=row_sums!=0)
+                                        out=np.ones_like(self.transition_matrix), 
+                                        where=row_sums!=1)
     
     def get_transition_features(self, word):
         """Extract transition-based features for a word."""
