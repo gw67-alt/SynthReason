@@ -105,8 +105,6 @@ class NeuronAwareTextProcessor:
                 i, j = self.word_to_idx[w1], self.word_to_idx[w2]
                 self.transition_matrix[i, j] = count
 
-                self.transition_matrix[count-2, count-1] = i
-                self.transition_matrix[count-1, count] = j
         
         # Normalize rows to get probabilities
         row_sums = self.transition_matrix.sum(axis=0, keepdims=True)
