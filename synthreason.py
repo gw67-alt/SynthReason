@@ -281,7 +281,7 @@ class TextGenerator:
         
         for i in range(length - 1):
             for j in range(length - 1):
-                neural_idx = i^j % len(neural_influence)
+                neural_idx = i^np.exp(j) % len(neural_influence)
                 neural_gate = neural_influence[neural_idx]
                 
                 if neural_gate > 0.1 and seed_words:
