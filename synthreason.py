@@ -208,7 +208,7 @@ class NeuronAwareTextProcessor:
             
             # Create context-aware features based on user input
             if user_input and i < len(user_input.split()):
-                context_weight = 2.0
+                context_weight = 20.0
                 position_weight = 1.0 - (i / len(user_input.split())) if len(user_input.split()) > 0 else 1.0
             else:
                 context_weight = 1.0
