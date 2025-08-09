@@ -273,14 +273,14 @@ class NeuronAwareTextProcessor:
         # But apply a slight boost to non-zero probabilities for emphasis
         self.transition_probs = 1 - first_negation
         # Boost non-zero probabilities slightly to emphasize likely transitions
-        self.transition_probs = np.where(self.transition_probs > epsilon, 
+        self.transition_probs = np.where(self.transition_probs > 0.5, 
                                         self.transition_probs * 1.1, 
                                         self.transition_probs)
         # Re-normalize to ensure probabilities sum to 1
-        final_sums = self.transition_probs.sum(axis=1, keepdims=True)
+        final_sums = self.transition_probs.sum(axis=0, keepdims=True)
         self.transition_probs = np.divide(self.transition_probs, final_sums, 
                                         out=np.zeros_like(self.transition_probs), 
-                                        where=final_sums!=0)
+                                        where=final_sums!=1)
         
     def get_transition_features(self, word):
         """Extract transition-based features for a word."""
