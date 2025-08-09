@@ -10,6 +10,9 @@ import random
 import multiprocessing as mp
 import os
 
+
+from datasets import load_dataset
+
 # Set threading and multiprocessing settings
 os.environ.setdefault("OMP_NUM_THREADS", "8")
 os.environ.setdefault("MKL_NUM_THREADS", "8")
@@ -30,12 +33,10 @@ class DataAwareFGCN(nn.Module):
     
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
-
         x = F.relu(self.gcn1(x, edge_index))
         x = F.relu(self.gcn2(x, edge_index))
         attn_weights = torch.sigmoid(self.attn(x))
         x = x * attn_weights
-
         return x
 
 def create_neuron_aligned_graph(spk_rec, mem_rec):
@@ -47,13 +48,11 @@ def create_neuron_aligned_graph(spk_rec, mem_rec):
     spk_rec_aligned = spk_rec_aligned[:, :min_neurons]
     mem_rec_aligned = mem_rec[:, :min_neurons]
         
-        
     # FIX: Create consistent 2D features per node
     # Take mean across time steps to get [N, 1] for each recording type
     spk_features = spk_rec_aligned.mean(dim=0, keepdim=True).T  # [N, 1]
     mem_features = mem_rec_aligned.mean(dim=0, keepdim=True).T  # [N, 1]
     node_features = torch.cat([spk_features, mem_features], dim=1)  # [N, 2]
-    
     
     num_nodes = node_features.shape[0]
     
@@ -213,6 +212,10 @@ def evaluate(model, loader, device):
     
     return total_loss / max(1, len(loader))
 
+import re
+import html
+from collections import defaultdict, Counter
+
 class NeuronAwareTextProcessor:
     """Text processor that converts text to neural-compatible features."""
     def __init__(self, num_neurons=16):
@@ -224,26 +227,207 @@ class NeuronAwareTextProcessor:
         self.transition_matrix = None
         self.transition_probs = None
     
-    def load_and_process_text(self, file_path="test.txt"):
+    def clean_text(self, text):
+        """Clean text by removing XML tags, HTML entities, and non-natural text patterns while preserving punctuation."""
+        if not isinstance(text, str):
+            return ""
+        
+        # HTML decode first
+        text = html.unescape(text)
+        
+        # Remove XML/HTML-like tags including complex ones like your example
+        xml_patterns = [
+            r'<[^>]*>',  # Basic XML/HTML tags
+            r'</[^>]*>',  # Closing tags
+            r'<\w+[^>]*>.*?</\w+>',  # Complete tag pairs
+            r'<value[^>]*>.*?</value>',  # Specific value tags
+            r'<[^>]*choice-type[^>]*>',  # Tags with choice-type attributes
+            r'<[^>]*="[^"]*"[^>]*>',  # Tags with quoted attributes
+        ]
+        
+        for pattern in xml_patterns:
+            text = re.sub(pattern, ' ', text, flags=re.IGNORECASE | re.DOTALL)
+        
+        # Remove standalone XML-like fragments
+        text = re.sub(r'</?\w+[^>]*/?>', ' ', text)
+        
+        # Remove attribute-value pairs that might be leftover
+        text = re.sub(r'\w+\s*=\s*"[^"]*"', ' ', text)
+        text = re.sub(r'\w+\s*=\s*\'[^\']*\'', ' ', text)
+        
+        # Remove common non-natural patterns
+        cleanup_patterns = [
+            r'\[.*?\]',  # Bracketed content
+            r'\{.*?\}',  # Braced content
+            r'^\s*[-*•]\s*',  # List markers at start of line
+            r'\s+[-*•]\s+',  # List markers in text
+            r'#+\s*',  # Markdown headers
+            r'``````',  # Code blocks
+            r'`[^`]*`',  # Inline code
+            r'https?://\S+',  # URLs
+            r'www\.\S+',  # WWW links
+            r'\S+@\S+\.\S+',  # Email addresses
+            r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b',  # IP addresses
+            r'\\\w+',  # LaTeX commands
+            r'\$\$.*?\$\$',  # LaTeX math blocks
+            r'\$[^$]*\$',  # LaTeX inline math
+        ]
+        
+        for pattern in cleanup_patterns:
+            text = re.sub(pattern, ' ', text, flags=re.IGNORECASE | re.DOTALL)
+        
+        # Clean up whitespace and preserve natural punctuation
+        text = re.sub(r'\s+', ' ', text)  # Multiple spaces to single
+        
+        # UPDATED: Keep all natural punctuation - only remove truly problematic characters
+        # Remove only control characters and unusual symbols, keep all standard punctuation
+        text = re.sub(r'[^\w\s\.,!?;:\'"()\-–—\[\]/\\&%$#@*+=<>|`~^{}]', ' ', text)
+        
+        # Normalize excessive punctuation (optional - you can remove this if you want to keep all)
+        text = re.sub(r'\.{3,}', '...', text)  # Multiple dots to ellipsis
+        text = re.sub(r'[!]{2,}', '!', text)  # Multiple exclamations to single
+        text = re.sub(r'[?]{2,}', '?', text)  # Multiple questions to single
+        
+        # UPDATED: More lenient word filtering - keep punctuation attached to words
+        words = text.split()
+        filtered_words = []
+        for word in words:
+            # Much more lenient - keep words up to 50 chars and allow punctuation
+            if 1 <= len(word) <= 50:
+                # Only filter out words that are purely symbols (like "||||" or "===")
+                if not re.match(r'^[^\w\s]{3,}$', word):
+                    filtered_words.append(word)
+        
+        text = ' '.join(filtered_words)
+        
+        # Final cleanup
+        text = text.strip()
+        text = re.sub(r'\s+', ' ', text)  # Ensure single spaces
+        
+        return text
+    
+    def load_wise_dataset(self):
+        """Load the WISE dataset from Hugging Face with enhanced text cleaning."""
+        print("Loading WISE dataset from Hugging Face...")
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = ' '.join(f.read().split()[:KB_len])
-                print(f"Loaded {len(content)} characters from {file_path}")
-        except FileNotFoundError:
-            content = "The neural network processes information through spiking patterns. Each neuron contributes to the overall computation. Machine learning algorithms use artificial neural networks to simulate biological processes. Deep learning models can generate text by learning patterns from large datasets. Spiking neural networks offer a more biologically plausible approach to artificial intelligence."
-            print("Using sample text")
+            # Load the WISE dataset
+            dataset = load_dataset("meaningalignment/wise-data")
+            print(f"Successfully loaded WISE dataset: {dataset}")
+            
+            # Extract text content from conversations
+            text_content = []
+            
+            # Process different splits if available
+            for split_name in dataset.keys():
+                split_data = dataset[split_name]
+                print(f"Processing {split_name} split with {len(split_data)} examples")
+                
+                for example in split_data:
+                    # Extract text based on the dataset structure
+                    raw_texts = []
+                    
+                    if 'conversations' in example:
+                        for turn in example['conversations']:
+                            if 'content' in turn:
+                                raw_texts.append(turn['content'])
+                    elif 'messages' in example:
+                        for message in example['messages']:
+                            if 'content' in message:
+                                raw_texts.append(message['content'])
+                    elif 'text' in example:
+                        raw_texts.append(example['text'])
+                    elif isinstance(example, dict):
+                        # Fallback: extract any string values
+                        for value in example.values():
+                            if isinstance(value, str) and len(value) > 10:
+                                raw_texts.append(value)
+                    
+                    # Clean each text segment
+                    for raw_text in raw_texts:
+                        cleaned_text = self.clean_text(raw_text)
+                        if cleaned_text and len(cleaned_text) > 10:  # Only keep substantial text
+                            text_content.append(cleaned_text)
+            
+            # Combine all text and limit by KB_len if specified
+            combined_text = ' '.join(text_content)
+            
+            # Additional filtering for very long text
+            if KB_len != -1 and len(combined_text) > KB_len:
+                # Try to cut at sentence boundaries
+                sentences = re.split(r'[.!?]+\s+', combined_text[:KB_len])
+                if len(sentences) > 1:
+                    combined_text = '. '.join(sentences[:-1]) + '.'
+                else:
+                    combined_text = combined_text[:KB_len]
+            
+            print(f"Extracted and cleaned {len(combined_text)} characters from WISE dataset")
+            print(f"Sample cleaned text: {combined_text[:200]}...")
+            
+            return combined_text
+            
+        except Exception as e:
+            print(f"Error loading WISE dataset: {e}")
+            print("Falling back to sample text...")
+            return "The neural network processes information through spiking patterns. Each neuron contributes to the overall computation. Machine learning algorithms use artificial neural networks to simulate biological processes. Deep learning models can generate text by learning patterns from large datasets. Spiking neural networks offer a more biologically plausible approach to artificial intelligence."
+    
+    def validate_text_quality(self, text):
+        """Validate that the cleaned text maintains good quality."""
+        if not text or len(text) < 50:
+            return False
+        
+        words = text.split()
+        if len(words) < 10:
+            return False
+        
+        # Check ratio of alphabetic characters
+        alpha_chars = sum(1 for c in text if c.isalpha())
+        total_chars = len(text.replace(' ', ''))
+        if total_chars > 0 and alpha_chars / total_chars < 0.7:
+            return False
+        
+        # Check for reasonable sentence structure
+        sentences = re.split(r'[.!?]+', text)
+        if len(sentences) < 2:
+            return False
+        
+        return True
+    
+    def load_and_process_text(self, file_path=None, use_wise_dataset=True):
+        if use_wise_dataset:
+            content = self.load_wise_dataset()
+            
+            # Validate the cleaned content
+            if not self.validate_text_quality(content):
+                print("Warning: Cleaned text quality is low, using fallback...")
+                content = "The neural network processes information through spiking patterns. Each neuron contributes to the overall computation. Machine learning algorithms use artificial neural networks to simulate biological processes. Deep learning models can generate text by learning patterns from large datasets. Spiking neural networks offer a more biologically plausible approach to artificial intelligence."
+        else:
+            # Original file loading logic with cleaning
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    raw_content = f.read()
+                    content = self.clean_text(raw_content)
+                    if KB_len != -1:
+                        content = content[:KB_len]
+                    print(f"Loaded and cleaned {len(content)} characters from {file_path}")
+            except FileNotFoundError:
+                content = "The neural network processes information through spiking patterns. Each neuron contributes to the overall computation. Machine learning algorithms use artificial neural networks to simulate biological processes. Deep learning models can generate text by learning patterns from large datasets. Spiking neural networks offer a more biologically plausible approach to artificial intelligence."
+                print("Using sample text")
         
         words = content.lower().split()
-        words = [w for w in words if w]
+        words = [w for w in words if w and len(w) > 0]
         unique_words = list(set(words))
         self.word_to_idx = {word: idx for idx, word in enumerate(unique_words)}
         self.idx_to_word = {idx: word for word, idx in self.word_to_idx.items()}
+        
+        print(f"Vocabulary size: {len(unique_words)} unique words")
         
         for i in range(len(words) - 1):
             self.bigram_counts[(words[i], words[i+1])] += self.word_to_idx[words[i]]
         
         self.create_transition_matrix_features()
         return words
+
+
     
     def create_transition_matrix_features(self):
         """Create a transition matrix and extract statistical features with double negative logic."""
@@ -689,7 +873,7 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
         return ' '.join(generated_words)
 
 def main_with_user_context_awareness():
-    """Main function with user context awareness and training."""
+    """Main function with user context awareness and training using WISE dataset."""
     num_neurons = 256
     num_steps = 64  # Make longer for training signal
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -700,14 +884,14 @@ def main_with_user_context_awareness():
     text_processor = NeuronAwareTextProcessor(num_neurons)
     
     print("="*60)
-    print("FGCN TEXT GENERATOR (with training)")
+    print("FGCN TEXT GENERATOR (with WISE dataset)")
     print("="*60)
     print("This system generates contextually relevant text based on user input.")
-    print("Enter text to generate responses.")
+    print("Using WISE dataset from Hugging Face for training.")
     print("="*60)
     
-    filename = input("Enter dataset filename (or press enter for default): ") or "test.txt"
-    text_processor.load_and_process_text(filename)
+    # Load WISE dataset
+    text_processor.load_and_process_text(use_wise_dataset=True)
     
     # Generate synthetic neural sequences (replace with real data if available)
     print("Generating synthetic neural data...")
@@ -755,6 +939,7 @@ def main_with_user_context_awareness():
             print(f"New best model saved with val loss: {best_val_loss:.4f}")
     
     print("Training completed!")
+    print("Now generating responses using WISE-trained model...")
     
     # Interactive generation loop
     while True:
@@ -778,7 +963,7 @@ def main_with_user_context_awareness():
         
         # Generate contextual response
         contextual_text = context_generator.generate_contextual_text(
-            user_input, spk_rec, mem_rec, length=500
+            user_input, spk_rec, mem_rec, length=100
         )
         print("\nAI:", contextual_text)
 
