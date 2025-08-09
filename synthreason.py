@@ -19,7 +19,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "8")
 torch.set_num_threads(8)
 torch.set_num_interop_threads(4)
 
-KB_len = 99999  # use -1 for unlimited
+KB_len = -1  # use -1 for unlimited
 
 class DataAwareFGCN(nn.Module):
     """Graph Convolutional Network for neural data processing."""
