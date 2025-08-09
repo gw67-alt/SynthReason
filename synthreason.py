@@ -4,9 +4,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv
+from torch.utils.data import Dataset, DataLoader
 from collections import defaultdict, Counter
 import random
-KB_len = 9999 # use -1 for unlimited
+import multiprocessing as mp
+import os
+
+# Set threading and multiprocessing settings
+os.environ.setdefault("OMP_NUM_THREADS", "8")
+os.environ.setdefault("MKL_NUM_THREADS", "8")
+torch.set_num_threads(8)
+torch.set_num_interop_threads(4)
+
+KB_len = 99999  # use -1 for unlimited
+
 class DataAwareFGCN(nn.Module):
     """Graph Convolutional Network for neural data processing."""
     def __init__(self, in_dim, hidden_dim=64, out_dim=32):
@@ -14,37 +25,37 @@ class DataAwareFGCN(nn.Module):
         self.gcn1 = GCNConv(in_dim, hidden_dim)
         self.gcn2 = GCNConv(hidden_dim, out_dim)
         self.attn = nn.Linear(out_dim, 1)
+        # Add regression head for training
+        self.regression_head = nn.Linear(out_dim, 1)
     
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
-        print(f"GCN input shape: {x.shape}")
-        print(f"Edge index shape: {edge_index.shape}")
+
         x = F.relu(self.gcn1(x, edge_index))
         x = F.relu(self.gcn2(x, edge_index))
         attn_weights = torch.sigmoid(self.attn(x))
         x = x * attn_weights
-        print(f"GCN output shape: {x.shape}")
+
         return x
 
 def create_neuron_aligned_graph(spk_rec, mem_rec):
     """Create graph from spike and membrane recordings."""
-    print(f"Creating graph from spk_rec: {spk_rec.shape}, mem_rec: {mem_rec.shape}")
     min_steps = min(spk_rec.shape[0], mem_rec.shape[0])
     spk_rec_aligned = spk_rec[:min_steps]
     mem_rec_aligned = mem_rec[:min_steps]
     min_neurons = min(spk_rec_aligned.shape[1], mem_rec_aligned.shape[1])
     spk_rec_aligned = spk_rec_aligned[:, :min_neurons]
     mem_rec_aligned = mem_rec[:, :min_neurons]
+        
+        
+    # FIX: Create consistent 2D features per node
+    # Take mean across time steps to get [N, 1] for each recording type
+    spk_features = spk_rec_aligned.mean(dim=0, keepdim=True).T  # [N, 1]
+    mem_features = mem_rec_aligned.mean(dim=0, keepdim=True).T  # [N, 1]
+    node_features = torch.cat([spk_features, mem_features], dim=1)  # [N, 2]
     
-    print(f"Aligned shapes - spk_rec: {spk_rec_aligned.shape}, mem_rec: {mem_rec_aligned.shape}")
-    
-    # Create node features by concatenating spike and membrane data
-    node_features = spk_rec_aligned.T
-    node_features = torch.cat([node_features, mem_rec_aligned.T], dim=1)
-    print(f"Node features shape: {node_features.shape}")
     
     num_nodes = node_features.shape[0]
-    print(f"Number of graph nodes: {num_nodes}")
     
     # Create edges (connect each node to its neighbors)
     edge_index = []
@@ -52,15 +63,155 @@ def create_neuron_aligned_graph(spk_rec, mem_rec):
         for i in range(num_nodes):
             for j in range(i+1, min(i+4, num_nodes)):
                 edge_index.extend([[i, j], [j, i]])
-    
+        
     if edge_index:
         edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
     else:
         edge_index = torch.empty((2, 0), dtype=torch.long)
-    
-    print(f"Edge index shape: {edge_index.shape}")
+        
     data = Data(x=node_features, edge_index=edge_index)
     return data
+
+class GraphSequenceDataset(Dataset):
+    """
+    Builds per-timestep graphs and next-step targets (predict next spk vector).
+    Each item: (Data(x, edge_index), target) where:
+      - x: node_features from create_neuron_aligned_graph at time t
+      - target: next-step spike vector (shape [num_neurons]) at t+1
+    """
+    def __init__(self, spk_rec, mem_rec):
+        super().__init__()
+        assert spk_rec.shape == mem_rec.shape
+        self.spk_rec = spk_rec  # [T, N]
+        self.mem_rec = mem_rec  # [T, N]
+        self.T, self.N = spk_rec.shape
+        # We can form T-1 supervised pairs (t -> t+1)
+        self.length = max(0, self.T - 1)
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        # Build a graph using a 1-step slice around idx
+        spk_slice = self.spk_rec[idx:idx+1, :]   # [1, N]
+        mem_slice = self.mem_rec[idx:idx+1, :]   # [1, N]
+        data = create_neuron_aligned_graph(spk_slice, mem_slice)  # Data.x shape [N, 2], edge_index [2, E]
+        target = self.spk_rec[idx+1, :]  # predict next step spikes [N]
+        # We'll regress node-wise, so target per node:
+        target = target.unsqueeze(-1)  # [N,1]
+        return data, target
+
+def collate_graph_batch(batch):
+    # We'll iterate items manually in the train step since each Data has different edge_index.
+    datas, targets = zip(*batch)
+    return list(datas), torch.stack(targets, dim=0)  # targets [B, N, 1]
+
+def make_loader(dataset, batch_size=8, num_workers=None, pin_memory=None):
+    if num_workers is None:
+        try:
+            cpu_cores = mp.cpu_count()
+        except Exception:
+            cpu_cores = 4
+        num_workers = min(8, max(1, cpu_cores // 2))
+    if pin_memory is None:
+        pin_memory = torch.cuda.is_available()
+
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        persistent_workers=(num_workers > 0),
+        prefetch_factor=2 if num_workers > 0 else None,
+        pin_memory=pin_memory,
+        collate_fn=collate_graph_batch,
+    )
+    return loader
+
+def save_checkpoint(path, epoch, model, optimizer, scheduler, best_val=None):
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+        'best_val': best_val,
+    }, path)
+
+def load_checkpoint(path, model, optimizer=None, scheduler=None, map_location='cpu'):
+    ckpt = torch.load(path, map_location=map_location)
+    model.load_state_dict(ckpt['model_state_dict'])
+    if optimizer and 'optimizer_state_dict' in ckpt and ckpt['optimizer_state_dict'] is not None:
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+    if scheduler and 'scheduler_state_dict' in ckpt and ckpt['scheduler_state_dict'] is not None:
+        scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+    start_epoch = ckpt.get('epoch', 0) + 1
+    best_val = ckpt.get('best_val', None)
+    return start_epoch, best_val
+
+def train_one_epoch(model, loader, device, optimizer):
+    model.train()
+    total_loss = 0.0
+    criterion = nn.MSELoss()
+    
+    for datas, targets in loader:
+        # Process items in the batch independently, then average loss
+        batch_loss = 0.0
+        count = 0
+        
+        for data, target in zip(datas, targets):  # target [N,1]
+            data = data.to(device)
+            target = target.to(device)
+            pred = model(data)  # [N, out_dim]
+            
+            # Map to 1-dim per node for regression target
+            if pred.shape[-1] != 1:
+                # Use regression head
+                pred_1d = model.regression_head(pred)
+            else:
+                pred_1d = pred
+            
+            loss = criterion(pred_1d, target)
+            batch_loss += loss
+            count += 1
+
+        batch_loss = batch_loss / max(1, count)
+
+        optimizer.zero_grad()
+        batch_loss.backward()
+        optimizer.step()
+
+        total_loss += batch_loss.item()
+    
+    return total_loss / max(1, len(loader))
+
+@torch.no_grad()
+def evaluate(model, loader, device):
+    model.eval()
+    total_loss = 0.0
+    criterion = nn.MSELoss()
+    
+    for datas, targets in loader:
+        batch_loss = 0.0
+        count = 0
+        
+        for data, target in zip(datas, targets):
+            data = data.to(device)
+            target = target.to(device)
+            pred = model(data)
+            
+            if pred.shape[-1] != 1:
+                pred_1d = model.regression_head(pred)
+            else:
+                pred_1d = pred
+            
+            loss = criterion(pred_1d, target)
+            batch_loss += loss
+            count += 1
+        
+        batch_loss = batch_loss / max(1, count)
+        total_loss += batch_loss.item()
+    
+    return total_loss / max(1, len(loader))
 
 class NeuronAwareTextProcessor:
     """Text processor that converts text to neural-compatible features."""
@@ -89,7 +240,7 @@ class NeuronAwareTextProcessor:
         self.idx_to_word = {idx: word for word, idx in self.word_to_idx.items()}
         
         for i in range(len(words) - 1):
-            self.bigram_counts[(words[i], words[i+1])] +=  self.word_to_idx[words[i]]
+            self.bigram_counts[(words[i], words[i+1])] += self.word_to_idx[words[i]]
         
         self.create_transition_matrix_features()
         return words
@@ -538,17 +689,18 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
         return ' '.join(generated_words)
 
 def main_with_user_context_awareness():
-    """Main function with user context awareness, using dummy neural data."""
+    """Main function with user context awareness and training."""
     num_neurons = 256
-    num_steps = 10
+    num_steps = 64  # Make longer for training signal
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    print(f"Initializing with {num_neurons} neurons")
+    print(f"Initializing with {num_neurons} neurons on device: {device}")
     
     # Initialize components
     text_processor = NeuronAwareTextProcessor(num_neurons)
     
     print("="*60)
-    print("FGCN TEXT GENERATOR")
+    print("FGCN TEXT GENERATOR (with training)")
     print("="*60)
     print("This system generates contextually relevant text based on user input.")
     print("Enter text to generate responses.")
@@ -557,24 +709,71 @@ def main_with_user_context_awareness():
     filename = input("Enter dataset filename (or press enter for default): ") or "test.txt"
     text_processor.load_and_process_text(filename)
     
+    # Generate synthetic neural sequences (replace with real data if available)
+    print("Generating synthetic neural data...")
+    spk_rec_full = torch.rand(num_steps, num_neurons)
+    mem_rec_full = torch.rand(num_steps, num_neurons)
+    
+    # Train/val split
+    split = int(0.8 * num_steps)
+    spk_train, spk_val = spk_rec_full[:split], spk_rec_full[split:]
+    mem_train, mem_val = mem_rec_full[:split], mem_rec_full[split:]
+    
+    print(f"Creating datasets - train: {spk_train.shape}, val: {spk_val.shape}")
+    train_ds = GraphSequenceDataset(spk_train, mem_train)
+    val_ds = GraphSequenceDataset(spk_val, mem_val)
+    
+    train_loader = make_loader(train_ds, batch_size=8, num_workers=4)
+    val_loader = make_loader(val_ds, batch_size=8, num_workers=4)
+    
+    # Initialize FGCN model with correct in_dim from a sample graph
+    print("Initializing FGCN model...")
+    sample_data = create_neuron_aligned_graph(spk_train[:1], mem_train[:1])
+    in_dim = sample_data.x.shape[1]
+    fgcn_model = DataAwareFGCN(in_dim=in_dim, hidden_dim=64, out_dim=32).to(device)
+    
+    # Setup training
+    optimizer = torch.optim.Adam(fgcn_model.parameters(), lr=0.001)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.9)
+    
+    # Train the model
+    epochs = 10
+    best_val_loss = float('inf')
+    
+    print(f"Training FGCN for {epochs} epochs...")
+    for epoch in range(epochs):
+        train_loss = train_one_epoch(fgcn_model, train_loader, device, optimizer)
+        val_loss = evaluate(fgcn_model, val_loader, device)
+        scheduler.step()
+        
+        print(f"Epoch {epoch+1}/{epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+        
+        # Save best model
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            save_checkpoint('best_fgcn_model.pth', epoch, fgcn_model, optimizer, scheduler, best_val_loss)
+            print(f"New best model saved with val loss: {best_val_loss:.4f}")
+    
+    print("Training completed!")
+    
+    # Interactive generation loop
     while True:
         user_input = input("\nUSER: ").strip()
         if not user_input:
-            print("Please enter some text.")
+            print("Please enter some text or 'quit' to exit.")
             continue
+        
+        if user_input.lower() in ['quit', 'exit']:
+            break
         
         print(f"\nProcessing input: '{user_input}'")
         print("="*40)
         
-        # Create dummy neural data since SNN is removed
-        spk_rec = torch.rand(num_steps, num_neurons)
-        mem_rec = torch.rand(num_steps, num_neurons)
+        # Use trained model with fresh synthetic data for generation
+        spk_rec = torch.rand(10, num_neurons)
+        mem_rec = torch.rand(10, num_neurons)
         
-        # Initialize FGCN model
-        data = create_neuron_aligned_graph(spk_rec, mem_rec)
-        fgcn_model = DataAwareFGCN(data.x.shape[1])
-        
-        # Create user-context-aware text generator
+        # Create user-context-aware text generator with trained model
         context_generator = UserContextAwareTextGenerator(text_processor, fgcn_model)
         
         # Generate contextual response
