@@ -361,7 +361,6 @@ class NeuronAwareTextProcessor:
                     combined_text = combined_text[:KB_len]
             
             print(f"Extracted and cleaned {len(combined_text)} characters from WISE dataset")
-            print(f"Sample cleaned text: {combined_text[:200]}...")
             
             return combined_text
             
