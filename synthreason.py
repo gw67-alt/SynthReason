@@ -1,22 +1,113 @@
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import snntorch as snn
+from snntorch import surrogate, utils, spikegen
+from sklearn.preprocessing import StandardScaler
 from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv
-from torch.utils.data import Dataset, DataLoader
+import matplotlib.pyplot as plt
 from collections import defaultdict, Counter
 import random
-import multiprocessing as mp
-import os
 
-# Set threading and multiprocessing settings
-os.environ.setdefault("OMP_NUM_THREADS", "8")
-os.environ.setdefault("MKL_NUM_THREADS", "8")
-torch.set_num_threads(8)
-torch.set_num_interop_threads(4)
+KB_LEN = 99999
 
-KB_len = 99999  # use -1 for unlimited
+class SimpleSNN(nn.Module):
+    """Simplified SNN with only regular leaky neurons."""
+    def __init__(self, num_neurons):
+        super().__init__()
+        self.num_neurons = num_neurons
+        self.input_layer = nn.Linear(num_neurons, num_neurons)
+        self.neurons = snn.Leaky(
+            beta=0.5, 
+            init_hidden=False, 
+            spike_grad=surrogate.fast_sigmoid()
+        )
+        self.global_adaptation = nn.Parameter(torch.ones(1) * 0.5)
+        
+    def forward(self, x, mem=None):
+        # Ensure input has correct shape and type
+        if x.dim() == 1:
+            x = x.unsqueeze(0)  # Add batch dimension if missing
+        
+        x_processed = self.input_layer(x)
+        if mem is None:
+            spk, mem = self.neurons(x_processed)
+        else:
+            spk, mem = self.neurons(x_processed, mem)
+        
+        # Apply global adaptation
+        spk = spk * self.global_adaptation
+        return spk.squeeze(0), mem.squeeze(0)  # Remove batch dim for consistency
+
+def run_simple_snn(spike_data, snn_model):
+    """Run the simplified SNN without polymorphic components."""
+    spk_rec, mem_rec = [], []
+    utils.reset(snn_model)
+    mem = None
+    
+    for step in range(spike_data.shape[0]):
+        if spike_data.shape[1] > 0:
+            # Fix: Access the correct dimension based on spike_data shape
+            if spike_data.dim() == 3:  # (time_steps, batch, features)
+                input_data = spike_data[step, 0, :]  # Get first batch
+            else:  # (time_steps, features)
+                input_data = spike_data[step, :]
+                
+            spk, mem = snn_model(input_data, mem)
+            spk_rec.append(spk)
+            mem_rec.append(mem)
+    
+    if spk_rec:
+        spk_rec = torch.stack(spk_rec)
+        mem_rec = torch.stack(mem_rec)
+    else:
+        # Handle empty case
+        spk_rec = torch.zeros(1, snn_model.num_neurons)
+        mem_rec = torch.zeros(1, snn_model.num_neurons)
+    
+    return spk_rec, mem_rec
+
+def create_neuron_aligned_graph(spk_rec, mem_rec):
+    """Create graph from spike and membrane recordings."""
+    print(f"Creating graph from spk_rec: {spk_rec.shape}, mem_rec: {mem_rec.shape}")
+    min_steps = min(spk_rec.shape[0], mem_rec.shape[0])
+    spk_rec_aligned = spk_rec[:min_steps]
+    mem_rec_aligned = mem_rec[:min_steps]
+    min_neurons = min(spk_rec_aligned.shape[1], mem_rec_aligned.shape[1])
+    spk_rec_aligned = spk_rec_aligned[:, :min_neurons]
+    mem_rec_aligned = mem_rec_aligned[:, :min_neurons]
+    
+    print(f"Aligned shapes - spk_rec: {spk_rec_aligned.shape}, mem_rec: {mem_rec_aligned.shape}")
+    
+    # Create node features by concatenating spike and membrane data
+    node_features = spk_rec_aligned.T
+    node_features = torch.cat([node_features, mem_rec_aligned.T], dim=1)
+    print(f"Node features shape: {node_features.shape}")
+    
+    num_nodes = node_features.shape[0]
+    print(f"Number of graph nodes: {num_nodes}")
+    
+    # Create edges (connect each node to its neighbors)
+    edge_index = []
+    if num_nodes > 1:
+        for i in range(num_nodes):
+            for j in range(i+1, min(i+4, num_nodes)):
+                edge_index.extend([[j, i], [i, j]])
+                for k in range(i+1, min(i+4, num_nodes)):
+                    edge_index.extend([[i, k], [i, j]])
+
+    
+    if edge_index:
+        edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+    else:
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+    
+    print(f"Edge index shape: {edge_index.shape}")
+    data = Data(x=node_features, edge_index=edge_index)
+    return data
 
 class DataAwareFGCN(nn.Module):
     """Graph Convolutional Network for neural data processing."""
@@ -25,193 +116,36 @@ class DataAwareFGCN(nn.Module):
         self.gcn1 = GCNConv(in_dim, hidden_dim)
         self.gcn2 = GCNConv(hidden_dim, out_dim)
         self.attn = nn.Linear(out_dim, 1)
-        # Add regression head for training
-        self.regression_head = nn.Linear(out_dim, 1)
     
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
-
+        print(f"GCN input shape: {x.shape}")
+        print(f"Edge index shape: {edge_index.shape}")
         x = F.relu(self.gcn1(x, edge_index))
         x = F.relu(self.gcn2(x, edge_index))
         attn_weights = torch.sigmoid(self.attn(x))
         x = x * attn_weights
-
+        print(f"GCN output shape: {x.shape}")
         return x
 
-def create_neuron_aligned_graph(spk_rec, mem_rec):
-    """Create graph from spike and membrane recordings."""
-    min_steps = min(spk_rec.shape[0], mem_rec.shape[0])
-    spk_rec_aligned = spk_rec[:min_steps]
-    mem_rec_aligned = mem_rec[:min_steps]
-    min_neurons = min(spk_rec_aligned.shape[1], mem_rec_aligned.shape[1])
-    spk_rec_aligned = spk_rec_aligned[:, :min_neurons]
-    mem_rec_aligned = mem_rec[:, :min_neurons]
-        
-        
-    # FIX: Create consistent 2D features per node
-    # Take mean across time steps to get [N, 1] for each recording type
-    spk_features = spk_rec_aligned.mean(dim=0, keepdim=True).T  # [N, 1]
-    mem_features = mem_rec_aligned.mean(dim=0, keepdim=True).T  # [N, 1]
-    node_features = torch.cat([spk_features, mem_features], dim=1)  # [N, 2]
+def neuron_to_image_mapping(node_features, target_size=8):
+    """Map neural features to image representation."""
+    num_nodes, feat_dim = node_features.shape
+    target_pixels = target_size * target_size
+    print(f"Mapping {num_nodes} neurons to {target_pixels} pixels")
     
-    
-    num_nodes = node_features.shape[0]
-    
-    # Create edges (connect each node to its neighbors)
-    edge_index = []
-    if num_nodes > 1:
-        for i in range(num_nodes):
-            for j in range(i+1, min(i+4, num_nodes)):
-                edge_index.extend([[i, j], [j, i]])
-        
-    if edge_index:
-        edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+    if num_nodes < target_pixels:
+        repeat_factor = target_pixels // num_nodes + 1
+        node_features = node_features.repeat(repeat_factor, 1)[:target_pixels]
     else:
-        edge_index = torch.empty((2, 0), dtype=torch.long)
-        
-    data = Data(x=node_features, edge_index=edge_index)
-    return data
-
-class GraphSequenceDataset(Dataset):
-    """
-    Builds per-timestep graphs and next-step targets (predict next spk vector).
-    Each item: (Data(x, edge_index), target) where:
-      - x: node_features from create_neuron_aligned_graph at time t
-      - target: next-step spike vector (shape [num_neurons]) at t+1
-    """
-    def __init__(self, spk_rec, mem_rec):
-        super().__init__()
-        assert spk_rec.shape == mem_rec.shape
-        self.spk_rec = spk_rec  # [T, N]
-        self.mem_rec = mem_rec  # [T, N]
-        self.T, self.N = spk_rec.shape
-        # We can form T-1 supervised pairs (t -> t+1)
-        self.length = max(0, self.T - 1)
-
-    def __len__(self):
-        return self.length
-
-    def __getitem__(self, idx):
-        # Build a graph using a 1-step slice around idx
-        spk_slice = self.spk_rec[idx:idx+1, :]   # [1, N]
-        mem_slice = self.mem_rec[idx:idx+1, :]   # [1, N]
-        data = create_neuron_aligned_graph(spk_slice, mem_slice)  # Data.x shape [N, 2], edge_index [2, E]
-        target = self.spk_rec[idx+1, :]  # predict next step spikes [N]
-        # We'll regress node-wise, so target per node:
-        target = target.unsqueeze(-1)  # [N,1]
-        return data, target
-
-def collate_graph_batch(batch):
-    # We'll iterate items manually in the train step since each Data has different edge_index.
-    datas, targets = zip(*batch)
-    return list(datas), torch.stack(targets, dim=0)  # targets [B, N, 1]
-
-def make_loader(dataset, batch_size=8, num_workers=None, pin_memory=None):
-    if num_workers is None:
-        try:
-            cpu_cores = mp.cpu_count()
-        except Exception:
-            cpu_cores = 4
-        num_workers = min(8, max(1, cpu_cores // 2))
-    if pin_memory is None:
-        pin_memory = torch.cuda.is_available()
-
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        persistent_workers=(num_workers > 0),
-        prefetch_factor=2 if num_workers > 0 else None,
-        pin_memory=pin_memory,
-        collate_fn=collate_graph_batch,
-    )
-    return loader
-
-def save_checkpoint(path, epoch, model, optimizer, scheduler, best_val=None):
-    torch.save({
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
-        'best_val': best_val,
-    }, path)
-
-def load_checkpoint(path, model, optimizer=None, scheduler=None, map_location='cpu'):
-    ckpt = torch.load(path, map_location=map_location)
-    model.load_state_dict(ckpt['model_state_dict'])
-    if optimizer and 'optimizer_state_dict' in ckpt and ckpt['optimizer_state_dict'] is not None:
-        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-    if scheduler and 'scheduler_state_dict' in ckpt and ckpt['scheduler_state_dict'] is not None:
-        scheduler.load_state_dict(ckpt['scheduler_state_dict'])
-    start_epoch = ckpt.get('epoch', 0) + 1
-    best_val = ckpt.get('best_val', None)
-    return start_epoch, best_val
-
-def train_one_epoch(model, loader, device, optimizer):
-    model.train()
-    total_loss = 0.0
-    criterion = nn.MSELoss()
+        node_features = node_features[:target_pixels]
     
-    for datas, targets in loader:
-        # Process items in the batch independently, then average loss
-        batch_loss = 0.0
-        count = 0
-        
-        for data, target in zip(datas, targets):  # target [N,1]
-            data = data.to(device)
-            target = target.to(device)
-            pred = model(data)  # [N, out_dim]
-            
-            # Map to 1-dim per node for regression target
-            if pred.shape[-1] != 1:
-                # Use regression head
-                pred_1d = model.regression_head(pred)
-            else:
-                pred_1d = pred
-            
-            loss = criterion(pred_1d, target)
-            batch_loss += loss
-            count += 1
-
-        batch_loss = batch_loss / max(1, count)
-
-        optimizer.zero_grad()
-        batch_loss.backward()
-        optimizer.step()
-
-        total_loss += batch_loss.item()
-    
-    return total_loss / max(1, len(loader))
-
-@torch.no_grad()
-def evaluate(model, loader, device):
-    model.eval()
-    total_loss = 0.0
-    criterion = nn.MSELoss()
-    
-    for datas, targets in loader:
-        batch_loss = 0.0
-        count = 0
-        
-        for data, target in zip(datas, targets):
-            data = data.to(device)
-            target = target.to(device)
-            pred = model(data)
-            
-            if pred.shape[-1] != 1:
-                pred_1d = model.regression_head(pred)
-            else:
-                pred_1d = pred
-            
-            loss = criterion(pred_1d, target)
-            batch_loss += loss
-            count += 1
-        
-        batch_loss = batch_loss / max(1, count)
-        total_loss += batch_loss.item()
-    
-    return total_loss / max(1, len(loader))
+    img_data = node_features.mean(dim=1).reshape(target_size, target_size)
+    img_data = img_data.detach().cpu().numpy()
+    img_data = (img_data - img_data.min()) / (img_data.max() - img_data.min() + 1e-8)
+    print(f"Final image shape: {img_data.shape}")
+    print(f"Image value range: [{img_data.min():.3f}, {img_data.max():.3f}]")
+    return img_data
 
 class NeuronAwareTextProcessor:
     """Text processor that converts text to neural-compatible features."""
@@ -227,7 +161,7 @@ class NeuronAwareTextProcessor:
     def load_and_process_text(self, file_path="test.txt"):
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
-                content = ' '.join(f.read().split()[:KB_len])
+                content = ' '.join(f.read().split()[:KB_LEN])
                 print(f"Loaded {len(content)} characters from {file_path}")
         except FileNotFoundError:
             content = "The neural network processes information through spiking patterns. Each neuron contributes to the overall computation. Machine learning algorithms use artificial neural networks to simulate biological processes. Deep learning models can generate text by learning patterns from large datasets. Spiking neural networks offer a more biologically plausible approach to artificial intelligence."
@@ -240,7 +174,7 @@ class NeuronAwareTextProcessor:
         self.idx_to_word = {idx: word for word, idx in self.word_to_idx.items()}
         
         for i in range(len(words) - 1):
-            self.bigram_counts[(words[i], words[i+1])] += self.word_to_idx[words[i]]
+            self.bigram_counts[(words[i], words[i+1])] += 1
         
         self.create_transition_matrix_features()
         return words
@@ -254,7 +188,7 @@ class NeuronAwareTextProcessor:
         for (w1, w2), count in self.bigram_counts.items():
             if w1 in self.word_to_idx and w2 in self.word_to_idx:
                 i, j = self.word_to_idx[w1], self.word_to_idx[w2]
-                self.transition_matrix[i, j] = count
+                self.transition_matrix[i, j] += self.word_to_idx["the"]
         
         # Normalize rows to get initial probabilities
         row_sums = self.transition_matrix.sum(axis=1, keepdims=True)
@@ -273,15 +207,15 @@ class NeuronAwareTextProcessor:
         # But apply a slight boost to non-zero probabilities for emphasis
         self.transition_probs = 1 - first_negation
         # Boost non-zero probabilities slightly to emphasize likely transitions
-        self.transition_probs = np.where(self.transition_probs > 0.5, 
+        self.transition_probs = np.where(self.transition_probs > epsilon, 
                                         self.transition_probs * 1.1, 
                                         self.transition_probs)
         # Re-normalize to ensure probabilities sum to 1
-        final_sums = self.transition_probs.sum(axis=0, keepdims=True)
+        final_sums = self.transition_probs.sum(axis=1, keepdims=True)
         self.transition_probs = np.divide(self.transition_probs, final_sums, 
                                         out=np.zeros_like(self.transition_probs), 
-                                        where=final_sums!=1)
-        
+                                        where=final_sums!=0)
+    
     def get_transition_features(self, word):
         """Extract transition-based features for a word."""
         features = []
@@ -326,6 +260,7 @@ class NeuronAwareTextProcessor:
             return 0.5
         
         user_words = user_input.lower().split()
+        max_similarity = 0.0
         common = 0
         for user_word in user_words:
             common += self.word_to_idx.get(user_word, 0)
@@ -452,39 +387,40 @@ class TextGenerator:
         for i in range(length - 1):
             neural_idx = i % len(neural_influence)
             neural_gate = neural_influence[neural_idx]
-                
-            if neural_gate > 0.1 and seed_words:
+            
+            if neural_gate > 0.8 and seed_words:
                 candidates = self.get_seed_candidates(seed_words)
                 if not candidates:
                     candidates = self.transitions.get(current_word, [])
-                else:
-                    candidates = self.transitions.get(current_word, [])
+            else:
+                candidates = self.transitions.get(current_word, [])
             
-                if not candidates:
-                    current_word = random.choice(list(self.transitions.keys()))
-                    generated_words.append(current_word)
-                    continue
+            if not candidates:
+                current_word = random.choice(list(self.transitions.keys()))
+                generated_words.append(current_word)
+                continue
+            
+            moderated_candidates = self.moderate_candidate_selection(
+                candidates, graph_features, neural_idx
+            )
+            
+            words, weights = zip(*moderated_candidates)
+            weights = np.array(weights, dtype=float)
+            
+            if graph_features is not None:
+                coherence_idx = i % len(graph_features['coherence'])
+                coherence_boost = graph_features['coherence'][coherence_idx]
+                neural_weight = max(0.1, neural_influence[neural_idx] * (1 + coherence_boost))
+            else:
+                neural_weight = max(0.1, neural_influence[neural_idx])
                 
-                moderated_candidates = self.moderate_candidate_selection(
-                    candidates, graph_features, neural_gate
-                )
-                
-                words, weights = zip(*moderated_candidates)
-                weights = np.array(weights, dtype=float)
-                
-                if graph_features is not None:
-                    coherence_idx = i % len(graph_features['coherence'])
-                    coherence_boost = graph_features['coherence'][coherence_idx]
-                    neural_weight = max(0.1, neural_influence[neural_idx] * (1 + coherence_boost))
-                else:
-                    neural_weight = max(0.1, neural_influence[neural_idx])
-                    
-                weights = weights * (1 + neural_weight)
-                weights = weights / weights.sum() if weights.sum() > 0 else np.ones_like(weights) / len(weights)
-                
-                next_word = np.random.choice(words, p=weights)
+            weights = weights * (1 + neural_weight)
+            weights = weights / weights.sum() if weights.sum() > 0 else np.ones_like(weights) / len(weights)
+            
+            next_word = np.random.choice(words, p=weights)
+            if next_word != generated_words[-1]:
                 generated_words.append(next_word)
-                current_word = next_word
+            current_word = next_word
         
         return ' '.join(generated_words)
     
@@ -624,6 +560,20 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
                 similarity = self.text_processor.get_semantic_similarity(word, user_word)
                 if similarity > 0.1:
                     context_boost += similarity * context_strength
+                    candidates = self.transitions.get(current_word, [])
+                    
+                    if not user_words or context_strength < 0.1:
+                        return candidates
+                    
+                    # Boost candidates that are similar to user words
+                    contextual_candidates = []
+                    for word, weight in self.transitions.get(user_word, []):
+                        context_boost = 1.0
+                        
+                        for user_word in user_words:
+                            similarity = self.text_processor.get_semantic_similarity(word, user_word)
+                            if similarity > 0.1:
+                                context_boost += similarity * context_strength
             
             contextual_candidates.append((word, weight * context_boost))
         
@@ -661,7 +611,8 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
             
             if not candidates:
                 current_word = random.choice(list(self.transitions.keys()))
-                generated_words.append(current_word)
+                if current_word != generated_words[-1]:
+                    generated_words.append(current_word)
                 continue
             
             # Apply subjective ontology weighting
@@ -680,7 +631,8 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
             weights = weights / weights.sum() if weights.sum() > 0 else np.ones_like(weights) / len(weights)
             
             next_word = np.random.choice(words, p=weights)
-            generated_words.append(next_word)
+            if next_word != generated_words[-1]:
+                generated_words.append(next_word)
             current_word = next_word
             
             # Decay user context over time
@@ -688,99 +640,166 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
         
         return ' '.join(generated_words)
 
+def process_user_input_through_snn(filename, user_input, text_processor, snn_model, num_steps=10):
+    """Process user input through the simplified SNN."""
+    # Load base text data
+    words = text_processor.load_and_process_text(filename)
+    
+    # Calculate subjective ontology components
+    user_words = user_input.lower().split()
+    last_word = user_words[-1] if user_words else ''
+    p = text_processor.get_semantic_similarity(last_word, user_input)
+    transition_features = text_processor.get_transition_features(last_word)
+    c = np.mean(transition_features) if transition_features else 0.0
+    e = 0.0  # Environmental factor
+    
+    # Generate features for user input
+    user_features = text_processor.words_to_neural_features(
+        words, 
+        user_input=user_input
+    )
+    
+    # Scale features
+    scaler = StandardScaler()
+    features_scaled = scaler.fit_transform(user_features)
+    
+    # Convert to tensor and ensure correct shape
+    features_tensor = torch.FloatTensor(features_scaled)
+    
+    # Ensure we have proper dimensions for pooling
+    if features_tensor.dim() == 2:
+        features_tensor = features_tensor.unsqueeze(1)  # Add channel dimension
+    
+    # Handle case where feature dimension might be odd
+    if features_tensor.shape[2] % 2 != 0:
+        # Pad to make it even for pooling
+        padding = torch.zeros(features_tensor.shape[0], features_tensor.shape[1], 1)
+        features_tensor = torch.cat([features_tensor, padding], dim=2)
+    
+    # Create pooling layers
+    pool = nn.MaxPool1d(kernel_size=2, stride=2, return_indices=True)
+    unpool = nn.MaxUnpool1d(kernel_size=2, stride=2)
+    
+    # Apply pooling and unpooling
+    pooled_output, indices = pool(features_tensor)
+    unpooled_features = unpool(pooled_output, indices, output_size=features_tensor.size())
+    
+    # Remove channel dimension if added
+    if unpooled_features.dim() == 3 and unpooled_features.size(1) == 1:
+        unpooled_features = unpooled_features.squeeze(1)
+    
+    # Ensure correct feature dimension matches num_neurons
+    if unpooled_features.shape[1] != snn_model.num_neurons:
+        # Resize to match expected dimensions
+        if unpooled_features.shape[1] > snn_model.num_neurons:
+            unpooled_features = unpooled_features[:, :snn_model.num_neurons]
+        else:
+            # Pad with zeros
+            padding_size = snn_model.num_neurons - unpooled_features.shape[1]
+            padding = torch.zeros(unpooled_features.shape[0], padding_size)
+            unpooled_features = torch.cat([unpooled_features, padding], dim=1)
+    
+    # Generate spikes
+    spike_data = spikegen.rate(unpooled_features, num_steps=num_steps)
+    
+    # Process through simplified SNN - FIXED: Pass spike_data instead of indices
+    spk_rec, mem_rec = run_simple_snn(spike_data, snn_model)
+    
+    return spk_rec, mem_rec
+
+def analyze_moderation_impact(regular_text, moderated_text):
+    """Analyze the impact of FGCN moderation on text quality."""
+    regular_words = regular_text.split()
+    moderated_words = moderated_text.split()
+    
+    analysis = {
+        'length_difference': len(moderated_words) - len(regular_words),
+        'unique_words_regular': len(set(regular_words)),
+        'unique_words_moderated': len(set(moderated_words)),
+        'vocabulary_diversity_regular': len(set(regular_words)) / len(regular_words) if regular_words else 0,
+        'vocabulary_diversity_moderated': len(set(moderated_words)) / len(moderated_words) if moderated_words else 0,
+        'common_words': len(set(regular_words) & set(moderated_words)),
+        'word_overlap_ratio': len(set(regular_words) & set(moderated_words)) / len(set(regular_words) | set(moderated_words)) if (regular_words or moderated_words) else 0
+    }
+    
+    return analysis
+
+def visualize_moderation_effects(spk_rec, mem_rec, fgcn_model):
+    """Visualize how FGCN features affect text generation."""
+    data = create_neuron_aligned_graph(spk_rec, mem_rec)
+    
+    with torch.no_grad():
+        graph_features = fgcn_model(data)
+    
+    coherence_signal = torch.mean(graph_features, dim=0).detach().cpu().numpy()
+    stability_signal = torch.std(graph_features, dim=0).detach().cpu().numpy()
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    ax1.plot(coherence_signal)
+    ax1.set_title('FGCN Coherence Signal')
+    ax1.set_xlabel('Feature Dimension')
+    ax1.set_ylabel('Coherence Value')
+    
+    ax2.plot(stability_signal)
+    ax2.set_title('FGCN Stability Signal')
+    ax2.set_xlabel('Feature Dimension')
+    ax2.set_ylabel('Stability Value')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return coherence_signal, stability_signal
+
 def main_with_user_context_awareness():
-    """Main function with user context awareness and training."""
+    """Main function with simplified SNN (no polymorphic neurons)."""
     num_neurons = 256
-    num_steps = 64  # Make longer for training signal
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    num_steps = 10
+    img_size = 8
     
-    print(f"Initializing with {num_neurons} neurons on device: {device}")
+    print(f"Initializing Simplified SNN with {num_neurons} neurons")
     
-    # Initialize components
+    # Initialize components with simplified SNN
     text_processor = NeuronAwareTextProcessor(num_neurons)
+    snn_model = SimpleSNN(num_neurons)
     
     print("="*60)
-    print("FGCN TEXT GENERATOR (with training)")
+    print("SIMPLIFIED SNN TEXT GENERATOR")
     print("="*60)
-    print("This system generates contextually relevant text based on user input.")
+    print("This system processes your input through a spiking neural network")
+    print("and generates contextually relevant text based on neural patterns.")
     print("Enter text to generate responses.")
     print("="*60)
     
-    filename = input("Enter dataset filename (or press enter for default): ") or "test.txt"
-    text_processor.load_and_process_text(filename)
+    filename = input("Enter dataset filename: ")
     
-    # Generate synthetic neural sequences (replace with real data if available)
-    print("Generating synthetic neural data...")
-    spk_rec_full = torch.rand(num_steps, num_neurons)
-    mem_rec_full = torch.rand(num_steps, num_neurons)
-    
-    # Train/val split
-    split = int(0.8 * num_steps)
-    spk_train, spk_val = spk_rec_full[:split], spk_rec_full[split:]
-    mem_train, mem_val = mem_rec_full[:split], mem_rec_full[split:]
-    
-    print(f"Creating datasets - train: {spk_train.shape}, val: {spk_val.shape}")
-    train_ds = GraphSequenceDataset(spk_train, mem_train)
-    val_ds = GraphSequenceDataset(spk_val, mem_val)
-    
-    train_loader = make_loader(train_ds, batch_size=8, num_workers=4)
-    val_loader = make_loader(val_ds, batch_size=8, num_workers=4)
-    
-    # Initialize FGCN model with correct in_dim from a sample graph
-    print("Initializing FGCN model...")
-    sample_data = create_neuron_aligned_graph(spk_train[:1], mem_train[:1])
-    in_dim = sample_data.x.shape[1]
-    fgcn_model = DataAwareFGCN(in_dim=in_dim, hidden_dim=64, out_dim=32).to(device)
-    
-    # Setup training
-    optimizer = torch.optim.Adam(fgcn_model.parameters(), lr=0.001)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.9)
-    
-    # Train the model
-    epochs = 10
-    best_val_loss = float('inf')
-    
-    print(f"Training FGCN for {epochs} epochs...")
-    for epoch in range(epochs):
-        train_loss = train_one_epoch(fgcn_model, train_loader, device, optimizer)
-        val_loss = evaluate(fgcn_model, val_loader, device)
-        scheduler.step()
-        
-        print(f"Epoch {epoch+1}/{epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
-        
-        # Save best model
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            save_checkpoint('best_fgcn_model.pth', epoch, fgcn_model, optimizer, scheduler, best_val_loss)
-            print(f"New best model saved with val loss: {best_val_loss:.4f}")
-    
-    print("Training completed!")
-    
-    # Interactive generation loop
     while True:
         user_input = input("\nUSER: ").strip()
         if not user_input:
-            print("Please enter some text or 'quit' to exit.")
+            print("Please enter some text.")
             continue
-        
-        if user_input.lower() in ['quit', 'exit']:
-            break
         
         print(f"\nProcessing input: '{user_input}'")
         print("="*40)
         
-        # Use trained model with fresh synthetic data for generation
-        spk_rec = torch.rand(10, num_neurons)
-        mem_rec = torch.rand(10, num_neurons)
+        # Process user input through simplified SNN
+        spk_rec, mem_rec = process_user_input_through_snn(
+            filename, user_input, text_processor, snn_model, num_steps
+        )
         
-        # Create user-context-aware text generator with trained model
+        # Initialize FGCN model
+        data = create_neuron_aligned_graph(spk_rec, mem_rec)
+        fgcn_model = DataAwareFGCN(data.x.shape[1])
+        
+        # Create user-context-aware text generator
         context_generator = UserContextAwareTextGenerator(text_processor, fgcn_model)
         
         # Generate contextual response
         contextual_text = context_generator.generate_contextual_text(
             user_input, spk_rec, mem_rec, length=500
         )
-        print("\nAI:", contextual_text)
+        print()
+        print("AI:", contextual_text)
 
 if __name__ == "__main__":
     main_with_user_context_awareness()
