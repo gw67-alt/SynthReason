@@ -13,6 +13,7 @@ import random
 import math
 
 KB_LEN = 99999
+
 class HeavyDutyCycleProbabilityManager:
     """Heavy duty cycle manager for probability distributions with neural feedback."""
     def __init__(self, cycle_length=100000000, duty_ratio=100000000000, decay_rate=100000000000):
@@ -509,68 +510,6 @@ def process_user_input_through_snn(filename, user_input, text_processor, snn_mod
     print(f"📈 Final duty cycle stats: {snn_model.get_duty_cycle_status()}")
     
     return spk_rec, mem_rec, duty_cycle_states
-
-# [Include all other unchanged classes here: create_neuron_aligned_graph, DataAwareFGCN, etc.]
-
-def main_with_user_context_awareness():
-    """Main function with heavy duty cycle SNN implementation."""
-    num_neurons = 256
-    num_steps = 10
-    img_size = 8
-    
-    print("="*70)
-    print("🔧 HEAVY DUTY CYCLE SNN TEXT GENERATOR")
-    print("="*70)
-    print("Enhanced with heavy duty cycle probability modulation")
-    print("for robust neural pattern processing and text generation.")
-    print("="*70)
-    
-    print(f"⚙️  Initializing Heavy Duty Cycle SNN with {num_neurons} neurons")
-    
-    # Initialize components with heavy duty cycle SNN
-    text_processor = NeuronAwareTextProcessor(num_neurons)
-    snn_model = SimpleSNN(num_neurons)
-    
-    filename = input("📁 Enter dataset filename: ")
-    
-    while True:
-        user_input = input("\n👤 USER: ").strip()
-        if not user_input:
-            print("Please enter some text.")
-            continue
-        
-        print(f"\n🔄 Processing input: '{user_input}'")
-        print("="*50)
-        
-        # Process user input through heavy duty cycle SNN
-        spk_rec, mem_rec, duty_cycle_states = process_user_input_through_snn(
-            filename, user_input, text_processor, snn_model, num_steps
-        )
-        
-        # Print duty cycle statistics
-        final_stats = snn_model.get_duty_cycle_status()
-        print(f"\n📊 Heavy Duty Cycle Final Stats:")
-        print(f"   Completed Cycles: {final_stats['completed_cycles']}")
-        print(f"   Current Progress: {final_stats['cycle_progress']*100:.1f}%")
-        print(f"   Active Phase: {'YES' if final_stats['is_active'] else 'NO'}")
-        print(f"   Thermal Level: {final_stats['thermal_level']:.3f}")
-        
-        # Initialize FGCN model
-        data = create_neuron_aligned_graph(spk_rec, mem_rec)
-        fgcn_model = DataAwareFGCN(data.x.shape[1])
-        
-        # Create user-context-aware text generator
-        context_generator = UserContextAwareTextGenerator(text_processor, fgcn_model)
-        
-        # Generate contextual response
-        contextual_text = context_generator.generate_contextual_text(
-            user_input, spk_rec, mem_rec, length=50
-        )
-        
-        print(f"\n🤖 AI: {contextual_text}")
-        print(f"\n📈 Duty cycle enhanced neural patterns successfully applied!")
-
-
 
 class SimpleSNN(nn.Module):
     """Simplified SNN with only regular leaky neurons."""
