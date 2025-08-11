@@ -1,4 +1,3 @@
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -11,8 +10,567 @@ from torch_geometric.nn import GCNConv
 import matplotlib.pyplot as plt
 from collections import defaultdict, Counter
 import random
+import math
 
 KB_LEN = 99999
+class HeavyDutyCycleProbabilityManager:
+    """Heavy duty cycle manager for probability distributions with neural feedback."""
+    def __init__(self, cycle_length=100000000, duty_ratio=100000000000, decay_rate=100000000000):
+        self.cycle_length = cycle_length
+        self.duty_ratio = duty_ratio  # Active portion of the cycle
+        self.decay_rate = decay_rate
+        self.cycle_position = 0
+        self.active_threshold = cycle_length * duty_ratio
+        self.probability_buffer = []
+        self.cycle_history = []
+        self.thermal_accumulator = 0.0
+        self.neural_feedback_gain = 0.2
+        
+        print(f"🔧 Heavy Duty Cycle Manager initialized:")
+        print(f"   Cycle Length: {cycle_length}")
+        print(f"   Duty Ratio: {duty_ratio:.2f} ({duty_ratio*100:.1f}%)")
+        print(f"   Active Threshold: {self.active_threshold:.1f}")
+        
+    def is_active_phase(self):
+        """Check if we're in the active phase of the duty cycle."""
+        return self.cycle_position < self.active_threshold
+        
+    def get_duty_cycle_modulation(self):
+        """Get current duty cycle modulation factor."""
+        if self.is_active_phase():
+            # Active phase: sine wave modulation for smooth transitions
+            progress = self.cycle_position / self.active_threshold
+            modulation = 0.5 + 0.5 * math.sin(progress * math.pi)
+        else:
+            # Inactive phase: exponential decay
+            inactive_progress = (self.cycle_position - self.active_threshold) / (self.cycle_length - self.active_threshold)
+            modulation = 0.1 * math.exp(-3 * inactive_progress)
+            
+        return modulation
+        
+    def apply_thermal_feedback(self, neural_activity):
+        """Apply thermal feedback based on neural activity."""
+        activity_level = np.mean(neural_activity) if isinstance(neural_activity, np.ndarray) else neural_activity.mean().item()
+        
+        # Accumulate thermal energy
+        self.thermal_accumulator += activity_level * 0.1
+        self.thermal_accumulator *= self.decay_rate  # Natural cooling
+        
+        # Thermal modulation affects cycle timing
+        thermal_speedup = 1.0 + self.thermal_accumulator * 0.2
+        return thermal_speedup
+        
+    def update_cycle(self, neural_activity=None):
+        """Update the duty cycle position with neural feedback."""
+        speedup = 1.0
+        if neural_activity is not None:
+            speedup = self.apply_thermal_feedback(neural_activity)
+            
+        self.cycle_position += speedup
+        
+        if self.cycle_position >= self.cycle_length:
+            # Complete cycle - record and reset
+            self.cycle_history.append({
+                'thermal_peak': self.thermal_accumulator,
+                'avg_activity': np.mean(self.probability_buffer) if self.probability_buffer else 0.0
+            })
+            self.cycle_position = 0
+            self.probability_buffer.clear()
+            
+            # Keep only last 10 cycles
+            if len(self.cycle_history) > 10:
+                self.cycle_history.pop(0)
+                
+    def modulate_probabilities(self, base_probabilities, neural_activity=None):
+        """Apply heavy duty cycle modulation to probabilities."""
+        self.update_cycle(neural_activity)
+        
+        modulation = self.get_duty_cycle_modulation()
+        phase_indicator = "ACTIVE" if self.is_active_phase() else "INACTIVE"
+        
+        # Store for history tracking
+        if isinstance(base_probabilities, torch.Tensor):
+            self.probability_buffer.append(base_probabilities.mean().item())
+            modulated = base_probabilities * modulation
+        else:
+            avg_prob = np.mean(base_probabilities)
+            self.probability_buffer.append(avg_prob)
+            modulated = base_probabilities * modulation
+            
+        # Neural feedback amplification during active phase
+        if self.is_active_phase() and neural_activity is not None:
+            if isinstance(neural_activity, torch.Tensor):
+                feedback_boost = 1.0 + (neural_activity.mean().item() * self.neural_feedback_gain * modulation)
+            else:
+                feedback_boost = 1.0 + (np.mean(neural_activity) * self.neural_feedback_gain * modulation)
+            modulated = modulated * feedback_boost
+            
+       
+        return modulated
+        
+    def get_cycle_statistics(self):
+        """Get current cycle statistics."""
+        return {
+            'current_position': self.cycle_position,
+            'cycle_progress': self.cycle_position / self.cycle_length,
+            'is_active': self.is_active_phase(),
+            'modulation_factor': self.get_duty_cycle_modulation(),
+            'thermal_level': self.thermal_accumulator,
+            'completed_cycles': len(self.cycle_history)
+        }
+
+class SimpleSNN(nn.Module):
+    """Simplified SNN with heavy duty cycle probability integration."""
+    def __init__(self, num_neurons):
+        super().__init__()
+        self.num_neurons = num_neurons
+        self.input_layer = nn.Linear(num_neurons, num_neurons)
+        self.neurons = snn.Leaky(
+            beta=0.5, 
+            init_hidden=False, 
+            spike_grad=surrogate.fast_sigmoid()
+        )
+        self.global_adaptation = nn.Parameter(torch.ones(1) * 0.5)
+        
+        # Heavy duty cycle integration
+        self.duty_cycle_manager = HeavyDutyCycleProbabilityManager()
+        self.probability_gate = nn.Linear(num_neurons, num_neurons)
+        
+    def forward(self, x, mem=None):
+        # Ensure input has correct shape and type
+        if x.dim() == 1:
+            x = x.unsqueeze(0)  # Add batch dimension if missing
+        
+        x_processed = self.input_layer(x)
+        
+        # Apply probability gating with duty cycle modulation
+        prob_weights = torch.sigmoid(self.probability_gate(x_processed))
+        modulated_weights = self.duty_cycle_manager.modulate_probabilities(
+            prob_weights, 
+            neural_activity=x_processed
+        )
+        
+        # Apply modulated probabilities to input
+        x_modulated = x_processed * modulated_weights
+        
+        if mem is None:
+            spk, mem = self.neurons(x_modulated)
+        else:
+            spk, mem = self.neurons(x_modulated, mem)
+        
+        # Apply global adaptation with duty cycle influence
+        cycle_stats = self.duty_cycle_manager.get_cycle_statistics()
+        adaptive_gain = self.global_adaptation * (1 + cycle_stats['modulation_factor'])
+        spk = spk * adaptive_gain
+        
+        return spk.squeeze(0), mem.squeeze(0)  # Remove batch dim for consistency
+    
+    def get_duty_cycle_status(self):
+        """Get current duty cycle status for monitoring."""
+        return self.duty_cycle_manager.get_cycle_statistics()
+
+def run_simple_snn(spike_data, snn_model):
+    """Run the simplified SNN with heavy duty cycle tracking."""
+    spk_rec, mem_rec = [], []
+    duty_cycle_states = []
+    utils.reset(snn_model)
+    mem = None
+    
+    print("🚀 Starting SNN processing with heavy duty cycle...")
+    
+    for step in range(spike_data.shape[0]):
+        if spike_data.shape[1] > 0:
+            # Fix: Access the correct dimension based on spike_data shape
+            if spike_data.dim() == 3:  # (time_steps, batch, features)
+                input_data = spike_data[step, 0, :]  # Get first batch
+            else:  # (time_steps, features)
+                input_data = spike_data[step, :]
+                
+            spk, mem = snn_model(input_data, mem)
+            spk_rec.append(spk)
+            mem_rec.append(mem)
+            
+            # Record duty cycle state
+            duty_state = snn_model.get_duty_cycle_status()
+            duty_cycle_states.append(duty_state)
+            
+            if step % 20 == 0:
+                phase = "ACTIVE" if duty_state['is_active'] else "INACTIVE"
+                print(f"   Step {step}: Phase={phase}, Modulation={duty_state['modulation_factor']:.3f}")
+    
+    if spk_rec:
+        spk_rec = torch.stack(spk_rec)
+        mem_rec = torch.stack(mem_rec)
+    else:
+        # Handle empty case
+        spk_rec = torch.zeros(1, snn_model.num_neurons)
+        mem_rec = torch.zeros(1, snn_model.num_neurons)
+    
+    print(f"✅ SNN processing complete. Output shapes: spk={spk_rec.shape}, mem={mem_rec.shape}")
+    return spk_rec, mem_rec, duty_cycle_states
+
+class NeuronAwareTextProcessor:
+    """Text processor with heavy duty cycle probability enhancement."""
+    def __init__(self, num_neurons=16):
+        self.num_neurons = num_neurons
+        self.vocab = {}
+        self.word_to_idx = {}
+        self.idx_to_word = {}
+        self.bigram_counts = Counter()
+        self.transition_matrix = None
+        self.transition_probs = None
+        self.duty_cycle_manager = HeavyDutyCycleProbabilityManager(
+            cycle_length=32, 
+            duty_ratio=0.8, 
+            decay_rate=0.92
+        )
+    
+    def load_and_process_text(self, file_path="test.txt"):
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = ' '.join(f.read().split()[:KB_LEN])
+            print(f"📚 Loaded {len(content)} characters from {file_path}")
+   
+        words = content.lower().split()
+        words = [w for w in words if w]
+        unique_words = list(set(words))
+        self.word_to_idx = {word: idx for idx, word in enumerate(unique_words)}
+        self.idx_to_word = {idx: word for word, idx in self.word_to_idx.items()}
+        
+        for i in range(len(words) - 1):
+            self.bigram_counts[(words[i], words[i+1])] += 1
+        
+        self.create_transition_matrix_features()
+        return words
+    
+    def create_transition_matrix_features(self):
+        """Create transition matrix with heavy duty cycle probability enhancement."""
+        vocab_size = len(self.word_to_idx)
+        self.transition_matrix = np.zeros((vocab_size, vocab_size))
+        
+        # Fill transition matrix
+        for (w1, w2), count in self.bigram_counts.items():
+            if w1 in self.word_to_idx and w2 in self.word_to_idx:
+                i, j = self.word_to_idx[w1], self.word_to_idx[w2]
+                self.transition_matrix[i, j] += count
+        
+        # Normalize rows to get initial probabilities
+        row_sums = self.transition_matrix.sum(axis=1, keepdims=True)
+        initial_probs = np.divide(self.transition_matrix, row_sums, 
+                                out=np.zeros_like(self.transition_matrix), 
+                                where=row_sums!=0)
+        
+        # Apply heavy duty cycle modulation to transition probabilities
+        modulated_probs = self.duty_cycle_manager.modulate_probabilities(
+            initial_probs, 
+            neural_activity=initial_probs
+        )
+        
+        # Apply double negative logic with duty cycle enhancement
+        first_negation = 1 - modulated_probs
+        epsilon = 1e-8
+        first_negation = np.maximum(first_negation, epsilon)
+        
+        # Second negation with duty cycle boost
+        self.transition_probs = 1 - first_negation
+        duty_boost = 1.0 + self.duty_cycle_manager.get_duty_cycle_modulation() * 0.1
+        self.transition_probs = np.where(self.transition_probs > epsilon, 
+                                        self.transition_probs * duty_boost, 
+                                        self.transition_probs)
+        
+        # Re-normalize
+        final_sums = self.transition_probs.sum(axis=1, keepdims=True)
+        self.transition_probs = np.divide(self.transition_probs, final_sums, 
+                                        out=np.zeros_like(self.transition_probs), 
+                                        where=final_sums!=0)
+    
+    def get_transition_features(self, word):
+        """Extract transition-based features with duty cycle modulation."""
+        features = []
+        word_idx = self.word_to_idx.get(word, 0)
+        
+        if self.transition_probs is not None:
+            # Get base transition features
+            out_transitions = self.transition_probs[word_idx]
+            
+            # Apply duty cycle modulation to features
+            modulated_transitions = self.duty_cycle_manager.modulate_probabilities(
+                out_transitions,
+                neural_activity=out_transitions
+            )
+            
+            # Number of possible next words
+            transition_diversity = np.sum(modulated_transitions > 0)
+            features.append(transition_diversity)
+            
+            # Maximum transition probability (duty cycle enhanced)
+            max_prob = np.max(modulated_transitions)
+            features.append(max_prob)
+            
+            # Entropy of transitions (with duty cycle weighting)
+            probs = modulated_transitions[modulated_transitions > 0]
+            if len(probs) > 0:
+                entropy = -np.sum(probs * np.log2(probs + 1e-8))
+            else:
+                entropy = 0
+            features.append(entropy)
+            
+            # Incoming transitions
+            in_transitions = self.transition_probs[:, word_idx]
+            in_degree = np.sum(in_transitions > 0)
+            features.append(in_degree)
+            
+            # Centrality measure with duty cycle boost
+            centrality = np.sum(in_transitions) * (1 + self.duty_cycle_manager.get_duty_cycle_modulation())
+            features.append(centrality)
+        else:
+            features.extend([0, 0, 0, 0, 0])
+        
+        return features
+    
+    def get_semantic_similarity(self, word, user_input):
+        """Semantic similarity with heavy duty cycle probability weighting."""
+        if not user_input:
+            return 0.5
+        
+        user_words = user_input.lower().split()
+        max_similarity = 0.0
+        common = 0
+        
+        for user_word in user_words:
+            word_weight = self.word_to_idx.get(user_word, 0)
+            common += word_weight
+        
+        # Apply duty cycle modulation to similarity
+        base_similarity = min(1.0, common / 100.0)  # Normalize
+        duty_modulated = self.duty_cycle_manager.modulate_probabilities(
+            np.array([base_similarity]),
+            neural_activity=np.array([common])
+        )
+        
+        return float(duty_modulated[0])
+    
+    def get_context_features(self, word, prev_word=None, next_word=None):
+        """Get contextual features with duty cycle enhancement."""
+        features = []
+        
+        # Previous word context
+        if prev_word:
+            prev_bigram_count = self.bigram_counts.get((prev_word, word), 0)
+            features.append(prev_bigram_count)
+        else:
+            features.append(0)
+        
+        # Next word context  
+        if next_word:
+            next_bigram_count = self.bigram_counts.get((word, next_word), 0)
+            features.append(next_bigram_count)
+        else:
+            features.append(0)
+        
+        # Apply duty cycle modulation to context features
+        if features:
+            modulated_features = self.duty_cycle_manager.modulate_probabilities(
+                np.array(features),
+                neural_activity=np.array(features)
+            )
+            return modulated_features.tolist()
+        
+        return features
+    
+    def words_to_neural_features(self, words, user_input=None, max_words=50):
+        """Convert words to neural-compatible features with heavy duty cycle integration."""
+        features = []
+        
+        # If user input is provided, prioritize it
+        if user_input:
+            user_words = user_input.lower().split()
+            combined_words = user_words + words[:max(0, max_words-len(user_words))]
+        else:
+            combined_words = words[:max_words]
+        
+        for i, word in enumerate(combined_words):
+            word_idx = self.word_to_idx.get(word, 0)
+            
+            # Start with transition-based features (duty cycle enhanced)
+            feature_vector = self.get_transition_features(word)
+            
+            # Add context features (duty cycle enhanced)
+            prev_word = combined_words[i-1] if i > 0 else None
+            next_word = combined_words[i+1] if i < len(combined_words)-1 else None
+            context_features = self.get_context_features(word, prev_word, next_word)
+            feature_vector.extend(context_features)
+            
+            # Apply heavy duty cycle weighting to all features
+            if user_input and i < len(user_input.split()):
+                context_weight = 2.0
+                position_weight = 1.0 - (i / len(user_input.split())) if len(user_input.split()) > 0 else 1.0
+            else:
+                context_weight = 1.0
+                position_weight = 0.5
+            
+            # Get duty cycle modulation for this word
+            duty_modulation = self.duty_cycle_manager.get_duty_cycle_modulation()
+            total_weight = context_weight * position_weight * (1 + duty_modulation)
+            
+            # Apply weights to existing features
+            feature_vector = [f * total_weight * word_idx for f in feature_vector]
+            
+            # Add word embedding-like features
+            feature_vector.append(word_idx / len(self.word_to_idx))
+            feature_vector.append(len(word) / 20.0)
+            
+            # Add semantic similarity to user input (duty cycle enhanced)
+            if user_input:
+                similarity = self.get_semantic_similarity(word, user_input)
+                feature_vector.append(similarity)
+            else:
+                feature_vector.append(0.0)
+            
+            # Pad or truncate to match neuron count
+            while len(feature_vector) < self.num_neurons:
+                feature_vector.append(np.sin(len(feature_vector) * word_idx / 10.0) * duty_modulation)
+            feature_vector = feature_vector[:self.num_neurons]
+            features.append(feature_vector)
+        
+        return np.array(features)
+
+# [Rest of the classes remain the same: create_neuron_aligned_graph, DataAwareFGCN, neuron_to_image_mapping, TextGenerator, FGCNModeratedTextGenerator, SubjectiveOntologyProcessor, UserContextAwareTextGenerator]
+
+def process_user_input_through_snn(filename, user_input, text_processor, snn_model, num_steps=10):
+    """Process user input through the SNN with heavy duty cycle tracking."""
+    # Load base text data
+    words = text_processor.load_and_process_text(filename)
+    
+    print("🔧 Processing through Heavy Duty Cycle SNN...")
+    
+    # Calculate subjective ontology components
+    user_words = user_input.lower().split()
+    last_word = user_words[-1] if user_words else ''
+    p = text_processor.get_semantic_similarity(last_word, user_input)
+    transition_features = text_processor.get_transition_features(last_word)
+    c = np.mean(transition_features) if transition_features else 0.0
+    e = 0.0  # Environmental factor
+    
+    print(f"📊 Subjective Ontology - P: {p:.3f}, C: {c:.3f}, E: {e:.3f}")
+    
+    # Generate features for user input (with duty cycle enhancement)
+    user_features = text_processor.words_to_neural_features(
+        words, 
+        user_input=user_input
+    )
+    
+    # Scale features
+    scaler = StandardScaler()
+    features_scaled = scaler.fit_transform(user_features)
+    
+    # Convert to tensor and ensure correct shape
+    features_tensor = torch.FloatTensor(features_scaled)
+    
+    # Ensure we have proper dimensions for pooling
+    if features_tensor.dim() == 2:
+        features_tensor = features_tensor.unsqueeze(1)  # Add channel dimension
+    
+    # Handle case where feature dimension might be odd
+    if features_tensor.shape[2] % 2 != 0:
+        # Pad to make it even for pooling
+        padding = torch.zeros(features_tensor.shape[0], features_tensor.shape[1], 1)
+        features_tensor = torch.cat([features_tensor, padding], dim=2)
+    
+    # Create pooling layers
+    pool = nn.MaxPool1d(kernel_size=2, stride=2, return_indices=True)
+    unpool = nn.MaxUnpool1d(kernel_size=2, stride=2)
+    
+    # Apply pooling and unpooling
+    pooled_output, indices = pool(features_tensor)
+    unpooled_features = unpool(pooled_output, indices, output_size=features_tensor.size())
+    
+    # Remove channel dimension if added
+    if unpooled_features.dim() == 3 and unpooled_features.size(1) == 1:
+        unpooled_features = unpooled_features.squeeze(1)
+    
+    # Ensure correct feature dimension matches num_neurons
+    if unpooled_features.shape[1] != snn_model.num_neurons:
+        # Resize to match expected dimensions
+        if unpooled_features.shape[1] > snn_model.num_neurons:
+            unpooled_features = unpooled_features[:, :snn_model.num_neurons]
+        else:
+            # Pad with zeros
+            padding_size = snn_model.num_neurons - unpooled_features.shape[1]
+            padding = torch.zeros(unpooled_features.shape[0], padding_size)
+            unpooled_features = torch.cat([unpooled_features, padding], dim=1)
+    
+    # Generate spikes
+    spike_data = spikegen.rate(unpooled_features, num_steps=num_steps)
+    
+    # Process through SNN with heavy duty cycle tracking - FIXED
+    spk_rec, mem_rec, duty_cycle_states = run_simple_snn(spike_data, snn_model)
+    
+    print("✅ Heavy duty cycle SNN processing complete!")
+    print(f"📈 Final duty cycle stats: {snn_model.get_duty_cycle_status()}")
+    
+    return spk_rec, mem_rec, duty_cycle_states
+
+# [Include all other unchanged classes here: create_neuron_aligned_graph, DataAwareFGCN, etc.]
+
+def main_with_user_context_awareness():
+    """Main function with heavy duty cycle SNN implementation."""
+    num_neurons = 256
+    num_steps = 10
+    img_size = 8
+    
+    print("="*70)
+    print("🔧 HEAVY DUTY CYCLE SNN TEXT GENERATOR")
+    print("="*70)
+    print("Enhanced with heavy duty cycle probability modulation")
+    print("for robust neural pattern processing and text generation.")
+    print("="*70)
+    
+    print(f"⚙️  Initializing Heavy Duty Cycle SNN with {num_neurons} neurons")
+    
+    # Initialize components with heavy duty cycle SNN
+    text_processor = NeuronAwareTextProcessor(num_neurons)
+    snn_model = SimpleSNN(num_neurons)
+    
+    filename = input("📁 Enter dataset filename: ")
+    
+    while True:
+        user_input = input("\n👤 USER: ").strip()
+        if not user_input:
+            print("Please enter some text.")
+            continue
+        
+        print(f"\n🔄 Processing input: '{user_input}'")
+        print("="*50)
+        
+        # Process user input through heavy duty cycle SNN
+        spk_rec, mem_rec, duty_cycle_states = process_user_input_through_snn(
+            filename, user_input, text_processor, snn_model, num_steps
+        )
+        
+        # Print duty cycle statistics
+        final_stats = snn_model.get_duty_cycle_status()
+        print(f"\n📊 Heavy Duty Cycle Final Stats:")
+        print(f"   Completed Cycles: {final_stats['completed_cycles']}")
+        print(f"   Current Progress: {final_stats['cycle_progress']*100:.1f}%")
+        print(f"   Active Phase: {'YES' if final_stats['is_active'] else 'NO'}")
+        print(f"   Thermal Level: {final_stats['thermal_level']:.3f}")
+        
+        # Initialize FGCN model
+        data = create_neuron_aligned_graph(spk_rec, mem_rec)
+        fgcn_model = DataAwareFGCN(data.x.shape[1])
+        
+        # Create user-context-aware text generator
+        context_generator = UserContextAwareTextGenerator(text_processor, fgcn_model)
+        
+        # Generate contextual response
+        contextual_text = context_generator.generate_contextual_text(
+            user_input, spk_rec, mem_rec, length=50
+        )
+        
+        print(f"\n🤖 AI: {contextual_text}")
+        print(f"\n📈 Duty cycle enhanced neural patterns successfully applied!")
+
+
 
 class SimpleSNN(nn.Module):
     """Simplified SNN with only regular leaky neurons."""
@@ -146,198 +704,6 @@ def neuron_to_image_mapping(node_features, target_size=8):
     print(f"Final image shape: {img_data.shape}")
     print(f"Image value range: [{img_data.min():.3f}, {img_data.max():.3f}]")
     return img_data
-
-class NeuronAwareTextProcessor:
-    """Text processor that converts text to neural-compatible features."""
-    def __init__(self, num_neurons=16):
-        self.num_neurons = num_neurons
-        self.vocab = {}
-        self.word_to_idx = {}
-        self.idx_to_word = {}
-        self.bigram_counts = Counter()
-        self.transition_matrix = None
-        self.transition_probs = None
-    
-    def load_and_process_text(self, file_path="test.txt"):
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = ' '.join(f.read().split()[:KB_LEN])
-                print(f"Loaded {len(content)} characters from {file_path}")
-        except FileNotFoundError:
-            content = "The neural network processes information through spiking patterns. Each neuron contributes to the overall computation. Machine learning algorithms use artificial neural networks to simulate biological processes. Deep learning models can generate text by learning patterns from large datasets. Spiking neural networks offer a more biologically plausible approach to artificial intelligence."
-            print("Using sample text")
-        
-        words = content.lower().split()
-        words = [w for w in words if w]
-        unique_words = list(set(words))
-        self.word_to_idx = {word: idx for idx, word in enumerate(unique_words)}
-        self.idx_to_word = {idx: word for word, idx in self.word_to_idx.items()}
-        
-        for i in range(len(words) - 1):
-            self.bigram_counts[(words[i], words[i+1])] += 1
-        
-        self.create_transition_matrix_features()
-        return words
-    
-    def create_transition_matrix_features(self):
-        """Create a transition matrix and extract statistical features with double negative logic."""
-        vocab_size = len(self.word_to_idx)
-        self.transition_matrix = np.zeros((vocab_size, vocab_size))
-        
-        # Fill transition matrix
-        for (w1, w2), count in self.bigram_counts.items():
-            if w1 in self.word_to_idx and w2 in self.word_to_idx:
-                i, j = self.word_to_idx[w1], self.word_to_idx[w2]
-                self.transition_matrix[i, j] += self.word_to_idx["the"]
-        
-        # Normalize rows to get initial probabilities
-        row_sums = self.transition_matrix.sum(axis=1, keepdims=True)
-        initial_probs = np.divide(self.transition_matrix, row_sums, 
-                                out=np.zeros_like(self.transition_matrix), 
-                                where=row_sums!=0)
-        
-        # Apply double negative logic:
-        # First negation: Invert the probabilities (1 - prob)
-        first_negation = 1 - initial_probs
-        # Add small epsilon to avoid zero probabilities
-        epsilon = 1e-8
-        first_negation = np.maximum(first_negation, epsilon)
-        
-        # Second negation: Invert again to reinforce (1 - (1 - prob)) = prob
-        # But apply a slight boost to non-zero probabilities for emphasis
-        self.transition_probs = 1 - first_negation
-        # Boost non-zero probabilities slightly to emphasize likely transitions
-        self.transition_probs = np.where(self.transition_probs > epsilon, 
-                                        self.transition_probs * 1.1, 
-                                        self.transition_probs)
-        # Re-normalize to ensure probabilities sum to 1
-        final_sums = self.transition_probs.sum(axis=1, keepdims=True)
-        self.transition_probs = np.divide(self.transition_probs, final_sums, 
-                                        out=np.zeros_like(self.transition_probs), 
-                                        where=final_sums!=0)
-    
-    def get_transition_features(self, word):
-        """Extract transition-based features for a word."""
-        features = []
-        word_idx = self.word_to_idx.get(word, 0)
-        
-        if self.transition_probs is not None:
-            # Outgoing transition features
-            out_transitions = self.transition_probs[word_idx]
-            
-            # Number of possible next words
-            transition_diversity = np.sum(out_transitions > 0)
-            features.append(transition_diversity)
-            
-            # Maximum transition probability
-            max_prob = np.max(out_transitions)
-            features.append(max_prob)
-            
-            # Entropy of transitions
-            probs = out_transitions[out_transitions > 0]
-            if len(probs) > 0:
-                entropy = -np.sum(probs * np.log2(probs + 1e-8))
-            else:
-                entropy = 0
-            features.append(entropy)
-            
-            # Incoming transitions
-            in_transitions = self.transition_probs[:, word_idx]
-            in_degree = np.sum(in_transitions > 0)
-            features.append(in_degree)
-            
-            # Centrality measure
-            centrality = np.sum(in_transitions)
-            features.append(centrality)
-        else:
-            features.extend([0, 0, 0, 0, 0])
-        
-        return features
-    
-    def get_semantic_similarity(self, word, user_input):
-        """Simple semantic similarity based on shared characters and context."""
-        if not user_input:
-            return 0.5
-        
-        user_words = user_input.lower().split()
-        max_similarity = 0.0
-        common = 0
-        for user_word in user_words:
-            common += self.word_to_idx.get(user_word, 0)
-        return common
-    
-    def get_context_features(self, word, prev_word=None, next_word=None):
-        """Get contextual features based on bigrams."""
-        features = []
-        
-        # Previous word context
-        if prev_word:
-            prev_bigram_count = self.bigram_counts.get((prev_word, word), 0)
-            features.append(prev_bigram_count)
-        else:
-            features.append(0)
-        
-        # Next word context
-        if next_word:
-            next_bigram_count = self.bigram_counts.get((word, next_word), 0)
-            features.append(next_bigram_count)
-        else:
-            features.append(0)
-        
-        return features
-    
-    def words_to_neural_features(self, words, user_input=None, max_words=50):
-        """Convert words to neural-compatible features."""
-        features = []
-        
-        # If user input is provided, prioritize it
-        if user_input:
-            user_words = user_input.lower().split()
-            combined_words = user_words + words[:max(0, max_words-len(user_words))]
-        else:
-            combined_words = words[:max_words]
-        
-        for i, word in enumerate(combined_words):
-            word_idx = self.word_to_idx.get(word, 0)
-            
-            # Start with transition-based features
-            feature_vector = self.get_transition_features(word)
-            
-            # Add context features
-            prev_word = combined_words[i-1] if i > 0 else None
-            next_word = combined_words[i+1] if i < len(combined_words)-1 else None
-            context_features = self.get_context_features(word, prev_word, next_word)
-            feature_vector.extend(context_features)
-            
-            # Create context-aware features based on user input
-            if user_input and i < len(user_input.split()):
-                context_weight = 2.0
-                position_weight = 1.0 - (i / len(user_input.split())) if len(user_input.split()) > 0 else 1.0
-            else:
-                context_weight = 1.0
-                position_weight = 0.5
-            
-            # Apply weights to existing features
-            feature_vector = [f * context_weight * word_idx for f in feature_vector]
-            
-            # Add word embedding-like features
-            feature_vector.append(word_idx / len(self.word_to_idx))
-            feature_vector.append(len(word) / 20.0)
-            
-            # Add semantic similarity to user input
-            if user_input:
-                similarity = self.get_semantic_similarity(word, user_input)
-                feature_vector.append(similarity)
-            else:
-                feature_vector.append(0.0)
-            
-            # Pad or truncate to match neuron count
-            while len(feature_vector) < self.num_neurons:
-                feature_vector.append(np.sin(len(feature_vector) * word_idx / 10.0))
-            feature_vector = feature_vector[:self.num_neurons]
-            features.append(feature_vector)
-        
-        return np.array(features)
 
 class TextGenerator:
     """Base text generator using neural outputs."""
@@ -493,27 +859,6 @@ class FGCNModeratedTextGenerator(TextGenerator):
                 
         return moderated_candidates if moderated_candidates else candidates
 
-class SubjectiveOntologyProcessor:
-    """Implements the subjective ontology equation: S_O = f(P, C, E)"""
-    def __init__(self, text_processor):
-        self.text_processor = text_processor
-    
-    def compute_so_score(self, word, user_input, spk_rec, weights=(0.4, 0.3, 0.3)):
-        """Computes a subjective ontology score for a word."""
-        # P: Personal Perception
-        p = self.text_processor.get_semantic_similarity(word, user_input)
-        
-        # C: Cultural Context
-        transition_features = self.text_processor.get_transition_features(word)
-        c = np.mean(transition_features) if transition_features else 0.0
-        
-        # E: Environmental Factors
-        e = spk_rec.mean().item() if spk_rec.numel() > 0 else 0.0
-        
-        # f: Linear combination
-        s_o = weights[0] * p + weights[1] * c + weights[2] * e
-        return max(0.1, s_o)
-
 class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
     """User-context-aware text generator."""
     def __init__(self, text_processor: NeuronAwareTextProcessor, fgcn_model=None):
@@ -559,7 +904,7 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
             for user_word in user_words:
                 similarity = self.text_processor.get_semantic_similarity(word, user_word)
                 if similarity > 0.1:
-                    context_boost += similarity * context_strength
+                    context_boost += similarity * weight
                     candidates = self.transitions.get(current_word, [])
                     
                     if not user_words or context_strength < 0.1:
@@ -573,7 +918,7 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
                         for user_word in user_words:
                             similarity = self.text_processor.get_semantic_similarity(word, user_word)
                             if similarity > 0.1:
-                                context_boost += similarity * context_strength
+                                context_boost += similarity * weight
             
             contextual_candidates.append((word, weight * context_boost))
         
@@ -639,6 +984,28 @@ class UserContextAwareTextGenerator(FGCNModeratedTextGenerator):
             user_context_strength *= context_decay
         
         return ' '.join(generated_words)
+        
+class SubjectiveOntologyProcessor:
+    """Implements the subjective ontology equation: S_O = f(P, C, E)"""
+    def __init__(self, text_processor):
+        self.text_processor = text_processor
+    
+    def compute_so_score(self, word, user_input, spk_rec, weights=(0.4, 0.3, 0.3)):
+        """Computes a subjective ontology score for a word."""
+        # P: Personal Perception
+        p = self.text_processor.get_semantic_similarity(word, user_input)
+        
+        # C: Cultural Context
+        transition_features = self.text_processor.get_transition_features(word)
+        c = np.mean(transition_features) if transition_features else 0.0
+        
+        # E: Environmental Factors
+        e = spk_rec.mean().item() if spk_rec.numel() > 0 else 0.0
+        
+        # f: Linear combination
+        s_o = weights[0] * p + weights[1] * c + weights[2] * e
+        return max(0.1, s_o)
+
 
 def process_user_input_through_snn(filename, user_input, text_processor, snn_model, num_steps=10):
     """Process user input through the simplified SNN."""
@@ -800,6 +1167,7 @@ def main_with_user_context_awareness():
         )
         print()
         print("AI:", contextual_text)
+
 
 if __name__ == "__main__":
     main_with_user_context_awareness()
