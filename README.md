@@ -1,11 +1,11 @@
 ```markdown
-# SynthReason-3.0
+# SynthReason-8.0
 
 Generative AI model
 
 ## Overview
 
-SynthReason-5.0 is a generative AI model designed to create synthetic reasoning and responses. It leverages advanced machine learning techniques to generate coherent and contextually relevant content.
+SynthReason-8.0 is a generative AI model designed to create synthetic reasoning and responses. It leverages advanced machine learning techniques to generate coherent and contextually relevant content.
 
 ## Features
 
@@ -15,7 +15,7 @@ SynthReason-5.0 is a generative AI model designed to create synthetic reasoning 
 
 ## Usage
 
-To use SynthReason-3.0, follow these steps:
+To use SynthReason-8.0, follow these steps:
 
 1. Ensure you have installed all dependencies.
 2. Run the main script:
@@ -26,7 +26,7 @@ To use SynthReason-3.0, follow these steps:
 
 ## Contributing
 
-We welcome contributions to SynthReason-3.0! To contribute, please follow these steps:
+We welcome contributions to SynthReason-8.0! To contribute, please follow these steps:
 
 1. Fork the repository.
 2. Create a new branch:
