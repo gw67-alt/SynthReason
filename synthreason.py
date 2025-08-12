@@ -591,7 +591,28 @@ class PyTorchUserContextGenerator(PyTorchTextGenerator):
             return self.generate_text_from_neural_output(spk_rec, mem_rec, length=length)
         
         user_words = user_input.lower().split()
-        
+        tokens = [
+            # Articles
+            "the", "a", "an",
+            
+            # Demonstrative Determiners
+            "this", "these", "that", "those",
+            
+            # Possessive Determiners
+            "my", "your", "his", "her", "its", "our", "their", "whose",
+            
+            # Quantifiers - Approximate
+            "some", "many", "few", "several", "most", "all", "both", "either", "neither",
+            "more", "most", "less", "least", "fewer", "fewest", "much", "little",
+            "enough", "plenty", "lots", "a lot of", "a few", "a little",
+            
+            # Distributive Determiners
+            "each", "every",
+            
+            # Interrogative Determiners
+            "what", "which", "how many", "how much",
+
+        ]
         # Use FGCN if available
         if self.fgcn_model is not None:
             node_features, adj = create_pytorch_graph(spk_rec, mem_rec)
