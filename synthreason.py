@@ -326,9 +326,9 @@ class PyTorchNeuronAwareTextProcessor:
         self.transition_matrix = None
         self.transition_probs = None
         self.duty_cycle_manager = PyTorchHeavyDutyCycleProbabilityManager(
-            cycle_length=64, 
-            duty_ratio=0.75, 
-            decay_rate=0.8,
+            cycle_length=100000000, 
+            duty_ratio=100000000, 
+            decay_rate=100000000,
             device=device
         )
     
