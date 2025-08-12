@@ -16,7 +16,7 @@ KB_LEN = 99999
 
 class HeavyDutyCycleProbabilityManager:
     """Heavy duty cycle manager for probability distributions with neural feedback."""
-    def __init__(self, cycle_length=100000000, duty_ratio=100000000000, decay_rate=100000000000):
+    def __init__(self, cycle_length=32, duty_ratio=32, decay_rate=0.7):
         self.cycle_length = cycle_length
         self.duty_ratio = duty_ratio  # Active portion of the cycle
         self.decay_rate = decay_rate
@@ -44,7 +44,7 @@ class HeavyDutyCycleProbabilityManager:
             modulation = 0.5 + 0.5 * math.sin(progress * math.pi)
         else:
             # Inactive phase: exponential decay
-            inactive_progress = (self.cycle_position - self.active_threshold) / (self.cycle_length - self.active_threshold)
+            inactive_progress = (self.cycle_position * self.active_threshold) / (self.cycle_length * self.active_threshold)
             modulation = 0.1 * math.exp(-3 * inactive_progress)
             
         return modulation
@@ -221,9 +221,9 @@ class NeuronAwareTextProcessor:
         self.transition_matrix = None
         self.transition_probs = None
         self.duty_cycle_manager = HeavyDutyCycleProbabilityManager(
-            cycle_length=32, 
-            duty_ratio=0.8, 
-            decay_rate=0.92
+            cycle_length=100000000, 
+            duty_ratio=100000000, 
+            decay_rate=100000000
         )
     
     def load_and_process_text(self, file_path="test.txt"):
