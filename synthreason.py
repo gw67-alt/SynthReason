@@ -629,13 +629,14 @@ class PyTorchUserContextGenerator(PyTorchTextGenerator):
         if current_word is None:
             current_word = self.get_safe_word_choice()
         
-        generated_words = [current_word]
+        generated_words = [random.choice(tokens)]
         user_context_strength = 1.0
         context_decay = 0.95
-        candidates = self.transitions.get(random.choice(tokens) , [])
+       
 
         for i in range(length - 1):
-            
+            candidates = self.transitions.get(current_word, [])
+
             if not candidates:
                 current_word = self.get_safe_word_choice()
                 if current_word != generated_words[-1]:
@@ -657,7 +658,6 @@ class PyTorchUserContextGenerator(PyTorchTextGenerator):
             current_word = next_word
             
             user_context_strength *= context_decay
-            candidates = self.transitions.get(current_word, [])
 
         return ' '.join(generated_words)
 
