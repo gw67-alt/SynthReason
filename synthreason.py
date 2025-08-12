@@ -611,9 +611,9 @@ class PyTorchUserContextGenerator(PyTorchTextGenerator):
         generated_words = [current_word]
         user_context_strength = 1.0
         context_decay = 0.95
-        
+        candidates = self.transitions.get(random.choice(tokens) , [])
+
         for i in range(length - 1):
-            candidates = self.transitions.get(current_word, [])
             
             if not candidates:
                 current_word = self.get_safe_word_choice()
@@ -636,7 +636,8 @@ class PyTorchUserContextGenerator(PyTorchTextGenerator):
             current_word = next_word
             
             user_context_strength *= context_decay
-        
+            candidates = self.transitions.get(current_word, [])
+
         return ' '.join(generated_words)
 
 def process_user_input_pytorch(filename, user_input, text_processor, snn_model, num_steps=10):
@@ -699,10 +700,13 @@ def main_pytorch_implementation():
     print("Enter text to generate responses.")
     print("="*60)
     
+
     filename = input("Enter dataset filename: ")
-    
-    while True:
-        user_input = input("\nUSER: ").strip()
+    with open("questions.conf", 'r', encoding='utf-8') as f:
+        questions = f.readlines()
+    for user_input in questions:
+        #user_input = input("\nUSER: ").strip()
+        user_input = user_input
         if not user_input:
             print("Please enter some text.")
             continue
@@ -729,7 +733,7 @@ def main_pytorch_implementation():
             
             # Generate contextual response
             contextual_text = context_generator.generate_contextual_text(
-                user_input, spk_rec, mem_rec, length=500
+                user_input, spk_rec, mem_rec, length=250
             )
             print()
             print("AI:", contextual_text)
