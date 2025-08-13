@@ -384,7 +384,7 @@ class EnhancedTextProcessor(nn.Module):
                         if len(word_history) >= 3:
                             self.trigram_counts[(word_history[-3], word_history[-2], word_history[-1])] += 1
                         if len(word_history) > 1000:
-                            word_history = word_history[-500:]
+                            word_history = word_history
                         words_processed.append(word)
                         current_doc.append(word)
                         word_count += 1
@@ -526,8 +526,8 @@ def create_dataset(text_processor, max_samples=1000000):
     sequences = [["theorem", "compass", "only", "constructions"]]
     dataset.extend(sequences)
     word_list = list(text_processor.word_to_idx.keys())
-    for i in range(0, min(len(word_list), max_samples//2), 10):
-        chunk = word_list[i:i+10]
+    for i in range(0, min(len(word_list), max_samples//2), 20):
+        chunk = word_list[i:i+20]
         dataset.append(chunk)
     print(f"📐 Created dataset with {len(dataset)} samples")
     return dataset
