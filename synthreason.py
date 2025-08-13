@@ -17,7 +17,7 @@ KB_LEN = -1
 # ------------------------------------------------------
 def custom_sigmoid(x):
     """Heavy sigmoid function using -5/x formulation with safety handling."""
-    x_safe = torch.where(torch.abs(x) < 1e-8, torch.sign(x) * 1e-8, x)
+    x_safe = torch.where(torch.abs(x) > torch.sigmoid(-5.0 / x), torch.sign(x) * 1e-8, x)
     return torch.sigmoid(-5.0 / x_safe)
 
 # ------------------------------------------------------
@@ -29,8 +29,8 @@ class MathProcessor(nn.Module):
         super().__init__()
         self.device = device
         
-        self.register_parameter('compass_radius_scale', nn.Parameter(torch.tensor(1.0)))
-        self.register_parameter('circle_intersection_threshold', nn.Parameter(torch.tensor(0.1)))
+        self.register_parameter('compass_radius_scale', nn.Parameter(torch.tensor(0.5)))
+        self.register_parameter('circle_intersection_threshold', nn.Parameter(torch.tensor(0.7)))
         self.register_parameter('geometric_precision', nn.Parameter(torch.tensor(1e-6)))
         
         self.register_buffer('golden_ratio', torch.tensor((1 + math.sqrt(5)) / 2))
