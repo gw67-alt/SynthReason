@@ -12,7 +12,7 @@ from pathlib import Path
 KB_LEN = -1
 
 def custom_sigmoid(x):
-    """Custom sigmoid function using -5/x formulation with safety handling."""
+    """heavy sigmoid function using -5/x formulation with safety handling."""
     # Avoid division by zero
     x_safe = torch.where(torch.abs(x) < 1e-8, torch.sign(x) * 1e-8, x)
     # Apply -5/x transformation then sigmoid
@@ -45,7 +45,7 @@ class TrainableMemoryOptimizedHeavyDutyCycleManager(nn.Module):
         self.running_var = 0.0
         self.sample_count = 0
         
-        # Learnable modulation parameters with custom sigmoid scaling
+        # Learnable modulation parameters with heavy sigmoid scaling
         self.register_parameter('active_modulation_scale', nn.Parameter(torch.tensor(0.5)))
         self.register_parameter('inactive_modulation_scale', nn.Parameter(torch.tensor(0.1)))
         self.register_parameter('sigmoid_scale', nn.Parameter(torch.tensor(1.0)))
@@ -76,7 +76,7 @@ class TrainableMemoryOptimizedHeavyDutyCycleManager(nn.Module):
             self.cycle_history = self.cycle_history[-5:]
         
     def modulate_probabilities(self, base_probabilities, neural_activity=None):
-        """Trainable probability modulation with custom sigmoid."""
+        """Trainable probability modulation with heavy sigmoid."""
         self.cycle_position += 1.0
         
         # Reset cycle when threshold reached
@@ -88,7 +88,7 @@ class TrainableMemoryOptimizedHeavyDutyCycleManager(nn.Module):
             
         modulation = self.get_duty_cycle_modulation()
         
-        # Apply custom sigmoid transformation to modulation
+        # Apply heavy sigmoid transformation to modulation
         custom_modulation = custom_sigmoid(modulation * self.sigmoid_scale)
         
         if isinstance(base_probabilities, torch.Tensor):
@@ -108,10 +108,10 @@ class TrainableMemoryOptimizedHeavyDutyCycleManager(nn.Module):
         return modulated
     
     def get_duty_cycle_modulation(self):
-        """Trainable duty cycle modulation calculation with custom sigmoid."""
+        """Trainable duty cycle modulation calculation with heavy sigmoid."""
         active_thresh = self.active_threshold
         
-        # Use custom sigmoid for differentiable phase selection
+        # Use heavy sigmoid for differentiable phase selection
         phase_input = 10 * (active_thresh - self.cycle_position)
         is_active = custom_sigmoid(phase_input)
         
@@ -125,13 +125,13 @@ class TrainableMemoryOptimizedHeavyDutyCycleManager(nn.Module):
         )
         inactive_mod = self.inactive_modulation_scale * torch.exp(-3 * inactive_progress)
         
-        # Differentiable combination with custom sigmoid
+        # Differentiable combination with heavy sigmoid
         modulation = is_active * active_mod + (1 - is_active) * inactive_mod
         
         return modulation
 
 class TrainableMemoryEfficientLIFNeuron(nn.Module):
-    """Trainable memory-efficient LIF neuron with custom sigmoid activation."""
+    """Trainable memory-efficient LIF neuron with heavy sigmoid activation."""
     def __init__(self, tau_mem=10.0, tau_syn=5.0, v_thresh=1.0, v_reset=0.0):
         super().__init__()
         
@@ -141,7 +141,7 @@ class TrainableMemoryEfficientLIFNeuron(nn.Module):
         self.register_parameter('v_thresh', nn.Parameter(torch.tensor(v_thresh)))
         self.register_parameter('v_reset', nn.Parameter(torch.tensor(v_reset)))
         
-        # Trainable custom sigmoid parameters
+        # Trainable heavy sigmoid parameters
         self.register_parameter('sigmoid_gain', nn.Parameter(torch.tensor(1.0)))
         self.register_parameter('membrane_nonlinearity', nn.Parameter(torch.tensor(0.1)))
         
@@ -156,7 +156,7 @@ class TrainableMemoryEfficientLIFNeuron(nn.Module):
         return beta, alpha
         
     def forward(self, x, state=None):
-        """Trainable forward pass with custom sigmoid spike generation."""
+        """Trainable forward pass with heavy sigmoid spike generation."""
         device = x.device
         
         # Handle different input dimensions
@@ -177,19 +177,19 @@ class TrainableMemoryEfficientLIFNeuron(nn.Module):
         # Get trainable decay factors
         beta, alpha = self.compute_decay_factors()
         
-        # Update dynamics with custom sigmoid membrane nonlinearity
+        # Update dynamics with heavy sigmoid membrane nonlinearity
         i_syn = alpha * i_syn + x
         
-        # Apply custom sigmoid to membrane potential update
+        # Apply heavy sigmoid to membrane potential update
         membrane_update = i_syn * custom_sigmoid(v_mem * self.membrane_nonlinearity)
         v_mem = beta * v_mem + membrane_update
         
         # Trainable threshold
         thresh_clamped = torch.clamp(self.v_thresh, 0.1, 5.0)
         
-        # Custom sigmoid spike generation
+        # heavy sigmoid spike generation
         if self.training:
-            # Use custom sigmoid for spike probability
+            # Use heavy sigmoid for spike probability
             spike_input = (v_mem - thresh_clamped) * self.sigmoid_gain
             spike_prob = custom_sigmoid(spike_input)
             
@@ -197,31 +197,31 @@ class TrainableMemoryEfficientLIFNeuron(nn.Module):
             gumbel_noise = -torch.log(-torch.log(torch.rand_like(spike_prob) + 1e-8) + 1e-8)
             spikes = torch.sigmoid((torch.log(spike_prob + 1e-8) - torch.log(1 - spike_prob + 1e-8) + gumbel_noise) / 0.1)
         else:
-            # Hard thresholding during inference with custom sigmoid preprocessing
+            # Hard thresholding during inference with heavy sigmoid preprocessing
             spike_candidates = custom_sigmoid((v_mem - thresh_clamped) * self.sigmoid_gain)
             spikes = (spike_candidates >= 0.5).float()
         
-        # Reset mechanism with custom sigmoid modulation
+        # Reset mechanism with heavy sigmoid modulation
         reset_clamped = torch.clamp(self.v_reset, -2.0, 2.0)
-        reset_strength = custom_sigmoid(spikes * 5.0)  # Custom sigmoid for reset strength
+        reset_strength = custom_sigmoid(spikes * 5.0)  # heavy sigmoid for reset strength
         v_mem = v_mem * (1 - reset_strength) + reset_clamped * reset_strength
         
         return spikes, (v_mem, i_syn)
 
 class TrainableStreamingSNN(nn.Module):
-    """Trainable memory-efficient streaming SNN with custom sigmoid activations."""
+    """Trainable memory-efficient streaming SNN with heavy sigmoid activations."""
     def __init__(self, num_neurons, device='cpu', chunk_size=32):
         super().__init__()
         self.num_neurons = num_neurons
         self.device = device
         self.chunk_size = chunk_size
         
-        # Trainable network layers with custom sigmoid activations
+        # Trainable network layers with heavy sigmoid activations
         self.input_layer = nn.Linear(num_neurons, num_neurons, bias=True)
         self.hidden_layer = nn.Linear(num_neurons, num_neurons, bias=True)
         self.output_layer = nn.Linear(num_neurons, num_neurons, bias=True)
         
-        # Custom sigmoid layer parameters
+        # heavy sigmoid layer parameters
         self.register_parameter('activation_scale1', nn.Parameter(torch.tensor(1.0)))
         self.register_parameter('activation_scale2', nn.Parameter(torch.tensor(1.0)))
         
@@ -238,7 +238,7 @@ class TrainableStreamingSNN(nn.Module):
         self.neuron_state = None
         
     def forward_chunk(self, x_chunk):
-        """Trainable chunk processing with custom sigmoid activations."""
+        """Trainable chunk processing with heavy sigmoid activations."""
         if x_chunk.dim() == 1:
             x_chunk = x_chunk.unsqueeze(0)
         
@@ -251,7 +251,7 @@ class TrainableStreamingSNN(nn.Module):
                 padding = torch.zeros(*x_chunk.shape[:-1], padding_size, device=x_chunk.device)
                 x_chunk = torch.cat([x_chunk, padding], dim=-1)
             
-        # Process through trainable layers with custom sigmoid
+        # Process through trainable layers with heavy sigmoid
         x_processed = custom_sigmoid(self.input_layer(x_chunk) * self.activation_scale1)
         x_hidden = custom_sigmoid(self.hidden_layer(x_processed) * self.activation_scale2)
         
@@ -267,7 +267,7 @@ class TrainableStreamingSNN(nn.Module):
         # Process through trainable LIF neurons
         spikes, self.neuron_state = self.lif_neurons(x_modulated, self.neuron_state)
         
-        # Final output layer with custom sigmoid
+        # Final output layer with heavy sigmoid
         output = custom_sigmoid(self.output_layer(spikes))
         
         # Apply trainable global adaptation
@@ -306,14 +306,14 @@ class TrainableMemoryEfficientTextProcessor(nn.Module):
         self.word_embeddings = nn.Embedding(vocab_limit + 1, num_neurons // 4)
         self.position_embeddings = nn.Embedding(1000, num_neurons // 4)
         
-        # Trainable feature processing with custom sigmoid
+        # Trainable feature processing with heavy sigmoid
         self.feature_processor = nn.Sequential(
             nn.Linear(num_neurons // 2, num_neurons),
             nn.Dropout(0.1),
             nn.Linear(num_neurons, num_neurons)
         )
         
-        # Custom sigmoid parameter for feature processing
+        # heavy sigmoid parameter for feature processing
         self.register_parameter('feature_sigmoid_scale', nn.Parameter(torch.tensor(1.0)))
         
         # Cache management (non-trainable)
@@ -386,7 +386,7 @@ class TrainableMemoryEfficientTextProcessor(nn.Module):
         return transitions
     
     def words_to_neural_features_trainable(self, words, max_words=50):
-        """Generate trainable features using custom sigmoid processing."""
+        """Generate trainable features using heavy sigmoid processing."""
         if len(words) > max_words:
             words = words[-max_words:]
             
@@ -409,21 +409,21 @@ class TrainableMemoryEfficientTextProcessor(nn.Module):
         # Combine embeddings
         combined_embs = torch.cat([word_embs, pos_embs], dim=1)
         
-        # Process through trainable layers with custom sigmoid
+        # Process through trainable layers with heavy sigmoid
         linear_output = self.feature_processor(combined_embs)
         features = custom_sigmoid(linear_output * self.feature_sigmoid_scale)
         
         return features
 
 class TrainableStreamingTextGenerator(nn.Module):
-    """Trainable text generator with custom sigmoid selection networks."""
+    """Trainable text generator with heavy sigmoid selection networks."""
     def __init__(self, text_processor, hidden_dim=128, max_transitions_per_word=50):
         super().__init__()
         self.text_processor = text_processor
         self.max_transitions = max_transitions_per_word
         self.fallback_words = ["the", "and", "to", "of", "a", "in", "is", "it", "you", "that"]
         
-        # Trainable selection network with custom sigmoid
+        # Trainable selection network with heavy sigmoid
         self.selection_network = nn.Sequential(
             nn.Linear(text_processor.num_neurons, hidden_dim),
             nn.Dropout(0.1),
@@ -431,21 +431,21 @@ class TrainableStreamingTextGenerator(nn.Module):
             nn.Linear(hidden_dim // 2, 1)
         )
         
-        # Custom sigmoid parameters for selection
+        # heavy sigmoid parameters for selection
         self.register_parameter('selection_sigmoid_scale', nn.Parameter(torch.tensor(1.0)))
         
     def forward(self, spk_rec):
-        """Process spike recordings with custom sigmoid selection."""
+        """Process spike recordings with heavy sigmoid selection."""
         if spk_rec.numel() == 0:
             return torch.zeros(1, device=next(self.parameters()).device)
         
-        # Process through selection network with custom sigmoid
+        # Process through selection network with heavy sigmoid
         linear_output = self.selection_network(spk_rec)
         selection_probs = custom_sigmoid(linear_output.squeeze(-1) * self.selection_sigmoid_scale)
         return selection_probs
     
     def generate_text_trainable(self, spk_rec, seed_word=None, length=50):
-        """Generate text using custom sigmoid selection."""
+        """Generate text using heavy sigmoid selection."""
         if spk_rec.numel() == 0:
             return "No neural data available for generation."
             
@@ -465,7 +465,7 @@ class TrainableStreamingTextGenerator(nn.Module):
                 
             transitions = transitions[:self.max_transitions]
             
-            # Use neural selection with custom sigmoid influence
+            # Use neural selection with heavy sigmoid influence
             prob_idx = min(i, len(selection_probs) - 1)
             neural_influence = selection_probs[prob_idx].item()
             
@@ -501,7 +501,7 @@ def create_training_dataset(text_processor, target_length=100):
 
 def train_snn_system(text_processor, snn_model, text_generator, dataset, 
                      epochs=10, lr=0.001, device='cpu'):
-    """Comprehensive training loop for the entire SNN system with custom sigmoid."""
+    """Comprehensive training loop for the entire SNN system with heavy sigmoid."""
     
     # Combine all trainable parameters
     all_params = (list(text_processor.parameters()) + 
@@ -609,7 +609,7 @@ def train_snn_system(text_processor, snn_model, text_generator, dataset,
         n_batches = min(len(dataset), 100)
         avg_losses = {k: v / n_batches for k, v in epoch_losses.items()}
         
-        print(f"📊 Epoch {epoch+1}/{epochs} Summary (Custom Sigmoid -5/x):")
+        print(f"📊 Epoch {epoch+1}/{epochs} Summary:")
         print(f"   Total Loss: {avg_losses['total']:.6f}")
         print(f"   Spike Loss: {avg_losses['spike']:.6f}")
         print(f"   Prediction Loss: {avg_losses['prediction']:.6f}")
@@ -623,13 +623,13 @@ def train_snn_system(text_processor, snn_model, text_generator, dataset,
     print("✅ Training completed")
 
 def validate_model(text_processor, snn_model, text_generator, device):
-    """Validate the trained model with custom sigmoid."""
+    """Validate the trained model with heavy sigmoid."""
     # Set models to evaluation mode
     text_processor.eval()
     snn_model.eval()
     text_generator.eval()
     
-    print("🔍 Validation (Custom Sigmoid -5/x):")
+    print("🔍 Validation (heavy sigmoid -5/x):")
     
     # Test with sample input
     test_words = ["the", "quick", "brown", "fox", "jumps"]
@@ -730,7 +730,7 @@ def main_trainable_implementation():
     snn_model.eval()
     text_generator.eval()
     
-    for user_input in questions[:3]:
+    for user_input in questions:
         user_input = user_input.strip()
         if not user_input:
             continue
