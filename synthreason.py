@@ -639,7 +639,7 @@ class TrainableStreamingTextGenerator(nn.Module):
             
         return ' '.join(generated_words)
 
-def create_dataset(text_processor, max_samples=1000):
+def create_dataset(text_processor, max_samples=100000000000):
     """Create dataset with theorem concepts."""
     dataset = []
     
@@ -687,10 +687,10 @@ def main_implementation():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"🔥 Using device: {device}")
     
-    num_neurons = 128
-    chunk_size = 16
-    vocab_limit = 30000
-    max_features = 500
+    num_neurons = 1280
+    chunk_size = 160
+    vocab_limit = 300000
+    max_features = 5000
     
     # Initialize enhanced text processor
     text_processor = EnhancedTextProcessor(
