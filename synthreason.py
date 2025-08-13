@@ -3,144 +3,154 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.preprocessing import StandardScaler
-import matplotlib.pyplot as plt
 from collections import defaultdict, Counter
 import random
 import math
-import pickle
-import os
+import gc
 from pathlib import Path
 
 KB_LEN = -1
 
-class PyTorchHeavyDutyCycleProbabilityManager:
-    """Heavy duty cycle manager for probability distributions with neural feedback - Pure PyTorch."""
-    def __init__(self, cycle_length=32, duty_ratio=0.8, decay_rate=0.7, device='cpu'):
-        self.cycle_length = cycle_length
-        self.duty_ratio = duty_ratio
-        self.decay_rate = decay_rate
-        self.cycle_position = torch.tensor(0.0, device=device)
-        self.active_threshold = cycle_length * duty_ratio
+class TrainableMemoryOptimizedHeavyDutyCycleManager(nn.Module):
+    """Trainable memory-efficient heavy duty cycle manager with learnable parameters."""
+    def __init__(self, cycle_length=32, duty_ratio=0.8, decay_rate=0.7, device='cpu', 
+                 max_buffer_size=100):
+        super().__init__()
+        
+        # Make core parameters trainable
+        self.register_parameter('cycle_length', nn.Parameter(torch.tensor(float(cycle_length))))
+        self.register_parameter('duty_ratio', nn.Parameter(torch.tensor(duty_ratio)))
+        self.register_parameter('decay_rate', nn.Parameter(torch.tensor(decay_rate)))
+        self.register_parameter('neural_feedback_gain', nn.Parameter(torch.tensor(0.2)))
+        
+        # Trainable cycle position (reset during training)
+        self.register_buffer('cycle_position', torch.tensor(0.0, device=device))
+        
+        # Memory-efficient circular buffers
+        self.max_buffer_size = max_buffer_size
         self.probability_buffer = []
         self.cycle_history = []
-        self.thermal_accumulator = torch.tensor(0.0, device=device)
-        self.neural_feedback_gain = 0.2
+        self.register_buffer('thermal_accumulator', torch.tensor(0.0, device=device))
         self.device = device
         
-        print(f"🔧 PyTorch Heavy Duty Cycle Manager initialized:")
-        print(f"   Device: {device}")
-        print(f"   Cycle Length: {cycle_length}")
-        print(f"   Duty Ratio: {duty_ratio:.2f} ({duty_ratio*100:.1f}%)")
-        print(f"   Active Threshold: {self.active_threshold:.1f}")
+        # Running statistics
+        self.running_mean = 0.0
+        self.running_var = 0.0
+        self.sample_count = 0
         
-    def is_active_phase(self):
-        """Check if we're in the active phase of the duty cycle."""
-        return self.cycle_position < self.active_threshold
+        # Learnable modulation parameters
+        self.register_parameter('active_modulation_scale', nn.Parameter(torch.tensor(0.5)))
+        self.register_parameter('inactive_modulation_scale', nn.Parameter(torch.tensor(0.1)))
         
-    def get_duty_cycle_modulation(self):
-        """Get current duty cycle modulation factor - PyTorch tensors."""
-        if self.is_active_phase():
-            progress = self.cycle_position / max(self.active_threshold, 1e-8)
-            modulation = 0.5 + 0.5 * torch.sin(progress * torch.pi)
-        else:
-            inactive_progress = (self.cycle_position - self.active_threshold) / max(self.cycle_length - self.active_threshold, 1e-8)
-            modulation = 0.1 * torch.exp(-3 * inactive_progress)
-            
-        return modulation
+    @property
+    def active_threshold(self):
+        """Compute active threshold from learnable parameters."""
+        cycle_length_val = self.cycle_length.item() if hasattr(self.cycle_length, 'item') else float(self.cycle_length)
+        duty_ratio_val = self.duty_ratio.item() if hasattr(self.duty_ratio, 'item') else float(self.duty_ratio)
         
-    def apply_thermal_feedback(self, neural_activity):
-        """Apply thermal feedback based on neural activity - PyTorch."""
-        if isinstance(neural_activity, torch.Tensor):
-            activity_level = neural_activity.mean()
-        else:
-            activity_level = torch.tensor(np.mean(neural_activity), device=self.device)
+        threshold = cycle_length_val * duty_ratio_val
+        return torch.clamp(torch.tensor(threshold, device=self.cycle_length.device), 
+                          1.0, cycle_length_val - 1.0)
         
-        # Accumulate thermal energy
-        self.thermal_accumulator += activity_level * 0.1
-        self.thermal_accumulator *= self.decay_rate
+    def _update_running_stats(self, value):
+        """Update running statistics without storing all values."""
+        self.sample_count += 1
+        delta = value - self.running_mean
+        self.running_mean += delta / self.sample_count
+        delta2 = value - self.running_mean
+        self.running_var += delta * delta2
         
-        # Thermal modulation affects cycle timing
-        thermal_speedup = 1.0 + self.thermal_accumulator * 0.2
-        return thermal_speedup
+    def _prune_buffers(self):
+        """Keep buffers at manageable size."""
+        if len(self.probability_buffer) > self.max_buffer_size:
+            self.probability_buffer = self.probability_buffer[-self.max_buffer_size//2:]
+        if len(self.cycle_history) > 10:
+            self.cycle_history = self.cycle_history[-5:]
         
-    def update_cycle(self, neural_activity=None):
-        """Update the duty cycle position with neural feedback - PyTorch."""
-        speedup = torch.tensor(1.0, device=self.device)
-        if neural_activity is not None:
-            speedup = self.apply_thermal_feedback(neural_activity)
-            
-        self.cycle_position += speedup
-        
-        if self.cycle_position >= self.cycle_length:
-            self.cycle_history.append({
-                'thermal_peak': self.thermal_accumulator.item(),
-                'avg_activity': np.mean(self.probability_buffer) if self.probability_buffer else 0.0
-            })
-            self.cycle_position = torch.tensor(0.0, device=self.device)
-            self.probability_buffer.clear()
-            
-            if len(self.cycle_history) > 10:
-                self.cycle_history.pop(0)
-                
     def modulate_probabilities(self, base_probabilities, neural_activity=None):
-        """Apply heavy duty cycle modulation to probabilities - Pure PyTorch."""
-        self.update_cycle(neural_activity)
+        """Trainable probability modulation with streaming updates."""
+        self.cycle_position += 1.0
         
+        # Reset cycle when threshold reached
+        cycle_reset = (self.cycle_position >= self.cycle_length).float()
+        self.cycle_position = self.cycle_position * (1 - cycle_reset)
+        
+        if cycle_reset.item() > 0:
+            self._prune_buffers()
+            
         modulation = self.get_duty_cycle_modulation()
         
         if isinstance(base_probabilities, torch.Tensor):
-            self.probability_buffer.append(base_probabilities.mean().item())
             modulated = base_probabilities * modulation
+            avg_prob = modulated.mean().item()
         else:
             base_probs_tensor = torch.tensor(base_probabilities, device=self.device, dtype=torch.float32)
-            avg_prob = base_probs_tensor.mean().item() if len(base_probabilities) > 0 else 0.0
-            self.probability_buffer.append(avg_prob)
             modulated = base_probs_tensor * modulation
+            avg_prob = modulated.mean().item()
             
-        # Neural feedback amplification during active phase
-        if self.is_active_phase() and neural_activity is not None:
-            if isinstance(neural_activity, torch.Tensor):
-                feedback_boost = 1.0 + (neural_activity.mean() * self.neural_feedback_gain * modulation)
-            else:
-                activity_tensor = torch.tensor(np.mean(neural_activity), device=self.device)
-                feedback_boost = 1.0 + (activity_tensor * self.neural_feedback_gain * modulation)
-            modulated = modulated * feedback_boost
+        self._update_running_stats(avg_prob)
+        
+        # Store recent samples
+        if len(self.probability_buffer) < self.max_buffer_size:
+            self.probability_buffer.append(avg_prob)
             
         return modulated
+    
+    def get_duty_cycle_modulation(self):
+        """Trainable duty cycle modulation calculation."""
+        active_thresh = self.active_threshold
         
-    def get_cycle_statistics(self):
-        """Get current cycle statistics - PyTorch compatible."""
-        return {
-            'current_position': self.cycle_position.item(),
-            'cycle_progress': (self.cycle_position / self.cycle_length).item(),
-            'is_active': self.is_active_phase(),
-            'modulation_factor': self.get_duty_cycle_modulation().item(),
-            'thermal_level': self.thermal_accumulator.item(),
-            'completed_cycles': len(self.cycle_history)
-        }
+        # Use sigmoid for differentiable phase selection
+        is_active = torch.sigmoid(10 * (active_thresh - self.cycle_position))
+        
+        # Active phase modulation
+        progress = self.cycle_position / torch.clamp(active_thresh, min=1e-8)
+        active_mod = self.active_modulation_scale + self.active_modulation_scale * torch.sin(progress * torch.pi)
+        
+        # Inactive phase modulation
+        inactive_progress = (self.cycle_position - active_thresh) / torch.clamp(
+            self.cycle_length - active_thresh, min=1e-8
+        )
+        inactive_mod = self.inactive_modulation_scale * torch.exp(-3 * inactive_progress)
+        
+        # Differentiable combination
+        modulation = is_active * active_mod + (1 - is_active) * inactive_mod
+        
+        return modulation
 
-class PyTorchLeakyIntegrateFireNeuron(nn.Module):
-    """Custom Leaky Integrate-and-Fire neuron implementation in pure PyTorch."""
+class TrainableMemoryEfficientLIFNeuron(nn.Module):
+    """Trainable memory-efficient LIF neuron with learnable parameters."""
     def __init__(self, tau_mem=10.0, tau_syn=5.0, v_thresh=1.0, v_reset=0.0):
         super().__init__()
-        self.tau_mem = tau_mem
-        self.tau_syn = tau_syn
-        self.v_thresh = v_thresh
-        self.v_reset = v_reset
         
-        # Decay factors
-        self.beta = torch.exp(torch.tensor(-1.0 / tau_mem))
-        self.alpha = torch.exp(torch.tensor(-1.0 / tau_syn))
+        # Make neuron parameters trainable
+        self.register_parameter('tau_mem', nn.Parameter(torch.tensor(tau_mem)))
+        self.register_parameter('tau_syn', nn.Parameter(torch.tensor(tau_syn)))
+        self.register_parameter('v_thresh', nn.Parameter(torch.tensor(v_thresh)))
+        self.register_parameter('v_reset', nn.Parameter(torch.tensor(v_reset)))
+        
+    def compute_decay_factors(self):
+        """Compute decay factors from trainable time constants."""
+        tau_mem_clamped = torch.clamp(self.tau_mem, 1.0, 50.0)
+        tau_syn_clamped = torch.clamp(self.tau_syn, 1.0, 50.0)
+        
+        beta = torch.exp(-1.0 / tau_mem_clamped)
+        alpha = torch.exp(-1.0 / tau_syn_clamped)
+        
+        return beta, alpha
         
     def forward(self, x, state=None):
-        """
-        Forward pass of LIF neuron.
-        x: input current (batch_size, num_neurons)
-        state: tuple of (membrane_potential, synaptic_current)
-        Returns: (spikes, new_state)
-        """
-        batch_size, num_neurons = x.shape
+        """Trainable forward pass with differentiable spike generation."""
         device = x.device
+        
+        # Handle different input dimensions
+        if x.dim() == 1:
+            x = x.unsqueeze(0)  # Add batch dimension: (features,) -> (1, features)
+        elif x.dim() > 2:
+            # Flatten extra dimensions: (batch, ..., features) -> (batch, features)
+            x = x.view(x.size(0), -1)
+        
+        batch_size, num_neurons = x.shape
         
         if state is None:
             v_mem = torch.zeros(batch_size, num_neurons, device=device)
@@ -148,620 +158,574 @@ class PyTorchLeakyIntegrateFireNeuron(nn.Module):
         else:
             v_mem, i_syn = state
             
-        # Update synaptic current
-        i_syn = self.alpha * i_syn + x
+        # Rest of your forward method remains the same...
+
+            
+        # Get trainable decay factors
+        beta, alpha = self.compute_decay_factors()
         
-        # Update membrane potential
-        v_mem = self.beta * v_mem + i_syn
+        # Update dynamics
+        i_syn = alpha * i_syn + x
+        v_mem = beta * v_mem + i_syn
         
-        # Generate spikes
-        spikes = (v_mem >= self.v_thresh).float()
+        # Trainable threshold
+        thresh_clamped = torch.clamp(self.v_thresh, 0.1, 5.0)
         
-        # Reset membrane potential where spikes occurred
-        v_mem = v_mem * (1 - spikes) + self.v_reset * spikes
+        # Differentiable spike generation using straight-through estimator
+        if self.training:
+            # Sigmoid approximation during training for gradients
+            spike_prob = torch.sigmoid(10 * (v_mem - thresh_clamped))
+            # Gumbel-softmax for discrete sampling with gradients
+            gumbel_noise = -torch.log(-torch.log(torch.rand_like(spike_prob) + 1e-8) + 1e-8)
+            spikes = torch.sigmoid((torch.log(spike_prob + 1e-8) - torch.log(1 - spike_prob + 1e-8) + gumbel_noise) / 0.1)
+        else:
+            # Hard thresholding during inference
+            spikes = (v_mem >= thresh_clamped).float()
+        
+        # Reset mechanism
+        reset_clamped = torch.clamp(self.v_reset, -2.0, 2.0)
+        v_mem = v_mem * (1 - spikes) + reset_clamped * spikes
         
         return spikes, (v_mem, i_syn)
 
-class PyTorchSimpleSNN(nn.Module):
-    """Pure PyTorch SNN with heavy duty cycle probability integration."""
-    def __init__(self, num_neurons, device='cpu'):
+class TrainableStreamingSNN(nn.Module):
+    """Trainable memory-efficient streaming SNN with full gradient support."""
+    def __init__(self, num_neurons, device='cpu', chunk_size=32):
         super().__init__()
         self.num_neurons = num_neurons
         self.device = device
+        self.chunk_size = chunk_size
         
-        # Network layers
-        self.input_layer = nn.Linear(num_neurons, num_neurons).to(device)
-        self.lif_neurons = PyTorchLeakyIntegrateFireNeuron().to(device)
-        self.global_adaptation = nn.Parameter(torch.ones(1, device=device) * 0.5)
+        # Trainable network layers
+        self.input_layer = nn.Linear(num_neurons, num_neurons, bias=True)
+        self.hidden_layer = nn.Linear(num_neurons, num_neurons, bias=True)
+        self.output_layer = nn.Linear(num_neurons, num_neurons, bias=True)
         
-        # Heavy duty cycle integration
-        self.duty_cycle_manager = PyTorchHeavyDutyCycleProbabilityManager(device=device)
-        self.probability_gate = nn.Linear(num_neurons, num_neurons).to(device)
+        # Trainable LIF neurons
+        self.lif_neurons = TrainableMemoryEfficientLIFNeuron()
         
-        # Initialize neuron state
+        # Trainable parameters
+        self.global_adaptation = nn.Parameter(torch.ones(1) * 0.5)
+        
+        # Trainable duty cycle manager
+        self.duty_cycle_manager = TrainableMemoryOptimizedHeavyDutyCycleManager(device=device)
+        
+        # State management
         self.neuron_state = None
         
-    def forward(self, x, reset_state=False):
-        """Forward pass with duty cycle integration."""
-        if reset_state:
-            self.neuron_state = None
+    def forward_chunk(self, x_chunk):
+        """Trainable chunk processing with full gradient flow."""
+        if x_chunk.dim() == 1:
+            x_chunk = x_chunk.unsqueeze(0)
             
-        # Ensure input has correct shape and is on right device
-        if x.dim() == 1:
-            x = x.unsqueeze(0)
-        x = x.to(self.device)
+        # Process through trainable layers
+        x_processed = F.relu(self.input_layer(x_chunk))
+        x_hidden = F.relu(self.hidden_layer(x_processed))
         
-        x_processed = self.input_layer(x)
-        
-        # Apply probability gating with duty cycle modulation
-        prob_weights = torch.sigmoid(self.probability_gate(x_processed))
+        # Probability gating with trainable duty cycle modulation
+        prob_weights = torch.sigmoid(x_hidden)
         modulated_weights = self.duty_cycle_manager.modulate_probabilities(
-            prob_weights, 
-            neural_activity=x_processed
+            prob_weights, neural_activity=x_hidden
         )
         
-        # Apply modulated probabilities to input
-        x_modulated = x_processed * modulated_weights
+        # Apply modulation
+        x_modulated = x_hidden * modulated_weights.unsqueeze(0)
         
-        # Process through LIF neurons
+        # Process through trainable LIF neurons
         spikes, self.neuron_state = self.lif_neurons(x_modulated, self.neuron_state)
         
-        # Apply global adaptation with duty cycle influence
-        cycle_stats = self.duty_cycle_manager.get_cycle_statistics()
-        adaptive_gain = self.global_adaptation * (1 + cycle_stats['modulation_factor'])
-        spikes = spikes * adaptive_gain
+        # Final output layer
+        output = self.output_layer(spikes)
         
-        return spikes.squeeze(0), self.neuron_state
+        # Apply trainable global adaptation
+        cycle_mod = self.duty_cycle_manager.get_duty_cycle_modulation()
+        adapted_output = output * self.global_adaptation * (1 + cycle_mod)
+        
+        return adapted_output.squeeze(0)
+    
+    def forward(self, x_sequence):
+        """Process full sequence with gradient tracking."""
+        outputs = []
+        self.reset_neurons()
+        
+        for x in x_sequence:
+            out = self.forward_chunk(x)
+            outputs.append(out)
+            
+        return torch.stack(outputs) if outputs else torch.empty(0, self.num_neurons)
     
     def reset_neurons(self):
         """Reset neuron states."""
         self.neuron_state = None
-        
-    def get_duty_cycle_status(self):
-        """Get current duty cycle status for monitoring."""
-        return self.duty_cycle_manager.get_cycle_statistics()
 
-class PyTorchSpikeGenerator:
-    """Pure PyTorch spike generation utilities."""
-    @staticmethod
-    def rate_encoding(data, num_steps=10, max_rate=100):
-        """
-        Convert continuous data to rate-encoded spikes.
-        data: torch.Tensor of shape (batch_size, features)
-        num_steps: number of time steps
-        max_rate: maximum firing rate
-        """
-        device = data.device
-        batch_size, num_features = data.shape
-        
-        # Normalize data to [0, 1]
-        data_norm = torch.clamp(data, 0, 1)
-        
-        # Generate spike probabilities
-        spike_probs = data_norm * max_rate / 100.0
-        
-        # Generate random numbers and compare with probabilities
-        spikes = torch.zeros(num_steps, batch_size, num_features, device=device)
-        for t in range(num_steps):
-            rand_vals = torch.rand_like(spike_probs)
-            spikes[t] = (rand_vals < spike_probs).float()
-            
-        return spikes
-    
-    @staticmethod
-    def temporal_encoding(data, num_steps=10):
-        """
-        Convert data to temporal encoding where higher values spike earlier.
-        """
-        device = data.device
-        batch_size, num_features = data.shape
-        
-        # Normalize data to [0, 1]
-        data_norm = torch.clamp(data, 0, 1)
-        
-        # Convert to spike times (earlier for higher values)
-        spike_times = ((1 - data_norm) * (num_steps - 1)).long()
-        
-        # Generate spike trains
-        spikes = torch.zeros(num_steps, batch_size, num_features, device=device)
-        for b in range(batch_size):
-            for f in range(num_features):
-                t = spike_times[b, f].item()
-                if t < num_steps:
-                    spikes[t, b, f] = 1.0
-                    
-        return spikes
-
-def run_pytorch_snn(spike_data, snn_model):
-    """Run the PyTorch SNN with duty cycle tracking."""
-    spk_rec, mem_rec = [], []
-    snn_model.reset_neurons()
-    
-    print("🚀 Processing through PyTorch SNN with heavy duty cycle...")
-    
-    num_steps = spike_data.shape[0]
-    for step in range(num_steps):
-        if spike_data.shape[1] > 0:
-            # Get input data for this time step
-            if spike_data.dim() == 3:  # (time_steps, batch, features)
-                input_data = spike_data[step, 0, :]
-            else:  # (time_steps, features)
-                input_data = spike_data[step, :]
-            
-            # Process through SNN
-            spk, neuron_state = snn_model(input_data)
-            spk_rec.append(spk)
-            
-            # Extract membrane potential from neuron state
-            if neuron_state is not None and len(neuron_state) >= 1:
-                mem_rec.append(neuron_state[0].squeeze(0))  # membrane potential
-            else:
-                mem_rec.append(torch.zeros_like(spk))
-            
-            # Log duty cycle status periodically
-            if step % 20 == 0:
-                duty_state = snn_model.get_duty_cycle_status()
-                phase = "ACTIVE" if duty_state['is_active'] else "INACTIVE"
-                print(f"   Step {step}: Phase={phase}, Modulation={duty_state['modulation_factor']:.3f}")
-    
-    if spk_rec:
-        spk_rec = torch.stack(spk_rec)
-        mem_rec = torch.stack(mem_rec)
-    else:
-        spk_rec = torch.zeros(1, snn_model.num_neurons)
-        mem_rec = torch.zeros(1, snn_model.num_neurons)
-    
-    print(f"✅ PyTorch SNN processing complete. Output shapes: spk={spk_rec.shape}, mem={mem_rec.shape}")
-    return spk_rec, mem_rec
-
-class PyTorchNeuronAwareTextProcessor:
-    """Text processor with PyTorch-native heavy duty cycle probability enhancement."""
-    def __init__(self, num_neurons=256, device='cpu'):
+class TrainableMemoryEfficientTextProcessor(nn.Module):
+    """Trainable streaming text processor with learnable embeddings."""
+    def __init__(self, num_neurons=256, device='cpu', vocab_limit=5000):
+        super().__init__()
         self.num_neurons = num_neurons
         self.device = device
-        self.vocab = {}
+        self.vocab_limit = vocab_limit
         self.word_to_idx = {}
-        self.idx_to_word = {}
         self.bigram_counts = Counter()
-        self.transition_matrix = None
-        self.transition_probs = None
-        self.duty_cycle_manager = PyTorchHeavyDutyCycleProbabilityManager(
-            cycle_length=100000000, 
-            duty_ratio=100000000, 
-            decay_rate=100000000,
-            device=device
+        
+        # Trainable word embeddings
+        self.word_embeddings = nn.Embedding(vocab_limit + 1, num_neurons // 4)
+        self.position_embeddings = nn.Embedding(1000, num_neurons // 4)
+        
+        # Trainable feature processing
+        self.feature_processor = nn.Sequential(
+            nn.Linear(num_neurons // 2, num_neurons),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(num_neurons, num_neurons),
+            nn.Tanh()
         )
+        
+        # Cache management (non-trainable)
+        self.transition_cache = {}
+        self.cache_limit = 1000
+        
+    def load_and_process_text_streaming(self, file_path="test.txt", chunk_size=1000):
+        """Stream process text file to build vocabulary."""
+        word_count = 0
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                prev_word = None
+                words_processed = []
+                
+                while word_count < KB_LEN if KB_LEN > 0 else True:
+                    chunk = f.read(chunk_size * 10)
+                    if not chunk:
+                        break
+                        
+                    words = chunk.lower().split()
+                    for word in words:
+                        if len(self.word_to_idx) < self.vocab_limit:
+                            if word not in self.word_to_idx:
+                                self.word_to_idx[word] = len(self.word_to_idx)
+                        
+                        if prev_word is not None:
+                            self.bigram_counts[(prev_word, word)] += 1
+                            
+                        prev_word = word
+                        words_processed.append(word)
+                        word_count += 1
+                        
+                        if KB_LEN > 0 and word_count >= KB_LEN:
+                            break
+                            
+                    if len(words_processed) > 10000:
+                        words_processed = words_processed[-1000:]
+                        
+        except FileNotFoundError:
+            print(f"⚠️ File {file_path} not found. Creating sample data...")
+            sample_words = ["the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog"] * 100
+            for i, word in enumerate(sample_words):
+                if word not in self.word_to_idx:
+                    self.word_to_idx[word] = len(self.word_to_idx)
+                if i > 0:
+                    prev_word = sample_words[i-1]
+                    self.bigram_counts[(prev_word, word)] += 1
+            words_processed = sample_words
+                        
+        print(f"📚 Processed {word_count} words with vocab size {len(self.word_to_idx)}")
+        return words_processed[-1000:] if words_processed else []
     
-    def load_and_process_text(self, file_path="test.txt"):
-        """Load and process text data."""
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = ' '.join(f.read().split()[:KB_LEN])
-            print(f"📚 Loaded {len(content)} characters from {file_path}")
-   
-        words = content.lower().split()
-        words = [w for w in words if w]
-        unique_words = list(set(words))
-        self.word_to_idx = {word: idx for idx, word in enumerate(unique_words)}
-        self.idx_to_word = {idx: word for word, idx in self.word_to_idx.items()}
-        
-        for i in range(len(words) - 1):
-            self.bigram_counts[(words[i], words[i+1])] += 1
-        
-        self.create_transition_matrix_features()
-        return words
-    
-    def create_transition_matrix_features(self):
-        """Create transition matrix with PyTorch tensors and heavy duty cycle enhancement."""
-        vocab_size = len(self.word_to_idx)
-        self.transition_matrix = torch.zeros((vocab_size, vocab_size), device=self.device)
-        
-        # Fill transition matrix
+    def get_transition_probs(self, word):
+        """Get transition probabilities with caching."""
+        if word in self.transition_cache:
+            return self.transition_cache[word]
+            
+        transitions = []
         for (w1, w2), count in self.bigram_counts.items():
-            if w1 in self.word_to_idx and w2 in self.word_to_idx:
-                i, j = self.word_to_idx[w1], self.word_to_idx[w2]
-                self.transition_matrix[i, j] += count
+            if w1 == word:
+                transitions.append((w2, count))
+                
+        if len(self.transition_cache) >= self.cache_limit:
+            keys_to_remove = list(self.transition_cache.keys())[:self.cache_limit//2]
+            for k in keys_to_remove:
+                del self.transition_cache[k]
+                
+        self.transition_cache[word] = transitions
+        return transitions
+    
+    def words_to_neural_features_trainable(self, words, max_words=50):
+        """Generate trainable features using learnable embeddings."""
+        if len(words) > max_words:
+            words = words[-max_words:]
+            
+        # Convert words to indices
+        word_indices = []
+        for word in words:
+            idx = self.word_to_idx.get(word, 0)
+            word_indices.append(min(idx, self.vocab_limit))
         
-        # Normalize rows to get initial probabilities
-        row_sums = self.transition_matrix.sum(dim=1, keepdim=True)
-        row_sums = torch.where(row_sums == 0, torch.ones_like(row_sums), row_sums)
-        initial_probs = self.transition_matrix / row_sums
+        if not word_indices:
+            return torch.zeros(1, self.num_neurons, device=next(self.parameters()).device)
+            
+        word_indices = torch.tensor(word_indices, device=next(self.parameters()).device)
+        position_indices = torch.arange(len(words), device=next(self.parameters()).device)
         
-        # Apply heavy duty cycle modulation to transition probabilities
-        modulated_probs = self.duty_cycle_manager.modulate_probabilities(
-            initial_probs, 
-            neural_activity=initial_probs
+        # Get trainable embeddings
+        word_embs = self.word_embeddings(word_indices)
+        pos_embs = self.position_embeddings(position_indices)
+        
+        # Combine embeddings
+        combined_embs = torch.cat([word_embs, pos_embs], dim=1)
+        
+        # Process through trainable layers
+        features = self.feature_processor(combined_embs)
+        
+        return features
+
+class TrainableStreamingTextGenerator(nn.Module):
+    """Trainable text generator with neural selection networks."""
+    def __init__(self, text_processor, hidden_dim=128, max_transitions_per_word=50):
+        super().__init__()
+        self.text_processor = text_processor
+        self.max_transitions = max_transitions_per_word
+        self.fallback_words = ["the", "and", "to", "of", "a", "in", "is", "it", "you", "that"]
+        
+        # Trainable selection network
+        self.selection_network = nn.Sequential(
+            nn.Linear(text_processor.num_neurons, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 1),
+            nn.Sigmoid()
         )
         
-        # Apply double negative logic with duty cycle enhancement
-        first_negation = 1 - modulated_probs
-        epsilon = 1e-8
-        first_negation = torch.clamp(first_negation, min=epsilon)
+    def forward(self, spk_rec):
+        """Process spike recordings to generate selection probabilities."""
+        if spk_rec.numel() == 0:
+            return torch.zeros(1, device=next(self.parameters()).device)
         
-        # Second negation with duty cycle boost
-        self.transition_probs = 1 - first_negation
-        duty_boost = 1.0 + self.duty_cycle_manager.get_duty_cycle_modulation() * 0.1
-        self.transition_probs = torch.where(self.transition_probs > epsilon, 
-                                          self.transition_probs * duty_boost, 
-                                          self.transition_probs)
-        
-        # Re-normalize
-        final_sums = self.transition_probs.sum(dim=1, keepdim=True)
-        final_sums = torch.where(final_sums == 0, torch.ones_like(final_sums), final_sums)
-        self.transition_probs = self.transition_probs / final_sums
+        # Process through selection network
+        selection_probs = self.selection_network(spk_rec)
+        return selection_probs.squeeze(-1)
     
-    def words_to_neural_features(self, words, user_input=None, max_words=50):
-        """Convert words to neural-compatible PyTorch tensors with heavy duty cycle integration."""
-        # Process words into feature vectors (similar to original but return torch tensors)
-        features = []
-        
-        if user_input:
-            user_words = user_input.lower().split()
-            combined_words = user_words + words[:max(0, max_words-len(user_words))]
-        else:
-            combined_words = words[:max_words]
-        
-        for i, word in enumerate(combined_words):
-            word_idx = self.word_to_idx.get(word, 0)
+    def generate_text_trainable(self, spk_rec, seed_word=None, length=50):
+        """Generate text using trainable selection."""
+        if spk_rec.numel() == 0:
+            return "No neural data available for generation."
             
-            # Create basic features
-            feature_vector = [
-                word_idx / max(len(self.word_to_idx), 1),
-                len(word) / 20.0,
-                i / max(len(combined_words), 1)
-            ]
-            
-            # Apply duty cycle modulation
-            duty_modulation = self.duty_cycle_manager.get_duty_cycle_modulation()
-            feature_vector = [f * (1 + duty_modulation.item()) for f in feature_vector]
-            
-            # Pad to neuron count
-            while len(feature_vector) < self.num_neurons:
-                feature_vector.append(math.sin(len(feature_vector) * word_idx / 10.0) * duty_modulation.item())
-            feature_vector = feature_vector[:self.num_neurons]
-            features.append(feature_vector)
+        # Get selection probabilities
+        with torch.no_grad():
+            selection_probs = self.forward(spk_rec)
         
-        return torch.tensor(features, dtype=torch.float32, device=self.device)
-
-class PyTorchGraphConvolution(nn.Module):
-    """Simple Graph Convolution implementation in PyTorch."""
-    def __init__(self, in_features, out_features):
-        super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.weight = nn.Parameter(torch.FloatTensor(in_features, out_features))
-        self.bias = nn.Parameter(torch.FloatTensor(out_features))
-        self.reset_parameters()
-        
-    def reset_parameters(self):
-        std = 1. / math.sqrt(self.weight.size(1))
-        self.weight.data.uniform_(-std, std)
-        self.bias.data.uniform_(-std, std)
-        
-    def forward(self, input, adj):
-        support = torch.mm(input, self.weight)
-        output = torch.spmm(adj, support)
-        return output + self.bias
-
-class PyTorchFGCN(nn.Module):
-    """Pure PyTorch Graph Convolutional Network for neural data processing."""
-    def __init__(self, in_dim, hidden_dim=64, out_dim=32):
-        super().__init__()
-        self.gc1 = PyTorchGraphConvolution(in_dim, hidden_dim)
-        self.gc2 = PyTorchGraphConvolution(hidden_dim, out_dim)
-        self.attn = nn.Linear(out_dim, 1)
-        self.dropout = nn.Dropout(0.5)
-        
-    def forward(self, x, adj):
-        x = F.relu(self.gc1(x, adj))
-        x = self.dropout(x)
-        x = F.relu(self.gc2(x, adj))
-        attn_weights = torch.sigmoid(self.attn(x))
-        x = x * attn_weights
-        return x
-
-def create_pytorch_graph(spk_rec, mem_rec):
-    """Create graph adjacency matrix and features from spike/membrane data."""
-    print(f"Creating PyTorch graph from spk_rec: {spk_rec.shape}, mem_rec: {mem_rec.shape}")
-    
-    min_steps = min(spk_rec.shape[0], mem_rec.shape[0])
-    spk_rec_aligned = spk_rec[:min_steps]
-    mem_rec_aligned = mem_rec[:min_steps]
-    min_neurons = min(spk_rec_aligned.shape[1], mem_rec_aligned.shape[1])
-    spk_rec_aligned = spk_rec_aligned[:, :min_neurons]
-    mem_rec_aligned = mem_rec_aligned[:, :min_neurons]
-    
-    # Create node features by concatenating spike and membrane data
-    node_features = torch.cat([spk_rec_aligned.T, mem_rec_aligned.T], dim=1)
-    num_nodes = node_features.shape[0]
-    
-    # Create adjacency matrix (simple connectivity)
-    adj = torch.zeros(num_nodes, num_nodes, device=node_features.device)
-    if num_nodes > 1:
-        for i in range(num_nodes):
-            for j in range(i+1, min(i+4, num_nodes)):
-                adj[i, j] = 1.0
-                adj[j, i] = 1.0  # Make symmetric
-    
-    # Add self-loops
-    adj += torch.eye(num_nodes, device=node_features.device)
-    
-    # Normalize adjacency matrix
-    degree = adj.sum(dim=1)
-    degree_inv_sqrt = torch.pow(degree, -0.5)
-    degree_inv_sqrt[torch.isinf(degree_inv_sqrt)] = 0.0
-    degree_matrix_inv_sqrt = torch.diag(degree_inv_sqrt)
-    adj_normalized = torch.mm(torch.mm(degree_matrix_inv_sqrt, adj), degree_matrix_inv_sqrt)
-    
-    return node_features, adj_normalized
-
-class PyTorchTextGenerator:
-    """Pure PyTorch text generator using neural outputs with error handling."""
-    def __init__(self, text_processor):
-        self.text_processor = text_processor
-        self.transitions = defaultdict(list)
-        self.fallback_words = ["the", "and", "to", "of", "a", "in", "is", "it", "you", "that"]
-        self.build_transitions()
-    
-    def build_transitions(self):
-        """Build transition probabilities with error checking."""
-        if not hasattr(self.text_processor, 'bigram_counts') or not self.text_processor.bigram_counts:
-            print("⚠️  Warning: No bigram data available, using fallback transitions")
-            for i, word in enumerate(self.fallback_words):
-                next_word = self.fallback_words[(i + 1) % len(self.fallback_words)]
-                self.transitions[word].append((next_word, 1))
-            return
-            
-        for (w1, w2), count in self.text_processor.bigram_counts.items():
-            self.transitions[w1].append((w2, count))
-        
-        if not self.transitions:
-            print("⚠️  Warning: No valid transitions found, using fallback")
-            for i, word in enumerate(self.fallback_words):
-                next_word = self.fallback_words[(i + 1) % len(self.fallback_words)]
-                self.transitions[word].append((next_word, 1))
-    
-    def get_safe_word_choice(self, candidates=None):
-        """Safely choose a word with fallback options."""
-        if candidates and len(candidates) > 0:
-            try:
-                words, weights = zip(*candidates)
-                if len(words) > 0:
-                    weights = np.array(weights, dtype=float)
-                    if weights.sum() > 0:
-                        weights = weights / weights.sum()
-                        return np.random.choice(words, p=weights)
-            except (ValueError, IndexError) as e:
-                print(f"⚠️  Word choice error: {e}, using fallback")
-        
-        available_words = list(self.transitions.keys())
-        if available_words:
-            return random.choice(available_words)
-        else:
-            return random.choice(self.fallback_words)
-    
-    def generate_text_from_neural_output(self, spk_rec, mem_rec, seed_word: str = None, length: int = 50):
-        """Generate text based on PyTorch neural output with robust error handling."""
-        if not self.transitions:
-            return "No training data available for text generation."
-        
-        # Convert PyTorch tensors to numpy for processing
-        if isinstance(spk_rec, torch.Tensor):
-            neural_influence = spk_rec.mean(dim=1).detach().cpu().numpy()
-        else:
-            neural_influence = np.array([0.5])
-        
-        # Start with seed word or random choice
-        if seed_word:
-            seed_words = seed_word.split()
-            current_word = seed_words[-1] if seed_words else self.get_safe_word_choice()
-        else:
-            current_word = self.get_safe_word_choice()
-        
+        current_word = seed_word if seed_word else random.choice(self.fallback_words)
         generated_words = [current_word]
         
         for i in range(length - 1):
-            neural_idx = i % len(neural_influence)
-            neural_gate = neural_influence[neural_idx]
-            
-            candidates = self.transitions.get(current_word, [])
-            
-            if not candidates:
-                current_word = self.get_safe_word_choice()
-                if current_word != generated_words[-1]:
-                    generated_words.append(current_word)
+            transitions = self.text_processor.get_transition_probs(current_word)
+            if not transitions:
+                current_word = random.choice(self.fallback_words)
+                generated_words.append(current_word)
                 continue
+                
+            transitions = transitions[:self.max_transitions]
             
-            next_word = self.get_safe_word_choice(candidates)
-            if next_word != generated_words[-1]:
-                generated_words.append(next_word)
-            current_word = next_word
-        
-        return ' '.join(generated_words)
-
-class PyTorchUserContextGenerator(PyTorchTextGenerator):
-    """User-context-aware text generator with PyTorch backend."""
-    def __init__(self, text_processor, fgcn_model=None):
-        super().__init__(text_processor)
-        self.fgcn_model = fgcn_model
-        self.user_context_weight = 0.7
-        
-    def generate_contextual_text(self, user_input, spk_rec, mem_rec, length=50):
-        """Generate text that's contextually aware of user input using PyTorch."""
-        if not user_input.strip():
-            return self.generate_text_from_neural_output(spk_rec, mem_rec, length=length)
-        
-        user_words = user_input.lower().split()
-        tokens = [
-            # Articles
-            "the", "a", "an",
+            # Use neural selection
+            prob_idx = min(i, len(selection_probs) - 1)
+            neural_influence = selection_probs[prob_idx].item()
             
-            # Demonstrative Determiners
-            "this", "these", "that", "those",
-            
-            # Possessive Determiners
-            "my", "your", "his", "her", "its", "our", "their", "whose",
-            
-            # Quantifiers - Approximate
-            "some", "many", "few", "several", "most", "all", "both", "either", "neither",
-            "more", "most", "less", "least", "fewer", "fewest", "much", "little",
-            "enough", "plenty", "lots", "a lot of", "a few", "a little",
-            
-            # Distributive Determiners
-            "each", "every",
-            
-            # Interrogative Determiners
-            "what", "which", "how many", "how much",
-
-        ]
-        # Use FGCN if available
-        if self.fgcn_model is not None:
-            node_features, adj = create_pytorch_graph(spk_rec, mem_rec)
-            with torch.no_grad():
-                graph_features = self.fgcn_model(node_features, adj)
-        
-        # Find starting word from user input
-        current_word = None
-        for word in reversed(user_words):
-            if word in self.transitions:
-                current_word = word
-                break
-        
-        if current_word is None:
-            current_word = self.get_safe_word_choice()
-        
-        generated_words = [random.choice(tokens)]
-        user_context_strength = 1.0
-        context_decay = 0.95
-       
-
-        for i in range(length - 1):
-            candidates = self.transitions.get(current_word, [])
-
-            if not candidates:
-                current_word = self.get_safe_word_choice()
-                if current_word != generated_words[-1]:
-                    generated_words.append(current_word)
-                continue
-            
-            # Boost candidates similar to user words
-            contextual_candidates = []
-            for word, weight in candidates:
-                context_boost = 1.0
-                for user_word in user_words:
-                    if user_word in word or word in user_word:
-                        context_boost += user_context_strength
-                contextual_candidates.append((word, weight * context_boost))
-            
-            next_word = self.get_safe_word_choice(contextual_candidates)
-            if next_word != generated_words[-1]:
-                generated_words.append(next_word)
+            if transitions:
+                words, weights = zip(*transitions)
+                weights = np.array(weights, dtype=float)
+                weights = weights * (0.5 + neural_influence)
+                
+                if weights.sum() > 0:
+                    weights = weights / weights.sum()
+                    next_word = np.random.choice(words, p=weights)
+                else:
+                    next_word = random.choice(words)
+            else:
+                next_word = random.choice(self.fallback_words)
+                
+            generated_words.append(next_word)
             current_word = next_word
             
-            user_context_strength *= context_decay
-
         return ' '.join(generated_words)
 
-def process_user_input_pytorch(filename, user_input, text_processor, snn_model, num_steps=10):
-    """Process user input through the PyTorch SNN."""
-    words = text_processor.load_and_process_text(filename)
-    
-    print("🔧 Processing through PyTorch Heavy Duty Cycle SNN...")
-    
-    # Generate features for user input
-    user_features = text_processor.words_to_neural_features(
-        words, 
-        user_input=user_input
-    )
-    
-    # Scale features
-    scaler = StandardScaler()
-    features_scaled = scaler.fit_transform(user_features.cpu().numpy())
-    features_tensor = torch.FloatTensor(features_scaled).to(text_processor.device)
-    
-    # Ensure correct feature dimension matches num_neurons
-    if features_tensor.shape[1] != snn_model.num_neurons:
-        if features_tensor.shape[1] > snn_model.num_neurons:
-            features_tensor = features_tensor[:, :snn_model.num_neurons]
-        else:
-            padding_size = snn_model.num_neurons - features_tensor.shape[1]
-            padding = torch.zeros(features_tensor.shape[0], padding_size, device=text_processor.device)
-            features_tensor = torch.cat([features_tensor, padding], dim=1)
-    
-    # Generate spikes using PyTorch spike generator
-    spike_data = PyTorchSpikeGenerator.rate_encoding(features_tensor, num_steps=num_steps)
-    
-    # Process through PyTorch SNN
-    spk_rec, mem_rec = run_pytorch_snn(spike_data, snn_model)
-    
-    print("✅ PyTorch Heavy duty cycle SNN processing complete!")
-    print(f"📈 Final duty cycle stats: {snn_model.get_duty_cycle_status()}")
-    
-    return spk_rec, mem_rec
+def create_training_dataset(text_processor, target_length=100):
+    """Create training dataset from processed text."""
+    # This is a simplified dataset creator
+    # In practice, you'd want more sophisticated data preparation
+    dataset = []
 
-def main_pytorch_implementation():
-    """Main function using pure PyTorch implementation."""
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"🔥 Using PyTorch device: {device}")
+    for word, idx in text_processor.word_to_idx.items():
+        dataset.append(word)
     
-    num_neurons = 256
-    num_steps = 10
-    
-    print(f"Initializing PyTorch SNN with {num_neurons} neurons")
-    
-    # Initialize components with PyTorch backend
-    text_processor = PyTorchNeuronAwareTextProcessor(num_neurons, device=device)
-    snn_model = PyTorchSimpleSNN(num_neurons, device=device)
-    
-    print("="*60)
-    print("PURE PYTORCH SNN TEXT GENERATOR")
-    print("="*60)
-    print("This system processes your input through a PyTorch spiking neural network")
-    print("and generates contextually relevant text based on neural patterns.")
-    print("Enter text to generate responses.")
-    print("="*60)
-    
+   
+    return dataset
 
-    filename = input("Enter dataset filename: ")
-    with open("questions.conf", 'r', encoding='utf-8') as f:
-        questions = f.readlines()
-    for user_input in questions:
-        #user_input = input("\nUSER: ").strip()
-        user_input = user_input
-        if not user_input:
-            print("Please enter some text.")
-            continue
-            
-        if user_input.lower() in ['quit', 'exit']:
-            print("Goodbye!")
-            break
+def train_snn_system(text_processor, snn_model, text_generator, dataset, 
+                     epochs=10, lr=0.001, device='cpu'):
+    """Comprehensive training loop for the entire SNN system."""
+    
+    # Combine all trainable parameters
+    all_params = (list(text_processor.parameters()) + 
+                  list(snn_model.parameters()) + 
+                  list(text_generator.parameters()))
+    
+    optimizer = torch.optim.Adam(all_params, lr=lr, weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.7)
+    
+    # Multiple loss functions
+    mse_loss = nn.MSELoss()
+    prediction_loss = nn.BCEWithLogitsLoss()
+    
+    print(f"🚀 Starting training with {len(all_params)} parameters...")
+    
+    for epoch in range(epochs):
+        epoch_losses = {'total': 0.0, 'spike': 0.0, 'prediction': 0.0, 'regularization': 0.0}
         
-        print(f"\nProcessing input: '{user_input}'")
-        print("="*40)
+        # Set models to training mode
+        text_processor.train()
+        snn_model.train()
+        text_generator.train()
         
+        for batch_idx, words in enumerate(dataset):
+            optimizer.zero_grad()
+            words = words[:len(words)//3] + words[len(words)//3:] + words[len(words)//3:]
+            # Convert words to features
+            try:
+                features = text_processor.words_to_neural_features_trainable(words)
+
+                
+                if features.shape[0] == 0:
+                    continue
+                    
+                # Process through SNN
+                spike_outputs = snn_model.forward(features)
+                
+                # Loss 1: Spike activity regularization (encourage sparse, meaningful spikes)
+                target_spike_rate = 0.1  # Target 10% spike rate
+                actual_spike_rate = spike_outputs.mean()
+                spike_loss = mse_loss(actual_spike_rate, torch.tensor(target_spike_rate, device=device))
+                
+                # Loss 2: Text generation prediction accuracy
+                selection_probs = text_generator.forward(spike_outputs)
+                # Create pseudo-targets based on word frequency (more frequent words = higher probability)
+                word_frequencies = []
+                for word in words:
+                    freq = sum(1 for (w1, w2), count in text_processor.bigram_counts.items() if w1 == word or w2 == word)
+                    word_frequencies.append(freq)
+                
+                if word_frequencies:
+                    max_freq = max(word_frequencies) if max(word_frequencies) > 0 else 1
+                    targets = torch.tensor([f / max_freq for f in word_frequencies], 
+                                         device=device, dtype=torch.float32)
+                    
+                    # Ensure targets match selection_probs length
+                    if len(targets) != len(selection_probs):
+                        min_len = min(len(targets), len(selection_probs))
+                        targets = targets[:min_len]
+                        selection_probs = selection_probs[:min_len]
+                    
+                    if len(targets) > 0:
+                        pred_loss = mse_loss(selection_probs, targets)
+                    else:
+                        pred_loss = torch.tensor(0.0, device=device)
+                else:
+                    pred_loss = torch.tensor(0.0, device=device)
+                
+                # Loss 3: L2 regularization
+                l2_reg = torch.tensor(0.0, device=device)
+                for param in all_params:
+                    if param.requires_grad:
+                        l2_reg += torch.norm(param)
+                
+                # Combine losses
+                total_loss = spike_loss + 0.5 * pred_loss + 0.0001 * l2_reg
+                
+                # Backpropagation
+                total_loss.backward()
+                
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+                
+                optimizer.step()
+                
+                # Track losses
+                epoch_losses['total'] += total_loss.item()
+                epoch_losses['spike'] += spike_loss.item()
+                epoch_losses['prediction'] += pred_loss.item()
+                epoch_losses['regularization'] += l2_reg.item() * 0.0001
+                
+                # Periodic logging
+                if batch_idx % 10 == 0:
+                    print(f"  Batch {batch_idx}: Loss = {total_loss.item():.6f}")
+                    
+            except Exception as e:
+                print(f"⚠️ Training error on batch {batch_idx}: {e}")
+                continue
+        
+        # Update learning rate
+        scheduler.step()
+        
+        # Print epoch summary
+        n_batches = len(dataset)
+        avg_losses = {k: v / n_batches for k, v in epoch_losses.items()}
+        
+        print(f"📊 Epoch {epoch+1}/{epochs} Summary:")
+        print(f"   Total Loss: {avg_losses['total']:.6f}")
+        print(f"   Spike Loss: {avg_losses['spike']:.6f}")
+        print(f"   Prediction Loss: {avg_losses['prediction']:.6f}")
+        print(f"   Regularization: {avg_losses['regularization']:.6f}")
+        print(f"   Learning Rate: {scheduler.get_last_lr()[0]:.6f}")
+        
+        # Periodic validation
+        if (epoch + 1) % 3 == 0:
+            validate_model(text_processor, snn_model, text_generator, device)
+    
+    print("✅ Training completed!")
+
+def validate_model(text_processor, snn_model, text_generator, device):
+    """Validate the trained model."""
+    # Set models to evaluation mode
+    text_processor.eval()
+    snn_model.eval()
+    text_generator.eval()
+    
+    print("🔍 Validation:")
+    
+    # Test with sample input
+    test_words = ["the", "quick", "brown", "fox", "jumps"]
+    
+    with torch.no_grad():
         try:
-            # Process user input through PyTorch SNN
-            spk_rec, mem_rec = process_user_input_pytorch(
-                filename, user_input, text_processor, snn_model, num_steps
+            features = text_processor.words_to_neural_features_trainable(test_words)
+            spike_outputs = snn_model.forward(features)
+            selection_probs = text_generator.forward(spike_outputs)
+            
+            print(f"   Input: {test_words}")
+            print(f"   Spike Activity: {spike_outputs.mean().item():.4f}")
+            print(f"   Selection Probs: {selection_probs.mean().item():.4f}")
+            
+            # Generate sample text
+            generated = text_generator.generate_text_trainable(
+                spike_outputs, seed_word="the", length=20
             )
-            
-            # Initialize PyTorch FGCN model
-            node_features, adj = create_pytorch_graph(spk_rec, mem_rec)
-            fgcn_model = PyTorchFGCN(node_features.shape[1]).to(device)
-            
-            # Create user-context-aware text generator
-            context_generator = PyTorchUserContextGenerator(text_processor, fgcn_model)
-            
-            # Generate contextual response
-            contextual_text = context_generator.generate_contextual_text(
-                user_input, spk_rec, mem_rec, length=250
-            )
-            print()
-            print("AI:", contextual_text)
+            print(f"   Generated: {generated}")
             
         except Exception as e:
-            print(f"❌ Error processing input: {e}")
-            print("Continuing with next input...")
+            print(f"   Validation Error: {e}")
+
+def process_user_input_trainable(filename, user_input, text_processor, snn_model, 
+                                text_generator, chunk_size=10):
+    """Process user input with trainable models."""
+    words = text_processor.load_and_process_text_streaming(filename)
+    
+    # Generate trainable features
+    features = text_processor.words_to_neural_features_trainable(words)
+    
+    if features.shape[0] == 0:
+        return torch.zeros(1, snn_model.num_neurons), torch.zeros(1, snn_model.num_neurons)
+    
+    # Process through trainable SNN
+    with torch.no_grad():
+        spike_outputs = snn_model.forward(features)
+    
+    mem_rec = torch.zeros_like(spike_outputs)
+    
+    return spike_outputs, mem_rec
+
+def main_trainable_implementation():
+    """Main function with full training support."""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"🔥 Using device: {device}")
+    
+    # Parameters for trainable system
+    num_neurons = 128
+    chunk_size = 16
+    vocab_limit = 3000
+    
+    # Initialize trainable components
+    text_processor = TrainableMemoryEfficientTextProcessor(
+        num_neurons, device=device, vocab_limit=vocab_limit
+    ).to(device)
+    
+    snn_model = TrainableStreamingSNN(
+        num_neurons, device=device, chunk_size=chunk_size
+    ).to(device)
+    
+    text_generator = TrainableStreamingTextGenerator(
+        text_processor
+    ).to(device)
+    
+    print("="*60)
+    print("TRAINABLE MEMORY-OPTIMIZED SNN TEXT GENERATOR")
+    print("="*60)
+    print("Full gradient-based training support with multiple loss functions")
+    print("="*60)
+    
+    filename = input("Enter dataset filename: ")
+    
+    # Load and prepare data
+    print("📚 Loading and preparing training data...")
+    words = text_processor.load_and_process_text_streaming(filename)
+    
+    # Create training dataset
+    dataset = create_training_dataset(text_processor)
+    print(f"📊 Created training dataset with {len(dataset)} samples")
+    
+    # Training phase
+    print("\n🚀 Starting training phase...")
+    train_snn_system(text_processor, snn_model, text_generator, dataset, 
+                     epochs=2, lr=0.001, device=device)
+    
+    # Testing phase
+    print("\n🔍 Testing trained model...")
+    
+    try:
+        with open("questions.conf", 'r', encoding='utf-8') as f:
+            questions = f.readlines()
+    except FileNotFoundError:
+        questions = ["Hello, how are you today?", "What is machine learning?"]
+    
+    # Set models to evaluation mode
+    text_processor.eval()
+    snn_model.eval()
+    text_generator.eval()
+    
+    for user_input in questions:
+        user_input = user_input.strip()
+        if not user_input:
+            continue
+            
+        print(f"\nProcessing: '{user_input}'")
+        
+        try:
+            # Process with trained models
+            spk_rec, mem_rec = process_user_input_trainable(
+                filename, user_input, text_processor, snn_model, 
+                text_generator, chunk_size
+            )
+            
+            # Generate text with trained generator
+            response = text_generator.generate_text_trainable(
+                spk_rec, seed_word=user_input.split()[-1] if user_input.split() else None,
+                length=500
+            )
+            
+            print("AI:", response)
+            print(f"📈 Spike Activity: {spk_rec.mean().item():.4f}")
+            
+            # Force garbage collection
+            del spk_rec, mem_rec
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
 
 if __name__ == "__main__":
-    main_pytorch_implementation()
+    main_trainable_implementation()
