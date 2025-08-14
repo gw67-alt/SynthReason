@@ -1,7 +1,7 @@
 import hashlib
+domain = int(input("Enter domain(int): "))
 with open(input("Enter filename: "), 'r', encoding='utf-8') as f:
     sample_text = f.read()[:domain]
-domain = int(input("Enter domain(int): "))
 class HashMapper:
     def __init__(self, domain=100):
         """
