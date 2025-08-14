@@ -1,4 +1,6 @@
 import hashlib
+with open(input("Enter filename: "), 'r', encoding='utf-8') as f:
+    sample_text = f.read()[:domain]
 domain = int(input("Enter domain(int): "))
 class HashMapper:
     def __init__(self, domain=100):
@@ -62,8 +64,6 @@ class HashMapper:
 if __name__ == "__main__":
     # Create a HashMapper with a table size (adjusted to 9999 per request)
     mapper = HashMapper(domain)
-    with open("test.txt", 'r', encoding='utf-8') as f:
-        sample_text = f.read()[:domain]
     text_words = sample_text.split()
     while True:
         # Input first: Get words from user input
