@@ -297,7 +297,7 @@ class EnhancedTextProcessor(nn.Module):
         
     def text_to_tfidf_features(self, text):
         if not self.is_vectorizer_fitted:
-            return torch.zeros(1, self.tfidf_projection[0].in_features, device=self.device)
+            return torch.ones(1, self.tfidf_projection[1].in_features, device=self.device)
         if isinstance(text, list):
             text = ' '.join(text)
         tfidf_matrix = self.vectorizer.transform([text])
@@ -328,6 +328,8 @@ class EnhancedTextProcessor(nn.Module):
         if len(words) > max_words:
             words = words[-max_words:]
         device = self.device
+        y = []
+
         tfidf_features = self.text_to_tfidf_features(words)
         expected_size = self.tfidf_projection[0].in_features
         if tfidf_features.shape[1] != expected_size:
@@ -341,6 +343,8 @@ class EnhancedTextProcessor(nn.Module):
         for word in words:
             idx = self.word_to_idx.get(word, 0)
             word_indices.append(min(idx, self.vocab_limit))
+
+           
         if not word_indices:
             word_features = torch.zeros(1, self.num_neurons // 4, device=device)
         else:
@@ -436,6 +440,7 @@ class EnhancedTextProcessor(nn.Module):
         if n == 3:
             for (w1, w2, w3), count in self.trigram_counts.items():
                 if (w1, w2) == context_key:
+
                     weight_multiplier = 2.0 if w3 in self.geometric_terms else 1.0
                     transitions.append((w3, count * weight_multiplier))
         self.ngram_cache[context_key] = transitions
@@ -528,7 +533,8 @@ def create_dataset(text_processor, max_samples=1000000):
     word_list = list(text_processor.word_to_idx.keys())
     for i in range(0, min(len(word_list), max_samples//2), 20):
         chunk = word_list[i:i+20]
-        dataset.append(chunk)
+        dataset.append(list(str(i) + " " + str(chunk)))
+
     print(f"📐 Created dataset with {len(dataset)} samples")
     return dataset
 
@@ -541,6 +547,8 @@ def train_snn_system(text_processor, snn_model, text_generator, dataset, epochs=
 def main_implementation():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"🔥 Using device: {device}")
+    
+    # --- Model and processor initialization ---
     num_neurons = 1280
     chunk_size = 160
     vocab_limit = 300000
@@ -548,27 +556,63 @@ def main_implementation():
     text_processor = EnhancedTextProcessor(num_neurons, device=device, vocab_limit=vocab_limit, max_features=max_features).to(device)
     snn_model = TrainableStreamingSNN(num_neurons, device=device, chunk_size=chunk_size).to(device)
     text_generator = TrainableStreamingTextGenerator(text_processor).to(device)
+    
     print("="*60)
     print("ENHANCED SNN TEXT GENERATOR")
     print("="*60)
-    filename = input("Enter dataset filename (press Enter for sample): ")
-    if not filename:
-        filename = "sample_data.txt"
-    words = text_processor.load_and_process_text_streaming(filename)
+    
+    # --- Integrated dataset loading logic ---
+    print("Choose data source:")
+    print("1. Hugging Face dataset")
+    print("2. Local file")
+    
+    choice = input("Enter choice (1 or 2, default is 2): ").strip()
+    
+    words = []
+    if choice == "1":
+        print("\nPopular text datasets: wikitext, bookcorpus, wikipedia, openwebtext, c4")
+        dataset_name = input("Enter dataset name (e.g., 'wikitext-2-raw-v1'): ").strip()
+        
+        if not dataset_name:
+            print("⚠️ No dataset name provided. Falling back to local file.")
+            # Fallback to sample local file
+            words = text_processor.load_and_process_text_streaming(
+                file_path="sample_data.txt"
+            )
+        else:
+            split = input("Enter split (train/test/validation, default=train): ").strip() or "train"
+            # Call with Hugging Face parameters
+            words = text_processor.load_and_process_text_streaming(
+                dataset_name=dataset_name, 
+                split=split
+            )
+    else:
+        # Default behavior: load from a local file
+        filename = input("Enter local filename (press Enter for sample_data.txt): ").strip() or "sample_data.txt"
+        # Call with local file parameter
+        words = text_processor.load_and_process_text_streaming(
+            file_path=filename
+        )
+
+    # --- Continue with training and interactive mode ---
     dataset = create_dataset(text_processor)
     train_snn_system(text_processor, snn_model, text_generator, dataset, epochs=30, lr=0.001, device=device)
+    
     print("\n🎯 Interactive Mode:")
     while True:
         try:
             user_input = input("\nUSER: ").strip()
             if not user_input:
                 continue
+            
             seed_words = user_input.split()
             features = text_processor.words_to_neural_features(seed_words)
             spike_outputs = snn_model.forward(features)
             response = text_generator.generate_text_trainable(spike_outputs, seed_words=seed_words, length=500)
             print(f"🤖 AI: {response}")
+            
         except KeyboardInterrupt:
+            print("\nExiting...")
             break
         except Exception as e:
             print(f"❌ Error: {e}")
