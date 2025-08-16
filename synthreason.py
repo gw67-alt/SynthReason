@@ -7,8 +7,15 @@ from sklearn.preprocessing import StandardScaler
 from collections import defaultdict, Counter
 import random
 import math
-import gc
+import time
 from pathlib import Path
+
+# Check for Hugging Face datasets availability
+try:
+    from datasets import load_dataset
+    HF_DATASETS_AVAILABLE = True
+except ImportError:
+    HF_DATASETS_AVAILABLE = False
 
 KB_LEN = 9999
 
@@ -231,7 +238,7 @@ class TrainableStreamingSNN(nn.Module):
         self.neuron_state = None
 
 # ------------------------------------------------------
-# Enhanced Text Processor (with n-gram support)
+# Enhanced Text Processor (with n-gram support) - FIXED
 # ------------------------------------------------------
 class EnhancedTextProcessor(nn.Module):
     def __init__(self, num_neurons=256, device='cpu', vocab_limit=5000, max_features=1000):
@@ -297,7 +304,7 @@ class EnhancedTextProcessor(nn.Module):
         
     def text_to_tfidf_features(self, text):
         if not self.is_vectorizer_fitted:
-            return torch.ones(1, self.tfidf_projection[1].in_features, device=self.device)
+            return torch.ones(1, self.tfidf_projection[0].in_features, device=self.device)
         if isinstance(text, list):
             text = ' '.join(text)
         tfidf_matrix = self.vectorizer.transform([text])
@@ -329,7 +336,6 @@ class EnhancedTextProcessor(nn.Module):
             words = words[-max_words:]
         device = self.device
         y = []
-
         tfidf_features = self.text_to_tfidf_features(words)
         expected_size = self.tfidf_projection[0].in_features
         if tfidf_features.shape[1] != expected_size:
@@ -343,7 +349,6 @@ class EnhancedTextProcessor(nn.Module):
         for word in words:
             idx = self.word_to_idx.get(word, 0)
             word_indices.append(min(idx, self.vocab_limit))
-
            
         if not word_indices:
             word_features = torch.zeros(1, self.num_neurons // 4, device=device)
@@ -361,7 +366,7 @@ class EnhancedTextProcessor(nn.Module):
         final_features = self.apply_compass_construction_to_features(compass_features)
         return final_features
     
-    def load_and_process_text_streaming(self, file_path="test.txt", chunk_size=1000):
+    def load_and_process_text_streaming(self, file_path="test.txt", chunk_size=1000, dataset_name=None, split=None):
         word_count = 0
         documents = []
         current_doc = []
@@ -369,32 +374,39 @@ class EnhancedTextProcessor(nn.Module):
         for word in vocab:
             if word not in self.word_to_idx:
                 self.word_to_idx[word] = len(self.word_to_idx)
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                word_history = []
-                words_processed = []
-                while KB_LEN < 0 or word_count < KB_LEN:
-                    chunk = f.read(chunk_size * 10)
-                    if not chunk:
+        words_processed = []
+        
+        # Add Hugging Face dataset support
+        if dataset_name is not None:
+            if not HF_DATASETS_AVAILABLE:
+                print("⚠️ Hugging Face datasets library not available. Install with: pip install datasets")
+                print("⚠️ Falling back to local file loading...")
+                return self.load_and_process_text_streaming(file_path=file_path, chunk_size=chunk_size)
+            
+            try:
+                print(f"📥 Loading Hugging Face dataset: {dataset_name}, split: {split}")
+                ds = load_dataset(dataset_name, split=split or 'train')
+                text_field = 'text' if 'text' in ds.column_names else ds.column_names[0]
+                
+                for text in ds[text_field]:
+                    if KB_LEN > 0 and word_count >= KB_LEN:
                         break
-                    words = chunk.lower().split()
+                    words = str(text).lower().split()
+                    word_history = []
                     for word in words:
                         if len(self.word_to_idx) < self.vocab_limit:
                             if word not in self.word_to_idx:
                                 self.word_to_idx[word] = len(self.word_to_idx)
+                        
                         word_history.append(word)
                         if len(word_history) >= 2:
                             self.bigram_counts[(word_history[-2], word_history[-1])] += 1
                         if len(word_history) >= 3:
                             self.trigram_counts[(word_history[-3], word_history[-2], word_history[-1])] += 1
                         if len(word_history) > 1000:
-                            word_history = word_history
+                            word_history = word_history[-500:]
+                        
                         words_processed.append(word)
-                        if word in words_processed:
-                            import time
-                            str(int(time.time() * 1000))  # Convert seconds to milliseconds
-                            words_processed.append(str(int(time.time() * 1000)) +  " " + word)
-
                         current_doc.append(word)
                         word_count += 1
                         if len(current_doc) >= 100:
@@ -402,18 +414,58 @@ class EnhancedTextProcessor(nn.Module):
                             current_doc = []
                         if KB_LEN > 0 and word_count >= KB_LEN:
                             break
+                            
                 if current_doc:
                     documents.append(' '.join(current_doc))
-        except FileNotFoundError:
-            print(f"⚠️ File {file_path} not found. Using sample data...")
-            sample_words = vocab * 50
-            documents = [' '.join(sample_words[i:i+50]) for i in range(0, len(sample_words), 50)]
-            for i, word in enumerate(sample_words):
-                if word not in self.word_to_idx:
-                    self.word_to_idx[word] = len(self.word_to_idx)
-                if i > 0:
-                    self.bigram_counts[(sample_words[i-1], word)] += 1
-            words_processed = sample_words
+                    
+            except Exception as e:
+                print(f"⚠️ Dataset loading failed: {e}. Falling back to local file.")
+                return self.load_and_process_text_streaming(file_path=file_path, chunk_size=chunk_size)
+        else:
+            # Original local file loading logic
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    word_history = []
+                    while KB_LEN < 0 or word_count < KB_LEN:
+                        chunk = f.read(chunk_size * 10)
+                        if not chunk:
+                            break
+                        words = chunk.lower().split()
+                        for word in words:
+                            if len(self.word_to_idx) < self.vocab_limit:
+                                if word not in self.word_to_idx:
+                                    self.word_to_idx[word] = len(self.word_to_idx)
+                            word_history.append(word)
+                            if len(word_history) >= 2:
+                                self.bigram_counts[(word_history[-2], word_history[-1])] += 1
+                            if len(word_history) >= 3:
+                                self.trigram_counts[(word_history[-3], word_history[-2], word_history[-1])] += 1
+                            if len(word_history) > 1000:
+                                word_history = word_history[-500:]
+                            words_processed.append(word)
+                            if word in words_processed:
+                                str(int(time.time() * 1000))  # Convert seconds to milliseconds
+                                words_processed.append(str(int(time.time() * 1000)) +  " " + word)
+                            current_doc.append(word)
+                            word_count += 1
+                            if len(current_doc) >= 100:
+                                documents.append(' '.join(current_doc))
+                                current_doc = []
+                            if KB_LEN > 0 and word_count >= KB_LEN:
+                                break
+                    if current_doc:
+                        documents.append(' '.join(current_doc))
+            except FileNotFoundError:
+                print(f"⚠️ File {file_path} not found. Using sample data...")
+                sample_words = vocab * 50
+                documents = [' '.join(sample_words[i:i+50]) for i in range(0, len(sample_words), 50)]
+                for i, word in enumerate(sample_words):
+                    if word not in self.word_to_idx:
+                        self.word_to_idx[word] = len(self.word_to_idx)
+                    if i > 0:
+                        self.bigram_counts[(sample_words[i-1], word)] += 1
+                words_processed = sample_words
+
         if documents and not self.is_vectorizer_fitted:
             self.fit_vectorizer(documents)
         print(f"📚 Processed {word_count} words with vocab size {len(self.word_to_idx)}")
@@ -434,7 +486,7 @@ class EnhancedTextProcessor(nn.Module):
                 del self.transition_cache[k]
         self.transition_cache[word] = transitions
         return transitions
-
+        
     def get_ngram_transitions(self, context_words, n=3):
         if len(context_words) < n - 1:
             return []
@@ -445,7 +497,6 @@ class EnhancedTextProcessor(nn.Module):
         if n == 3:
             for (w1, w2, w3), count in self.trigram_counts.items():
                 if (w1, w2) == context_key:
-
                     weight_multiplier = 2.0 if w3 in self.geometric_terms else 1.0
                     transitions.append((w3, count * weight_multiplier))
         self.ngram_cache[context_key] = transitions
@@ -529,7 +580,7 @@ class TrainableStreamingTextGenerator(nn.Module):
         return ' '.join(generated_words)
 
 # ------------------------------------------------------
-# Dataset creation and training placeholder
+# Dataset creation and training placeholder - FIXED
 # ------------------------------------------------------
 def create_dataset(text_processor, max_samples=1000000):
     dataset = []
@@ -538,8 +589,7 @@ def create_dataset(text_processor, max_samples=1000000):
     word_list = list(text_processor.word_to_idx.keys())
     for i in range(0, min(len(word_list), max_samples//2), 20):
         chunk = word_list[i:i+20]
-        dataset.append(list(str(i) + " " + str(chunk)))
-
+        dataset.append(chunk)  # Keep as list of words
     print(f"📐 Created dataset with {len(dataset)} samples")
     return dataset
 
@@ -547,7 +597,7 @@ def train_snn_system(text_processor, snn_model, text_generator, dataset, epochs=
     pass  # Placeholder for training routine
 
 # ------------------------------------------------------
-# Main Implementation
+# Main Implementation - FIXED
 # ------------------------------------------------------
 def main_implementation():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -566,7 +616,7 @@ def main_implementation():
     print("ENHANCED SNN TEXT GENERATOR")
     print("="*60)
     
-    # --- Integrated dataset loading logic ---
+    # --- Integrated dataset loading logic - FIXED ---
     print("Choose data source:")
     print("1. Hugging Face dataset")
     print("2. Local file")
@@ -575,30 +625,27 @@ def main_implementation():
     
     words = []
     if choice == "1":
-        print("\nPopular text datasets: wikitext, bookcorpus, wikipedia, openwebtext, c4")
-        dataset_name = input("Enter dataset name (e.g., 'wikitext-2-raw-v1'): ").strip()
-        
-        if not dataset_name:
-            print("⚠️ No dataset name provided. Falling back to local file.")
-            # Fallback to sample local file
-            words = text_processor.load_and_process_text_streaming(
-                file_path="sample_data.txt"
-            )
+        if not HF_DATASETS_AVAILABLE:
+            print("⚠️ Hugging Face datasets library not available. Install with: pip install datasets")
+            print("⚠️ Falling back to local file loading...")
+            choice = "2"
         else:
-            split = input("Enter split (train/test/validation, default=train): ").strip() or "train"
-            # Call with Hugging Face parameters
-            words = text_processor.load_and_process_text_streaming(
-                dataset_name=dataset_name, 
-                split=split
-            )
-    else:
-        # Default behavior: load from a local file
+            dataset_name = input("Enter dataset name: ").strip()
+            
+            if not dataset_name:
+                print("⚠️ No dataset name provided. Falling back to local file.")
+                words = text_processor.load_and_process_text_streaming(file_path="sample_data.txt")
+            else:
+                split = input("Enter split (train/test/validation, default=train): ").strip() or "train"
+                words = text_processor.load_and_process_text_streaming(
+                    dataset_name=dataset_name, 
+                    split=split
+                )
+    
+    if choice == "2":
         filename = input("Enter local filename (press Enter for sample_data.txt): ").strip() or "sample_data.txt"
-        # Call with local file parameter
-        words = text_processor.load_and_process_text_streaming(
-            file_path=filename
-        )
-
+        words = text_processor.load_and_process_text_streaming(file_path=filename)
+    
     # --- Continue with training and interactive mode ---
     dataset = create_dataset(text_processor)
     train_snn_system(text_processor, snn_model, text_generator, dataset, epochs=30, lr=0.001, device=device)
