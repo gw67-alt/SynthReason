@@ -10,7 +10,7 @@ import math
 import gc
 from pathlib import Path
 
-KB_LEN = -1
+KB_LEN = 9999
 
 # ------------------------------------------------------
 # Utility
@@ -390,6 +390,11 @@ class EnhancedTextProcessor(nn.Module):
                         if len(word_history) > 1000:
                             word_history = word_history
                         words_processed.append(word)
+                        if word in words_processed:
+                            import time
+                            str(int(time.time() * 1000))  # Convert seconds to milliseconds
+                            words_processed.append(str(int(time.time() * 1000)) +  " " + word)
+
                         current_doc.append(word)
                         word_count += 1
                         if len(current_doc) >= 100:
