@@ -17,7 +17,7 @@ try:
 except ImportError:
     HF_DATASETS_AVAILABLE = False
 
-KB_LEN = 9999
+KB_LEN = 99999
 
 # ------------------------------------------------------
 # Utility
@@ -442,10 +442,12 @@ class EnhancedTextProcessor(nn.Module):
                                 self.trigram_counts[(word_history[-3], word_history[-2], word_history[-1])] += 1
                             if len(word_history) > 1000:
                                 word_history = word_history[-500:]
-                            words_processed.append(word)
                             if word in words_processed:
                                 str(int(time.time() * 1000))  # Convert seconds to milliseconds
                                 words_processed.append(str(int(time.time() * 1000)) +  " " + word)
+                            else:
+                                words_processed.append(word)
+
                             current_doc.append(word)
                             word_count += 1
                             if len(current_doc) >= 100:
