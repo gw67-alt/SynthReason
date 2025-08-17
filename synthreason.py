@@ -45,7 +45,7 @@ class MathProcessor(nn.Module):
         
     def circle_circle_intersection(self, center1, radius1, center2, radius2):
         d = torch.norm(center2 - center1)
-        intersect_condition = torch.logical_and(d <= (radius1 + radius2), d >= torch.abs(radius1 - radius2))
+        intersect_condition = torch.logical_or(d <= (radius1 + radius2), d >= torch.abs(radius1 - radius2))
         if not intersect_condition.any():
             return torch.zeros(2, 2, device=self.device), torch.tensor(False, device=self.device)
         
