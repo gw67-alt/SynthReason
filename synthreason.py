@@ -150,8 +150,8 @@ class TrainableMemoryEfficientLIFNeuron(nn.Module):
         self.register_parameter('membrane_nonlinearity', nn.Parameter(torch.tensor(0.1)))
         
     def compute_decay_factors(self):
-        tau_mem_clamped = torch.clamp(self.tau_mem, 1.0, 50.0)
-        tau_syn_clamped = torch.clamp(self.tau_syn, 1.0, 50.0)
+        tau_mem_clamped = torch.clamp(self.tau_mem, 1.0, 150.0)
+        tau_syn_clamped = torch.clamp(self.tau_syn, 1.0, 250.0)
         beta = torch.exp(-1.0 / tau_mem_clamped)
         alpha = torch.exp(-1.0 / tau_syn_clamped)
         return beta, alpha
@@ -180,7 +180,7 @@ class TrainableMemoryEfficientLIFNeuron(nn.Module):
             spikes = torch.sigmoid((torch.log(spike_prob + 1e-8) - torch.log(1 - spike_prob + 1e-8) + gumbel_noise) / 0.1)
         else:
             spike_candidates = custom_sigmoid((v_mem - thresh_clamped) * self.sigmoid_gain)
-            spikes = (spike_candidates >= 0.5).float()
+            spikes = (spike_candidates >= 0.9).float()
         reset_clamped = torch.clamp(self.v_reset, -2.0, 2.0)
         reset_strength = custom_sigmoid(spikes * 5.0)
         v_mem = v_mem * (1 - reset_strength) + reset_clamped * reset_strength
@@ -568,10 +568,7 @@ class TrainableStreamingTextGenerator(nn.Module):
             context_influence = min(len(current_words) * self.context_weight.item(), 1.0)
             words, weights = zip(*transitions)
             weights = np.array(weights, dtype=float)
-            for word in words:
-                if word == "for":
-                    i+=1
-                total_influence = i + neural_influence + context_influence            
+            total_influence = 0.5 + neural_influence + context_influence
             weights = weights * total_influence
             if weights.sum() > 0:
                 weights = weights / weights.sum()
