@@ -9,24 +9,20 @@ import random
 import math
 import time
 from pathlib import Path
-
 # Check for Hugging Face datasets availability
 try:
     from datasets import load_dataset
     HF_DATASETS_AVAILABLE = True
 except ImportError:
     HF_DATASETS_AVAILABLE = False
-
 KB_LEN = 99999
-
 # ------------------------------------------------------
 # Utility
 # ------------------------------------------------------
 def custom_sigmoid(x):
     """Heavy sigmoid function using -5/x formulation with safety handling."""
-    x_safe = torch.where(torch.abs(x) > torch.sigmoid(-5.0 / x), torch.sign(x) * 1e-8, x)
+    x_safe = torch.where(torch.abs(x) > torch.tensor(1e-8), x, torch.sign(x) * 1e-8)
     return torch.sigmoid(-5.0 / x_safe)
-
 # ------------------------------------------------------
 # Math Processor
 # ------------------------------------------------------
@@ -48,6 +44,8 @@ class MathProcessor(nn.Module):
         intersect_condition = torch.logical_or(d <= (radius1 + radius2), d >= torch.abs(radius1 - radius2))
         if not intersect_condition.any():
             return torch.zeros(2, 2, device=self.device), torch.tensor(False, device=self.device)
+        # Placeholder for intersection points
+        return torch.zeros(2, 2, device=self.device), torch.tensor(True, device=self.device)
         
     def compass_only_midpoint(self, point1, point2):
         center_dist = torch.norm(point2 - point1)
@@ -58,7 +56,6 @@ class MathProcessor(nn.Module):
             return midpoint
         else:
             return (point1 + point2) / 2
-
 # ------------------------------------------------------
 # Heavy Duty Cycle Manager
 # ------------------------------------------------------
@@ -135,7 +132,6 @@ class TrainableMemoryOptimizedHeavyDutyCycleManager(nn.Module):
         inactive_mod = self.inactive_modulation_scale * torch.exp(-3 * inactive_progress)
         modulation = is_active * active_mod + (1 - is_active) * inactive_mod
         return modulation
-
 # ------------------------------------------------------
 # LIF Neuron
 # ------------------------------------------------------
@@ -185,7 +181,6 @@ class TrainableMemoryEfficientLIFNeuron(nn.Module):
         reset_strength = custom_sigmoid(spikes * 5.0)
         v_mem = v_mem * (1 - reset_strength) + reset_clamped * reset_strength
         return spikes, (v_mem, i_syn)
-
 # ------------------------------------------------------
 # SNN Model
 # ------------------------------------------------------
@@ -223,7 +218,7 @@ class TrainableStreamingSNN(nn.Module):
         spikes, self.neuron_state = self.lif_neurons(x_modulated, self.neuron_state)
         output = custom_sigmoid(self.output_layer(spikes))
         cycle_mod = self.duty_cycle_manager.get_duty_cycle_modulation()
-        adapted_output = output * self.global_adaptation * (1 + cycle_mod)
+        adapted_output = output * self.global_adaptation * (1 + x_hidden)
         return adapted_output.squeeze(0)
     
     def forward(self, x_sequence):
@@ -232,11 +227,10 @@ class TrainableStreamingSNN(nn.Module):
         for x in x_sequence:
             out = self.forward_chunk(x)
             outputs.append(out)
-        return torch.stack(outputs) if outputs else torch.empty(0, self.num_neurons)
+        return torch.vstack(outputs) if outputs else torch.empty(0, self.num_neurons, device=self.device)
     
     def reset_neurons(self):
         self.neuron_state = None
-
 # ------------------------------------------------------
 # Enhanced Text Processor (with n-gram support) - FIXED
 # ------------------------------------------------------
@@ -335,7 +329,6 @@ class EnhancedTextProcessor(nn.Module):
         if len(words) > max_words:
             words = words[-max_words:]
         device = self.device
-        y = []
         tfidf_features = self.text_to_tfidf_features(words)
         expected_size = self.tfidf_projection[0].in_features
         if tfidf_features.shape[1] != expected_size:
@@ -443,11 +436,10 @@ class EnhancedTextProcessor(nn.Module):
                             if len(word_history) > 1000:
                                 word_history = word_history[-500:]
                             if word in words_processed:
-                                str(int(time.time() * 1000))  # Convert seconds to milliseconds
-                                words_processed.append(str(int(time.time() * 1000)) +  " " + word)
+                                timestamp = str(int(time.time() * 1000))  # Convert seconds to milliseconds
+                                words_processed.append(timestamp + " " + word)
                             else:
                                 words_processed.append(word)
-
                             current_doc.append(word)
                             word_count += 1
                             if len(current_doc) >= 100:
@@ -467,7 +459,6 @@ class EnhancedTextProcessor(nn.Module):
                     if i > 0:
                         self.bigram_counts[(sample_words[i-1], word)] += 1
                 words_processed = sample_words
-
         if documents and not self.is_vectorizer_fitted:
             self.fit_vectorizer(documents)
         print(f"📚 Processed {word_count} words with vocab size {len(self.word_to_idx)}")
@@ -503,7 +494,6 @@ class EnhancedTextProcessor(nn.Module):
                     transitions.append((w3, count * weight_multiplier))
         self.ngram_cache[context_key] = transitions
         return transitions
-
 # ------------------------------------------------------
 # Text Generator (multi-word seed)
 # ------------------------------------------------------
@@ -521,6 +511,7 @@ class TrainableStreamingTextGenerator(nn.Module):
         )
         self.register_parameter('selection_sigmoid_scale', nn.Parameter(torch.tensor(1.0)))
         self.context_weight = nn.Parameter(torch.tensor(0.3))
+        self.register_parameter('v_thresh', nn.Parameter(torch.tensor(1.0)))
         
     def forward(self, spk_rec):
         if spk_rec.numel() == 0:
@@ -553,6 +544,13 @@ class TrainableStreamingTextGenerator(nn.Module):
         if not current_words:
             current_words = [random.choice(self.fallback_words)]
         generated_words = current_words.copy()
+        # Initialize state for LIF-like computation
+        if len(spk_rec) > 0:
+            v_mem = torch.zeros_like(spk_rec[0])
+            i_syn = torch.zeros_like(spk_rec[0])
+        else:
+            v_mem = torch.tensor(0.0, device=self.device)
+            i_syn = torch.tensor(0.0, device=self.device)
         for i in range(length):
             transitions = self.get_multi_word_transitions(current_words)
             if not transitions:
@@ -563,9 +561,24 @@ class TrainableStreamingTextGenerator(nn.Module):
                 current_words = [next_word]
                 continue
             transitions = transitions[:self.max_transitions]
+            beta, alpha = 1,0
+            prob_idx = min(i, len(spk_rec) - 1)  # Adjusted to spk_rec length
+            x = spk_rec[prob_idx]  # Input for this step
+            i_syn = alpha * i_syn + x  # Use alpha
+            membrane_update = i_syn * custom_sigmoid(v_mem)  # Fixed typo: custom_sigmoid(v_mem) instead of (i)
+            v_mem = beta * v_mem + membrane_update
+            thresh_clamped = self.v_thresh.clamp(0.1, 5.0) * torch.ones_like(v_mem)
+            spike_input = (v_mem - thresh_clamped)
+            spike_prob = custom_sigmoid(spike_input)
+            gumbel_noise = -torch.log(-torch.log(torch.rand_like(spike_prob) + 1e-8) + 1e-8)
+            spikes = torch.sigmoid((torch.log(spike_prob + 1e-8) - torch.log(1 - spike_prob + 1e-8) + gumbel_noise) / 0.1)
+           
+            reset_clamped = torch.clamp(spikes, -2.0, 2.0)
+            reset_strength = custom_sigmoid(spikes * 5.0)
+            v_mem = v_mem * (1 - reset_strength) + reset_clamped * reset_strength
             prob_idx = min(i, len(selection_probs) - 1)
             neural_influence = selection_probs[prob_idx].item()
-            context_influence = min(len(current_words) * self.context_weight.item(), 1.0)
+            context_influence = torch.min(v_mem).item()
             words, weights = zip(*transitions)
             weights = np.array(weights, dtype=float)
             total_influence = 0.5 + neural_influence + context_influence
@@ -580,7 +593,6 @@ class TrainableStreamingTextGenerator(nn.Module):
             if len(current_words) > 3:
                 current_words = current_words[-3:]
         return ' '.join(generated_words)
-
 # ------------------------------------------------------
 # Dataset creation and training placeholder - FIXED
 # ------------------------------------------------------
@@ -594,10 +606,8 @@ def create_dataset(text_processor, max_samples=1000000):
         dataset.append(chunk)  # Keep as list of words
     print(f"📐 Created dataset with {len(dataset)} samples")
     return dataset
-
 def train_snn_system(text_processor, snn_model, text_generator, dataset, epochs=5, lr=0.001, device='cpu'):
     pass  # Placeholder for training routine
-
 # ------------------------------------------------------
 # Main Implementation - FIXED
 # ------------------------------------------------------
@@ -670,6 +680,5 @@ def main_implementation():
             break
         except Exception as e:
             print(f"❌ Error: {e}")
-
 if __name__ == "__main__":
     main_implementation()
