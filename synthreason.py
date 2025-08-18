@@ -568,7 +568,10 @@ class TrainableStreamingTextGenerator(nn.Module):
             context_influence = min(len(current_words) * self.context_weight.item(), 1.0)
             words, weights = zip(*transitions)
             weights = np.array(weights, dtype=float)
-            total_influence = 0.5 + neural_influence + context_influence
+            for word in words:
+                if word == "for":
+                    i+=1
+                total_influence = i + neural_influence + context_influence            
             weights = weights * total_influence
             if weights.sum() > 0:
                 weights = weights / weights.sum()
