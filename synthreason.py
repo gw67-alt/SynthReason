@@ -1,4 +1,5 @@
 
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -217,9 +218,11 @@ class TrainableStreamingSNN(nn.Module):
                 padding = torch.zeros(*x_chunk.shape[:-1], padding_size, device=x_chunk.device)
                 x_chunk = torch.cat([x_chunk, padding], dim=-1)
         x_processed = custom_sigmoid(self.input_layer(x_chunk) * self.activation_scale1)
+        intersect_condition = torch.logical_or(x_chunk <= (x_processed + x_chunk), x_chunk >= torch.abs(x_processed - x_chunk))
+
         x_hidden = custom_sigmoid(self.hidden_layer(x_processed) * self.activation_scale2)
         prob_weights = custom_sigmoid(x_hidden)
-        modulated_weights = self.duty_cycle_manager.modulate_probabilities(prob_weights, neural_activity=x_hidden)
+        modulated_weights = self.duty_cycle_manager.modulate_probabilities(prob_weights, neural_activity=intersect_condition)
         x_modulated = x_hidden * modulated_weights.unsqueeze(0)
         spikes, self.neuron_state = self.lif_neurons(x_modulated, self.neuron_state)
         output = custom_sigmoid(self.output_layer(spikes))
