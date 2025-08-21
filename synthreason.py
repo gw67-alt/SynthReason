@@ -17,7 +17,7 @@ try:
 except ImportError:
     HF_DATASETS_AVAILABLE = False
 
-KB_LEN = 1000  # Reduced for testing
+KB_LEN = -1  # Reduced for testing
 
 # ------------------------------------------------------
 # Utility Functions - FIXED
@@ -753,7 +753,7 @@ class TrainableStreamingTextGenerator(nn.Module):
 # ------------------------------------------------------
 # Dataset creation and training - FIXED
 # ------------------------------------------------------
-def create_dataset(text_processor, max_samples=1000):
+def create_dataset(text_processor, max_samples=10000):
     """Create training dataset from processed text."""
     dataset = []
     
@@ -795,7 +795,7 @@ def train_snn_system(text_processor, snn_model, text_generator, dataset, epochs=
         # Shuffle dataset
         random.shuffle(dataset)
         
-        for batch_idx, word_sequence in enumerate(dataset[:100]):  # Limit for efficiency
+        for batch_idx, word_sequence in enumerate(dataset):  # Limit for efficiency
             try:
                 # Convert words to neural features
                 if isinstance(word_sequence, str):
