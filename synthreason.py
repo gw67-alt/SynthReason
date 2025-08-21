@@ -753,7 +753,7 @@ class TrainableStreamingTextGenerator(nn.Module):
 # ------------------------------------------------------
 # Dataset creation and training - FIXED
 # ------------------------------------------------------
-def create_dataset(text_processor, max_samples=10000):
+def create_dataset(text_processor, max_samples=100000):
     """Create training dataset from processed text."""
     dataset = []
     
