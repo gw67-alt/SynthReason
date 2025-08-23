@@ -290,7 +290,7 @@ class EnhancedTextProcessor(nn.Module):
         self.vocab_limit = vocab_limit
         self.bigram_counts = Counter()
         self.trigram_counts = Counter()
-        self.hash_mapper = HashMapper(table_size=max(vocab_limit*2, 9999999))
+        self.hash_mapper = HashMapper(table_size=max(vocab_limit*2, 999999))
         
         # Add compass/math processor
         self.math_processor = MathProcessor(device=device)
